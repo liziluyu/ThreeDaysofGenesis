@@ -24,11 +24,9 @@ namespace TapTap2026.Simulation
         private readonly int _width;
         private readonly int _height;
         private readonly Cell[] _cells;
-        private readonly ushort[] _columnThickness;
         private readonly ParticleType[] _types;
 
         private int _tick;
-        private int _maxColumnThickness;
         private uint _rng;
         private byte _stamp;
         private Cell _outside;
@@ -85,7 +83,6 @@ namespace TapTap2026.Simulation
             _height = height;
             _types = types;
             _cells = new Cell[width * height];
-            _columnThickness = new ushort[width];
             _tick = 0;
             _rng = seed == 0u ? DefaultSeed : seed;
             _stamp = OutsideStamp;
@@ -101,32 +98,9 @@ namespace TapTap2026.Simulation
         /// 底层格子数组。<b>只读契约</b>：外部只允许读，任何写入都必须走
         /// <see cref="Set"/> / <see cref="Clear"/> / <see cref="Swap"/>，否则会绕过钩子与处理标记。
         /// </summary>
-        /// <remarks>
-        /// 唯一真源就是这个数组；<see cref="ColumnThickness"/> 是它的派生缓存，直接写 <c>Cells[i].typeId</c>
-        /// 会让缓存与真源不一致。改 <c>shade</c>（不改变空气与否）不影响缓存。
-        /// </remarks>
         public Cell[] Cells
         {
             get { return _cells; }
-        }
-
-        /// <summary>
-        /// 第 <paramref name="x"/> 列的非空气格数（越界返回 0）。
-        /// 由 <see cref="Cell"/>[] 派生的缓存，由 <see cref="Set"/> / <see cref="Clear"/> / <see cref="Swap"/> O(1) 维护；
-        /// 固体用它衡量「本列堆了多厚」，从而把堆塑成钟形（见 <see cref="ParticleRules.ShapeClearance"/>）。
-        /// </summary>
-        public int ColumnThickness(int x)
-        {
-            return (uint)x < (uint)_width ? _columnThickness[x] : 0;
-        }
-
-        /// <summary>
-        /// 全场最厚列的 <see cref="ColumnThickness"/>，每次 <see cref="Step"/> 开始时刷新（因此 Step 之前读到的可能是旧值）。
-        /// 用来把「本列厚度」归一成 <c>[0,1]</c> 的相对深度，使整形与堆的绝对大小无关。
-        /// </summary>
-        public int MaxColumnThickness
-        {
-            get { return _maxColumnThickness; }
         }
 
         /// <summary>网格宽（格数）。</summary>
@@ -235,27 +209,9 @@ namespace TapTap2026.Simulation
                 return true;
             }
 
-            // 交换前先记下两格的「空气与否」，用来增量维护每列厚度缓存。
-            bool aFilled = _cells[a].typeId != ParticleRegistry.AirTypeId;
-            bool bFilled = _cells[b].typeId != ParticleRegistry.AirTypeId;
-
             Cell swap = _cells[a];
             _cells[a] = _cells[b];
             _cells[b] = swap;
-
-            if (x0 != x1 && aFilled != bFilled)
-            {
-                if (bFilled)
-                {
-                    _columnThickness[x0]++;
-                    _columnThickness[x1]--;
-                }
-                else
-                {
-                    _columnThickness[x0]--;
-                    _columnThickness[x1]++;
-                }
-            }
 
             byte stamp = _stamp;
             _cells[a].flags = CellFlags.WithProcessed(_cells[a].flags, stamp);
@@ -306,14 +262,7 @@ namespace TapTap2026.Simulation
             cell.typeId = typeId;
             cell.flags = _stamp;
 
-            bool wasAir = previousId == ParticleRegistry.AirTypeId;
-            bool isAir = typeId == ParticleRegistry.AirTypeId;
-            if (wasAir != isAir)
-            {
-                _columnThickness[x] = (ushort)(isAir ? _columnThickness[x] - 1 : _columnThickness[x] + 1);
-            }
-
-            if (isAir)
+            if (typeId == ParticleRegistry.AirTypeId)
             {
                 cell.shade = 0;
                 return true;
@@ -363,10 +312,6 @@ namespace TapTap2026.Simulation
         {
             byte stamp = (byte)(_tick & 1);
             _stamp = stamp;
-
-            // 每 tick 刷新一次最厚列：O(Width)，相对 O(Width×Height) 的扫描可以忽略；
-            // 放在 Step 开头意味着「Step 之间」的写入（画笔、关卡加载）也已计入。
-            _maxColumnThickness = ComputeMaxColumnThickness();
 
             Cell[] cells = _cells;
             ParticleType[] types = _types;
@@ -426,22 +371,6 @@ namespace TapTap2026.Simulation
 
             cells[index].flags = CellFlags.WithProcessed(cells[index].flags, stamp);
             type.OnUpdate(this, x, y);
-        }
-
-        /// <summary>扫描每列厚度取最大值。只在 <see cref="Step"/> 开头调用一次。</summary>
-        private int ComputeMaxColumnThickness()
-        {
-            ushort[] thickness = _columnThickness;
-            int max = 0;
-            for (int x = 0; x < thickness.Length; x++)
-            {
-                if (thickness[x] > max)
-                {
-                    max = thickness[x];
-                }
-            }
-
-            return max;
         }
 
         private void ReportUnknownType(ushort typeId)
