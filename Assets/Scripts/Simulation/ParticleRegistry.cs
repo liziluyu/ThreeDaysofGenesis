@@ -40,10 +40,79 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 注册一个粒子类型。**只能在启动阶段调用**，返回分配到的 typeId（= 注册顺序，从 1 开始）。
-        /// 校验失败会抛异常而不写入任何状态，因此不会留下半注册的注册表。
+        /// 注册单个类型。校验失败会抛异常且不写入任何状态，因此单个调用本身是原子的。
+        /// 注册多个类型请用 <see cref="RegisterBatch"/>，避免中途失败留下半注册表。
         /// </summary>
         public static ushort Register(IParticleType behaviour)
+        {
+            ParticleTypeInfo info = RequireValidInfo(behaviour);
+            EnsureRoom(1);
+            return Commit(behaviour, info);
+        }
+
+        /// <summary>
+        /// 批量注册：**先全部校验、再统一写入**。任一类型非法则整体不生效，不会留下半注册的注册表。
+        /// </summary>
+        /// <returns>与入参一一对应的 typeId（按顺序分配）。</returns>
+        /// <remarks>
+        /// <see cref="ParticleRegistration"/> 依赖这个原子性：只有全部成功才回填 <see cref="ParticleIds"/>，
+        /// 否则未回填的 <c>ParticleIds.Xxx</c> 会停留在默认值 0（= 空气），变成静默退化。
+        /// </remarks>
+        public static ushort[] RegisterBatch(params IParticleType[] behaviours)
+        {
+            if (behaviours == null)
+            {
+                throw new ArgumentNullException(nameof(behaviours));
+            }
+
+            var infos = new ParticleTypeInfo[behaviours.Length];
+            for (int i = 0; i < behaviours.Length; i++)
+            {
+                infos[i] = RequireValidInfo(behaviours[i]);
+            }
+
+            EnsureRoom(behaviours.Length);
+
+            var ids = new ushort[behaviours.Length];
+            for (int i = 0; i < behaviours.Length; i++)
+            {
+                ids[i] = Commit(behaviours[i], infos[i]);
+            }
+
+            return ids;
+        }
+
+        /// <summary>
+        /// 校验一份类型属性。注册流程与自定义类型表（<see cref="ParticleWorld"/> 的四参构造）共用本方法，
+        /// 保证任何进入运行期的类型都经过同一套检查。
+        /// </summary>
+        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、或未带任何类别标签。</exception>
+        public static void ValidateTypeInfo(ParticleTypeInfo info, string description)
+        {
+            string name = string.IsNullOrEmpty(description) ? "<未命名类型>" : description;
+
+            if (info.Palette == null || info.Palette.Length == 0 || info.Palette.Length > 256)
+            {
+                string length = info.Palette == null ? "null" : info.Palette.Length.ToString();
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 的调色板长度必须在 1..256，实际为 {length}。");
+            }
+
+            if (float.IsNaN(info.Density) || float.IsInfinity(info.Density))
+            {
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 的 Density 必须是有限值，实际为 {info.Density}。");
+            }
+
+            if (info.Tags == ParticleTags.None)
+            {
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 必须至少带一个类别标签（Solid / Liquid / Gas）：" +
+                    "None 的 rank 为 0，会被任何粒子置换、且置换不了任何东西，等同于空气。");
+            }
+        }
+
+        private static ParticleTypeInfo RequireValidInfo(IParticleType behaviour)
         {
             if (behaviour == null)
             {
@@ -51,14 +120,21 @@ namespace TapTap2026.Simulation
             }
 
             ParticleTypeInfo info = behaviour.Info;
-            ValidateInfo(behaviour, info);
+            ValidateTypeInfo(info, Describe(behaviour, info));
+            return info;
+        }
 
-            if (_count >= MaxTypeCount)
+        private static void EnsureRoom(int additional)
+        {
+            if (_count + additional > MaxTypeCount)
             {
                 throw new InvalidOperationException(
-                    $"[ParticleRegistry] 类型数量已达上限 {MaxTypeCount}，无法注册 {Describe(behaviour, info)}。");
+                    $"[ParticleRegistry] 类型数量将超过上限 {MaxTypeCount}（当前 {_count}，本次 +{additional}）。");
             }
+        }
 
+        private static ushort Commit(IParticleType behaviour, ParticleTypeInfo info)
+        {
             ushort id = (ushort)(_count + 1);
             var type = new ParticleType(id, info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
 
@@ -66,22 +142,6 @@ namespace TapTap2026.Simulation
             _types[id] = type;
             _count = id;
             return id;
-        }
-
-        private static void ValidateInfo(IParticleType behaviour, ParticleTypeInfo info)
-        {
-            if (info.Palette == null || info.Palette.Length == 0 || info.Palette.Length > 256)
-            {
-                string length = info.Palette == null ? "null" : info.Palette.Length.ToString();
-                throw new InvalidOperationException(
-                    $"[ParticleRegistry] {Describe(behaviour, info)} 的调色板长度必须在 1..256，实际为 {length}。");
-            }
-
-            if (float.IsNaN(info.Density) || float.IsInfinity(info.Density))
-            {
-                throw new InvalidOperationException(
-                    $"[ParticleRegistry] {Describe(behaviour, info)} 的 Density 必须是有限值，实际为 {info.Density}。");
-            }
         }
 
         private static string Describe(IParticleType behaviour, ParticleTypeInfo info)

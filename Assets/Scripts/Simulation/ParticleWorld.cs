@@ -60,6 +60,25 @@ namespace TapTap2026.Simulation
                 throw new ArgumentException("类型表长度至少为 1，且下标 0（空气）必须为 null。", nameof(types));
             }
 
+            // 自定义表同样要过注册表那套校验：否则空调色板会让 Set 抛 DivideByZero、或让渲染层越界。
+            for (int i = 1; i < types.Length; i++)
+            {
+                ParticleType entry = types[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    ParticleRegistry.ValidateTypeInfo(entry.Info, entry.Info.DebugName);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    throw new ArgumentException($"types[{i}] 非法：{exception.Message}", nameof(types), exception);
+                }
+            }
+
             _width = width;
             _height = height;
             _types = types;
@@ -300,27 +319,35 @@ namespace TapTap2026.Simulation
             int height = _height;
             bool reversed = (_tick & 1) != 0;
 
-            for (int y = height - 1; y >= 0; y--)
+            try
             {
-                int rowBase = y * width;
-                if (reversed)
+                for (int y = height - 1; y >= 0; y--)
                 {
-                    for (int x = width - 1; x >= 0; x--)
+                    int rowBase = y * width;
+                    if (reversed)
                     {
-                        ProcessCell(x, y, rowBase + x, stamp, cells, types);
+                        for (int x = width - 1; x >= 0; x--)
+                        {
+                            ProcessCell(x, y, rowBase + x, stamp, cells, types);
+                        }
+                    }
+                    else
+                    {
+                        for (int x = 0; x < width; x++)
+                        {
+                            ProcessCell(x, y, rowBase + x, stamp, cells, types);
+                        }
                     }
                 }
-                else
-                {
-                    for (int x = 0; x < width; x++)
-                    {
-                        ProcessCell(x, y, rowBase + x, stamp, cells, types);
-                    }
-                }
-            }
 
-            _tick++;
-            _stamp = OutsideStamp;
+                _tick++;
+            }
+            finally
+            {
+                // 某个 OnUpdate 抛异常时 _tick 未自增，此处按「旧 tick」恢复写入标记，
+                // 使异常后新建的粒子仍会被下一次 Step 处理；正常路径则按自增后的 tick 恢复。
+                _stamp = OutsideStamp;
+            }
         }
 
         private void ProcessCell(int x, int y, int index, byte stamp, Cell[] cells, ParticleType[] types)

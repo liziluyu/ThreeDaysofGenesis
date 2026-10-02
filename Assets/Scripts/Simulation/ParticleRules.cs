@@ -6,6 +6,18 @@ namespace TapTap2026.Simulation
     /// </summary>
     public static class ParticleRules
     {
+        /// <summary>空气的 rank。</summary>
+        public const int AirRank = 0;
+
+        /// <summary>气体的 rank。</summary>
+        public const int GasRank = 1;
+
+        /// <summary>液体的 rank。</summary>
+        public const int LiquidRank = 2;
+
+        /// <summary>固体的 rank。固体不得与同类互相穿行（见 <see cref="TryFlowHorizontal"/>）。</summary>
+        public const int SolidRank = 3;
+
         /// <summary>
         /// 类别标签的轻重次序：<c>Solid(3) &gt; Liquid(2) &gt; Gas(1) &gt; 空气(0)</c>。
         /// 一个字节能带多个标签时取最高的一个。
@@ -14,20 +26,20 @@ namespace TapTap2026.Simulation
         {
             if ((tags & ParticleTags.Solid) != 0)
             {
-                return 3;
+                return SolidRank;
             }
 
             if ((tags & ParticleTags.Liquid) != 0)
             {
-                return 2;
+                return LiquidRank;
             }
 
             if ((tags & ParticleTags.Gas) != 0)
             {
-                return 1;
+                return GasRank;
             }
 
-            return 0;
+            return AirRank;
         }
 
         /// <summary>(x,y) 上的粒子是否带 <see cref="ParticleTags.Solid"/> 标签。越界与空气均为 false。</summary>
@@ -55,6 +67,13 @@ namespace TapTap2026.Simulation
         /// </summary>
         public static bool CanDisplace(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
+            // 越界的目标格不能被写入。GetCell 把越界当空气，若不显式拒绝，本方法会对越界返回 true，
+            // 调用方以为「能移动」，随后的 Swap/Set 却静默失败，粒子白卡一 tick。
+            if (!world.IsInBounds(toX, toY))
+            {
+                return false;
+            }
+
             ushort otherId = world.GetCell(toX, toY).typeId;
             if (otherId == ParticleRegistry.AirTypeId)
             {
@@ -159,7 +178,11 @@ namespace TapTap2026.Simulation
             return false;
         }
 
-        /// <summary>流体能否沿本行「穿过」这一格继续向外流：空气、同类（同 rank）以及更轻的格可以；静态格与更重的格不行。</summary>
+        /// <summary>
+        /// 「穿过」判定：空气、更轻的格、以及同 rank 的格可以；静态格与更重的格不行。
+        /// 同 rank 只对**流体**（Liquid / Gas）放行——固体穿过同类固体等于凭空钻过去，
+        /// 被穿过的格子原地不动，会破坏「同类互不置换 ⇒ 沙堆成形」的直觉。
+        /// </summary>
         private static bool CanFlowThrough(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
             ushort otherId = world.GetCell(toX, toY).typeId;
@@ -182,7 +205,18 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            return TagRank(other.Info.Tags) <= TagRank(self.Info.Tags);
+            ParticleTags selfTags = self.Info.Tags;
+            int selfRank = TagRank(selfTags);
+            int otherRank = TagRank(other.Info.Tags);
+
+            if (otherRank < selfRank)
+            {
+                return true;
+            }
+
+            // 同 rank 的「穿行」只对流体（液/气）开放：固体不得横向钻过同类固体，
+            // 否则会绕过「同类互不置换」，让固体穿过本该挡住它的同伴。
+            return otherRank == selfRank && (selfTags & ParticleTags.Solid) == 0;
         }
     }
 }
