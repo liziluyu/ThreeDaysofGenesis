@@ -22,7 +22,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |---|---|
 |`Assets/Scenes/SampleScene.unity`|唯一的场景；唯一启用的 build 场景。|
 |`Assets/Scripts/Simulation/`|模拟内核 + 粒子类型（`Particles/`）。`TapTap2026.Simulation.asmdef`。|
-|`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 搭容器、`ParticleEditor` 左键刷当前粒子、右键切换类型、鼠标旁显示当前类型）。|
+|`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 显式 `Reseed()` 搭演示容器、`ParticleEditor` 左键刷当前粒子、滚轮调半径 1..10、右键切换类型、鼠标旁显示当前类型与半径）。|
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
 |`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
 |`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用）。|

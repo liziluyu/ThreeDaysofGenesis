@@ -393,6 +393,7 @@ MonoBehaviour:
   _driver: {fileID: 1926363750}
   _renderer: {fileID: 1926363751}
   _camera: {fileID: 0}
+  _brushRadius: 3
   _drawHud: 1
 --- !u!114 &1926363750
 MonoBehaviour:
