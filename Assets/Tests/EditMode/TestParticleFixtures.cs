@@ -259,31 +259,7 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>完全靠粘性（摩擦度 0、粘性 1）的固体：旁边有固体邻居就绝不斜滑，孤立时按 1:1 滑落。</summary>
-    internal sealed class TestCohesionParticle : IParticleType
-    {
-        internal static readonly Color32[] Palette = { new Color32(60, 90, 120, 255) };
-
-        public ParticleTypeInfo Info
-        {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 3f, true, false, 0, 0f, 1f, Palette, "TestCohesionParticle"); }
-        }
-
-        public void OnUpdate(ParticleWorld world, int x, int y)
-        {
-            ParticleRules.StepSolid(world, x, y);
-        }
-
-        public void OnSpawn(ParticleWorld world, int x, int y)
-        {
-        }
-
-        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
-        {
-        }
-    }
-
-    /// <summary>摩擦度 / 粘性可调的固体（走 <see cref="ParticleRules.StepSolid"/>），用于验证安息角随两个参数变化。</summary>
+    /// <summary>摩擦度 / 粘性可调的固体（走 <see cref="ParticleRules.StepSolid"/>），用于验证安息角与尖顶形状随参数变化。</summary>
     internal sealed class TestTunableSolidParticle : IParticleType
     {
         internal static readonly Color32[] Palette = { new Color32(90, 90, 90, 255) };
@@ -374,7 +350,7 @@ namespace TapTap2026.Tests
         internal const ushort SolidFlowId = 5;
         internal const ushort ThrowerId = 6;
         internal const ushort FrictionOneId = 7;
-        internal const ushort CohesionId = 8;
+        internal const ushort TunableId = 8;
 
         internal static readonly TestGrainParticle Grain = new TestGrainParticle();
         internal static readonly TestLiquidParticle Liquid = new TestLiquidParticle();
@@ -400,7 +376,7 @@ namespace TapTap2026.Tests
                         Bind(SolidFlowId, new TestSolidFlowParticle()),
                         Bind(ThrowerId, new TestThrowerParticle()),
                         Bind(FrictionOneId, new TestFrictionOneSolidParticle()),
-                        Bind(CohesionId, new TestCohesionParticle()),
+                        Bind(TunableId, new TestTunableSolidParticle(0f, 1f)),
                     };
                 }
 

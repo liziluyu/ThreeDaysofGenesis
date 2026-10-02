@@ -136,14 +136,12 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 固体粒子的标准运动，由本格的 <see cref="ParticleTypeInfo.Friction"/> 与
-        /// <see cref="ParticleTypeInfo.Stickiness"/> 共同驱动。
-        /// 正下可进入则下落一格（固体 rank 更高，因此能沉穿液体 / 气体）；正下被挡住时，
-        /// 摩擦度决定安息角，粘性在「斜滑方向的反侧同一行有固体邻居」时把安息角抬得更高。
+        /// 固体粒子的标准运动：正下可进入则下落一格；正下被挡住时按<b>摩擦度</b>决定的安息角斜滑；
+        /// 都动不了时，<b>粘性</b>材料会被磨平孤立的尖顶（见 <see cref="TryBluntCrest"/>）。
         /// </summary>
         /// <remarks>
         /// 每个固体类型的 <c>OnUpdate</c> 都应当是这一行；两个参数都从注册表读，类型无需自己抄常量。
-        /// 两条规则的区别：摩擦度是材料自身的静摩擦（孤立一颗也生效），粘性靠邻居（旁边有固体才生效）。
+        /// 分工：摩擦度定侧翼坡度（材料自身的静摩擦，孤立一颗也生效），粘性定尖顶形状（靠邻域形态，糊状物站不住尖点）。
         /// </remarks>
         public static void StepSolid(ParticleWorld world, int x, int y)
         {
@@ -158,73 +156,89 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            TryCohesiveFall(world, x, y, self.Info.Friction, self.Info.Stickiness);
+            int clearance = SlideClearance(self.Info.Friction);
+            if (clearance > 0 && TryDiagonalFall(world, x, y, clearance))
+            {
+                return;
+            }
+
+            TryBluntCrest(world, x, y, self.Info.Stickiness);
         }
 
         /// <summary>
-        /// 正下方被挡住时尝试斜落，左右顺序随机以消除方向偏置。
-        /// <paramref name="stickiness"/> 只在「斜滑所朝方向的反侧同一行上有固体邻居」时计入——
-        /// 粒子要**旁边有粒子**才粘得住；反侧无固体（孤立粒子）时完全按 <paramref name="friction"/> 滑落。
+        /// 尖顶不稳定：自己上方与同排两侧都是空（也就是一根 1 格宽的孤立尖点）时，
+        /// 以 <paramref name="stickiness"/> 的概率向随机一侧倒下，把尖顶磨成 2~4 格宽的小平顶。
         /// </summary>
-        /// <remarks>固体请用 <see cref="StepSolid"/>（它负责从注册表取这两个参数并处理直落）。</remarks>
-        public static bool TryCohesiveFall(
-            ParticleWorld world, int x, int y, float friction, float stickiness)
+        /// <remarks>
+        /// <para>这是「糊状物站不住尖点」的局部实现：<b>只磨 1 格宽的尖</b>。坡面上的粒子（同排一侧是上坡、另一侧是空）
+        /// 与平台内部的粒子（同排两侧都有同伴）都不满足判据，因此侧翼完全由摩擦度决定，整座堆也不会被摊平。</para>
+        /// <para>落点必须有支撑（<see cref="ParticleWorld.IsAir"/> 为 false，世界底面算支撑）才倒；
+        /// 没支撑说明那是下落而不是倒塌，交给 <see cref="TryFall"/> 处理，不在这里制造悬空格。</para>
+        /// <para><paramref name="stickiness"/> 为 0 的类型一次额外邻居读都不做（先判 0 再读邻域），
+        /// 因此非粘性固体的行为与纯摩擦度完全一致。粘性为 0..1 的每 tick 倒塌概率，越大越快，稳态顶盖宽度基本一致。</para>
+        /// </remarks>
+        /// <returns>是否发生了一次倒塌（调用方应立刻 return）。</returns>
+        public static bool TryBluntCrest(ParticleWorld world, int x, int y, float stickiness)
         {
+            if (stickiness <= 0f || !world.IsAir(x, y + 1))
+            {
+                return false;
+            }
+
+            if (!world.IsAir(x - 1, y) || !world.IsAir(x + 1, y))
+            {
+                return false;
+            }
+
+            if (world.NextUInt() % 100u >= (uint)(stickiness * 100f))
+            {
+                return false;
+            }
+
             bool leftFirst = (world.NextUInt() & 1u) == 0u;
             return leftFirst
-                ? TrySlope(world, x, y, -1, friction, stickiness) || TrySlope(world, x, y, 1, friction, stickiness)
-                : TrySlope(world, x, y, 1, friction, stickiness) || TrySlope(world, x, y, -1, friction, stickiness);
+                ? TryToppleSide(world, x, y, -1) || TryToppleSide(world, x, y, 1)
+                : TryToppleSide(world, x, y, 1) || TryToppleSide(world, x, y, -1);
         }
 
-        /// <summary>
-        /// 单侧斜滑：净空按 <see cref="SlideClearance(float, float, bool)"/> 算。
-        /// 「粘住」的判据是斜滑**反侧同一行**的格子（也就是粒子正离开的那个侧邻）带 Solid 标签——
-        /// 粘性为 0 的类型连这一次邻居查询都不做，因此行为与纯摩擦度完全一致。
-        /// </summary>
-        private static bool TrySlope(
-            ParticleWorld world, int x, int y, int deltaX, float friction, float stickiness)
+        /// <summary>向 <paramref name="deltaX"/> 一侧倒下：同位侧邻必须是空、且落点下方有支撑（世界底面算支撑）。</summary>
+        private static bool TryToppleSide(ParticleWorld world, int x, int y, int deltaX)
         {
-            bool clinging = stickiness > 0f && IsSolid(world, x - deltaX, y);
-            int clearance = SlideClearance(friction, stickiness, clinging);
-            return clearance > 0 && TrySlide(world, x, y, deltaX, clearance);
+            int targetX = x + deltaX;
+            if (!world.IsAir(targetX, y))
+            {
+                return false;
+            }
+
+            // 越界下方 = 世界底面 = 支撑；否则必须是实心格，避免制造悬空粒子。
+            if (world.IsInBounds(targetX, y - 1) && world.IsAir(targetX, y - 1))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, targetX, y);
+            return true;
         }
 
-        /// <summary>纯摩擦度的斜落净空。等价于 <c>SlideClearance(friction, 0f, false)</c>。</summary>
+        /// <summary>纯摩擦度的斜落净空，也就是这类材料的安息角档位。</summary>
         /// <returns>
         /// <c>0</c> 表示完全不斜滑（<paramref name="friction"/> &gt;= 1）；否则 &gt;= 1。
         /// 0 → 1（45°，像沙）、0.5 → 2（2:1）、0.9 → 10（10:1，像石头）；越接近 1 越陡。
         /// </returns>
         public static int SlideClearance(float friction)
         {
-            return SlideClearance(friction, 0f, false);
-        }
-
-        /// <summary>
-        /// 摩擦度与粘性共同决定斜落所需的连续净空格数，也就是安息角斜率（rise/run）：
-        /// 摩擦度贡献 <c>1 / (1 - friction)</c>，粘住在邻居上时再叠加粘性贡献
-        /// <c>1 / (1 - stickiness) - 1</c>（<c>stickiness = 0</c> 时为 0，故不改变纯摩擦度的结果）。
-        /// </summary>
-        /// <param name="clinging">
-        /// 「斜滑反侧同一行上有固体邻居」。为 false 时 <paramref name="stickiness"/> 完全不参与。
-        /// </param>
-        /// <returns>
-        /// <c>0</c> = 永不斜滑（<paramref name="friction"/> &gt;= 1，或粘住时 <paramref name="stickiness"/> &gt;= 1）；
-        /// 否则 &gt;= 1，四舍五入到整数格。
-        /// </returns>
-        public static int SlideClearance(float friction, float stickiness, bool clinging)
-        {
-            if (friction >= 1f || (clinging && stickiness >= 1f))
+            if (friction >= 1f)
             {
                 return 0;
             }
 
-            // 用 double 折算并 +0.5 取整：0.9f 在 float 里略小于 0.9，1/(1-0.9f) 才刚好落在 10 这一档。
-            double slope = 1.0 / (1.0 - friction);
-            if (clinging)
+            if (friction <= 0f)
             {
-                slope += 1.0 / (1.0 - stickiness) - 1.0;
+                return 1;
             }
 
+            // 用 double 折算并 +0.5 取整：0.9f 在 float 里略小于 0.9，1/(1-0.9f) 才刚好落在 10 这一档。
+            double slope = 1.0 / (1.0 - friction);
             int clearance = (int)(slope + 0.5);
             return clearance < 1 ? 1 : clearance;
         }

@@ -133,79 +133,69 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void SlideClearance_StickinessOnlyAddsSlopeWhenClinging()
+        public void BluntCrest_TopplesASingleColumnSpike()
         {
-            // 纯摩擦度：与单参重载一致，粘性不参与。
-            Assert.AreEqual(1, ParticleRules.SlideClearance(0f, 0f, false));
-            Assert.AreEqual(1, ParticleRules.SlideClearance(0f, 0.9f, false), "反侧无固体邻居时粘性不得生效");
-            Assert.AreEqual(10, ParticleRules.SlideClearance(0.9f, 0.9f, false));
+            // (2,3) 是 1 格宽的尖点：上方空、同排两侧空，两侧落点 (1,2)/(3,2) 都有支撑。
+            // 粘性 1 → 立刻倒下（两侧之一）；粘性 0 → 一动都不动（干散材料站得住尖点）。
+            ParticleWorld sticky = SpikeCradle();
+            ParticleWorld dry = SpikeCradle();
 
-            // 粘住邻居：粘性把安息角斜率往上叠（1/(1-σ) - 1 档）。
-            Assert.AreEqual(1, ParticleRules.SlideClearance(0f, 0f, true), "粘性 0 即使粘住也不改变斜率");
-            Assert.AreEqual(2, ParticleRules.SlideClearance(0f, 0.5f, true), "沙 + 粘性 0.5 ≈ 2:1");
-            Assert.AreEqual(3, ParticleRules.SlideClearance(0.5f, 0.5f, true), "摩擦 0.5 + 粘性 0.5 = 3:1");
-            Assert.AreEqual(10, ParticleRules.SlideClearance(0f, 0.9f, true));
+            Assert.IsTrue(ParticleRules.TryBluntCrest(sticky, 2, 3, 1f), "粘性 1 的孤立尖顶应当被推倒");
+            Assert.IsTrue(sticky.IsAir(2, 3), "尖顶倒下后本格应变空");
+            Assert.IsTrue(
+                sticky.GetCell(1, 3).typeId == TestTypes.TunableId ||
+                sticky.GetCell(3, 3).typeId == TestTypes.TunableId,
+                "尖顶应倒向两侧之一，而不是消失");
 
-            // 粘性 1 = 粘住就永不斜滑；但没得粘时仍按摩擦度滑。
-            Assert.AreEqual(0, ParticleRules.SlideClearance(0f, 1f, true));
-            Assert.AreEqual(1, ParticleRules.SlideClearance(0f, 1f, false));
-
-            // 摩擦度 1 与粘性无关：任何组合都静止。
-            Assert.AreEqual(0, ParticleRules.SlideClearance(1f, 0f, true));
-            Assert.AreEqual(0, ParticleRules.SlideClearance(1f, 0.5f, true));
-
-            // 粘性越高越陡（单调），不会出现「更粘反而更松」。
-            int previous = 0;
-            for (int step = 0; step < 10; step++)
-            {
-                int clearance = ParticleRules.SlideClearance(0f, step / 10f, true);
-                Assert.GreaterOrEqual(clearance, previous, $"粘性 {step / 10f} 的净空比更低的粘性还小");
-                previous = clearance;
-            }
+            Assert.IsFalse(ParticleRules.TryBluntCrest(dry, 2, 3, 0f), "粘性 0 不得推倒尖顶");
+            Assert.AreEqual((int)TestTypes.TunableId, (int)dry.GetCell(2, 3).typeId, "粘性 0 的尖顶必须留在原地");
         }
 
         [Test]
-        public void Cohesion_ClingsToLateralNeighbour_ButAnIsolatedGrainStillSlides()
+        public void BluntCrest_IgnoresFlanksPlateausAndUnsupportedLandings()
         {
-            // 同一个柱顶局面（静态柱顶到 y=2，粒子坐 (2,3)，正下被挡，左右两条斜下都是 1 格落差），
-            // 唯一变量是「同排左右有没有固体邻居」。粘性 1 的意义就是「旁边有粒子才粘得住」：
-            // 有邻居 → 两个方向都粘住，永不滚落；没有 → 按摩擦度 0 的 1:1 滑落。
-            ParticleWorld clinging = CohesionCradle(withSideNeighbours: true);
-            ParticleWorld isolated = CohesionCradle(withSideNeighbours: false);
+            // 坡面上的粒子（同排一侧是上坡、一侧是空）不是尖点：两侧都空才算。
+            ParticleWorld flank = NewWorld();
+            flank.Set(2, 0, TestTypes.StaticId);
+            flank.Set(1, 0, TestTypes.StaticId);
+            flank.Set(1, 1, TestTypes.StaticId);
+            flank.Set(1, 2, TestTypes.StaticId);
+            flank.Set(2, 1, TestTypes.TunableId);
+            Assert.IsFalse(ParticleRules.TryBluntCrest(flank, 2, 1, 1f), "坡面上的粒子不得被当成尖点推倒");
 
-            for (int i = 0; i < 20; i++)
-            {
-                clinging.Step();
-                isolated.Step();
-            }
+            // 平台内部（同排两侧都有同伴）也不是尖点。
+            ParticleWorld plateau = NewWorld();
+            plateau.Set(2, 0, TestTypes.StaticId);
+            plateau.Set(1, 1, TestTypes.TunableId);
+            plateau.Set(2, 1, TestTypes.TunableId);
+            plateau.Set(3, 1, TestTypes.TunableId);
+            Assert.IsFalse(ParticleRules.TryBluntCrest(plateau, 2, 1, 1f), "平台内部的粒子不得被推倒");
 
-            Assert.AreEqual((int)TestTypes.CohesionId, (int)clinging.GetCell(2, 3).typeId, "同排两侧都有固体邻居，粘性 1 应粘住不滚");
-            Assert.IsTrue(clinging.IsAir(1, 2), "粘住的粒子不得滑到 (1,2)");
-            Assert.IsTrue(clinging.IsAir(3, 2), "粘住的粒子不得滑到 (3,2)");
-
-            Assert.IsTrue(isolated.IsAir(2, 3), "孤立粒子同排无固体邻居，粘性不生效，应按摩擦度滑落");
-            Assert.AreEqual(1, CountType(isolated, TestTypes.CohesionId), "滑落的粒子数量必须守恒");
-            Assert.IsTrue(
-                isolated.GetCell(1, 0).typeId == TestTypes.CohesionId ||
-                isolated.GetCell(3, 0).typeId == TestTypes.CohesionId,
-                "滑落的孤立粒子应停在柱脚旁的地面上");
+            // 尖点但两侧落点下方是空（高塔顶端）：那是下落而不是倒塌，不得制造悬空粒子。
+            ParticleWorld tower = NewWorld();
+            tower.Set(2, 0, TestTypes.StaticId);
+            tower.Set(2, 1, TestTypes.StaticId);
+            tower.Set(2, 2, TestTypes.StaticId);
+            tower.Set(2, 3, TestTypes.StaticId);
+            tower.Set(2, 4, TestTypes.TunableId);
+            Assert.IsFalse(ParticleRules.TryBluntCrest(tower, 2, 4, 1f), "两侧落点下方是空时不得倒过去（会悬空）");
+            Assert.AreEqual((int)TestTypes.TunableId, (int)tower.GetCell(2, 4).typeId, "该粒子必须留在原处");
         }
 
-        /// <summary>粘性测试台：静态柱 (2,0..2) 顶着一颗粘性固体在 (2,3)；可选在 (1,3)/(3,3) 加同排固体邻居。</summary>
-        private static ParticleWorld CohesionCradle(bool withSideNeighbours)
+        /// <summary>尖顶测试台：静态柱 (2,0..2)，顶端 (2,3) 坐一颗可调固体；两侧 (1,3)/(3,3) 是空，但 (1,2)/(3,2) 有支撑。</summary>
+        private static ParticleWorld SpikeCradle()
         {
             ParticleWorld world = NewWorld();
+            world.Set(1, 0, TestTypes.StaticId);
+            world.Set(1, 1, TestTypes.StaticId);
+            world.Set(1, 2, TestTypes.StaticId);
             world.Set(2, 0, TestTypes.StaticId);
             world.Set(2, 1, TestTypes.StaticId);
             world.Set(2, 2, TestTypes.StaticId);
-
-            if (withSideNeighbours)
-            {
-                world.Set(1, 3, TestTypes.StaticId);
-                world.Set(3, 3, TestTypes.StaticId);
-            }
-
-            world.Set(2, 3, TestTypes.CohesionId);
+            world.Set(3, 0, TestTypes.StaticId);
+            world.Set(3, 1, TestTypes.StaticId);
+            world.Set(3, 2, TestTypes.StaticId);
+            world.Set(2, 3, TestTypes.TunableId);
             return world;
         }
 
@@ -595,13 +585,13 @@ namespace TapTap2026.Tests
             Assert.AreEqual(grains, CountType(soil, ProductionTypes.SoilId), "土粒数量必须守恒");
             Assert.AreEqual(grains + width, CountType(stone, ProductionTypes.StoneId), "石块总数必须守恒（石头地板 + 投放的石块）");
 
-            // 安息角斜率 = 堆高 / 半径（= 2·堆高/底宽）：沙 ~1（1:1，45°），土 ~3（摩擦 + 粘性），石头 ~10（10:1，84°）。
+            // 安息角斜率 = 堆高 / 半径（= 2·堆高/底宽）：沙 ~1（1:1，45°），土 ~2（2:1，63°），石头 ~10（10:1，84°）。
             float sandSlope = Slope(sand, ProductionTypes.SandId);
             float soilSlope = Slope(soil, ProductionTypes.SoilId);
             float stoneSlope = Slope(stone, ProductionTypes.StoneId);
 
             Assert.That(stoneSlope, Is.InRange(8.0f, 12.0f), $"石头堆斜率应接近 10（10:1），实际 {stoneSlope:F2}");
-            Assert.Greater(stoneSlope, soilSlope * 2.5f, "石头堆必须明显比土堆（约 3:1）陡");
+            Assert.Greater(stoneSlope, soilSlope * 2.5f, "石头堆必须明显比土堆（2:1）陡");
             Assert.Greater(stoneSlope, sandSlope * 7f, "石头堆必须明显比沙堆（1:1）陡");
 
             // 堆顶必须留在投放行以下：否则投放的石块会直接盖在堆顶（Set 同类型是空操作）而被吞掉，
@@ -622,50 +612,43 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 粘性的用户可见效果：旁边有粒子的堆体因此更陡。
-        /// 同尺寸、同种子、同投放节奏，唯一变量是粘性（摩擦度都为 0）：
-        /// 0 → 1:1（45°）、0.5 → 2:1、0.9 → 10:1。
+        /// 粘性的用户可见效果：侧翼坡度不变（仍由摩擦度决定），但尖顶被磨平——
+        /// 顶盖从 1 格宽变成 3~4 格宽的小平顶。同尺寸、同种子、同投放节奏，唯一变量是粘性。
         /// </summary>
         [Test]
-        public void Stickiness_RaisesTheReposeSlopeOfAPile()
+        public void Stickiness_BluntsTheApexButKeepsTheFrictionSlope()
         {
             const int width = 81;
             const int height = 90;
             const int grains = 600;
 
-            ParticleWorld loose = DropTunablePile(width, height, grains, 0f, 0f);
-            ParticleWorld sticky = DropTunablePile(width, height, grains, 0f, 0.5f);
-            ParticleWorld verySticky = DropTunablePile(width, height, grains, 0f, 0.9f);
+            ParticleWorld dry = DropTunablePile(width, height, grains, 0.5f, 0f);
+            ParticleWorld paste = DropTunablePile(width, height, grains, 0.5f, 1f);
 
             // 地板是石头（id 1），堆料是可调固体（TunableId）：守恒只看堆料。
-            Assert.AreEqual(grains, CountType(loose, TunableId), "颗粒数量必须守恒");
-            Assert.AreEqual(grains, CountType(sticky, TunableId), "颗粒数量必须守恒");
-            Assert.AreEqual(grains, CountType(verySticky, TunableId), "颗粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(dry, TunableId), "颗粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(paste, TunableId), "颗粒数量必须守恒");
 
-            float looseSlope = Slope(loose, TunableId);
-            float stickySlope = Slope(sticky, TunableId);
-            float veryStickySlope = Slope(verySticky, TunableId);
+            // 1) 尖顶被磨平：粘性堆的顶盖明显更宽（1 格尖刺 → 3~4 格小平顶）。
+            Assert.LessOrEqual(TopWidth(dry, TunableId), 1, "无粘性的尖顶应保持 1 格宽");
+            Assert.GreaterOrEqual(TopWidth(paste, TunableId), 3, "粘性必须把尖顶磨成小平顶");
 
-            Assert.That(looseSlope, Is.InRange(0.7f, 1.2f), $"无粘性堆应接近 1:1（45°），实际 {looseSlope:F2}");
-            Assert.That(stickySlope, Is.InRange(1.6f, 2.4f), $"粘性 0.5 的堆应接近 2:1，实际 {stickySlope:F2}");
-            Assert.That(veryStickySlope, Is.InRange(8.0f, 12.0f), $"粘性 0.9 的堆应接近 10:1，实际 {veryStickySlope:F2}");
-
-            Assert.Greater(stickySlope, looseSlope * 1.5f, "粘性必须明显抬高安息角");
-            Assert.Greater(veryStickySlope, stickySlope * 3f, "粘性越高堆体越陡");
+            // 2) 侧翼坡度不被粘性改变：两者都由摩擦度 0.5 的 2:1 决定。
+            Assert.That(Slope(paste, TunableId), Is.InRange(1.6f, 2.4f), "粘性不得改变侧翼坡度（应仍是 2:1）");
 
             // 堆顶必须留在投放行以下，否则投放的颗粒会直接盖在堆顶（Set 同类型是空操作）而被吞掉。
-            Assert.Less(PileHeight(verySticky, TunableId), height - 1, "堆顶触到投放行了，世界太矮");
+            Assert.Less(PileHeight(paste, TunableId), height - 1, "堆顶触到投放行了，世界太矮");
 
-            // 已收敛：再跑 100 tick 逐格不变（粘性不会让堆体永远抖动）。
-            var snapshot = (Cell[])verySticky.Cells.Clone();
+            // 3) 已收敛：再跑 100 tick 逐格不变（磨平尖顶不是永动机）。
+            var snapshot = (Cell[])paste.Cells.Clone();
             for (int i = 0; i < 100; i++)
             {
-                verySticky.Step();
+                paste.Step();
             }
 
-            for (int i = 0; i < verySticky.CellCount; i++)
+            for (int i = 0; i < paste.CellCount; i++)
             {
-                Assert.AreEqual((int)snapshot[i].typeId, (int)verySticky.Cells[i].typeId, "下标 " + i + " 的粘性堆仍在移动");
+                Assert.AreEqual((int)snapshot[i].typeId, (int)paste.Cells[i].typeId, "下标 " + i + " 的粘性堆仍在移动");
             }
         }
 
@@ -790,11 +773,12 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 土堆比沙堆陡，而且比**同摩擦度、但没粘性**的堆还要陡——那条差额就是粘性。
+        /// 生产土的可见形状：<b>侧翼与同摩擦度无粘性的对照完全一致（都是 2:1）</b>，差别只在尖顶——
+        /// 土带粘性 ⇒ 平头；对照 σ=0 ⇒ 尖顶。这就是「粘性不改坡度、只磨尖」这条契约的端到端证据。
         /// 同尺寸、同种子、同 120 颗逐颗投放、同石头地板，唯一变量是材料参数。
         /// </summary>
         [Test]
-        public void SoilPile_StickinessRaisesItsReposeSlopeAboveItsFriction()
+        public void SoilPile_HasTheSameSlopeAsItsFrictionButABluntApex()
         {
             const int width = 41;
             const int height = 40;
@@ -807,17 +791,18 @@ namespace TapTap2026.Tests
             Assert.AreEqual(grains, CountType(sand, ProductionTypes.SandId), "沙粒数量必须守恒");
             Assert.AreEqual(grains, CountType(soil, ProductionTypes.SoilId), "土粒数量必须守恒");
 
-            // 安息角斜率 = 堆高 / 半底宽：沙 1:1（45°）；摩擦度 0.5 单独给 2:1；粘性 0.5 再抬到约 3:1。
             float sandSlope = Slope(sand, ProductionTypes.SandId);
             float soilSlope = Slope(soil, ProductionTypes.SoilId);
             float frictionOnlySlope = Slope(frictionOnly, TunableId);
 
             Assert.That(sandSlope, Is.InRange(0.7f, 1.2f), $"沙堆斜率应接近 1，实际 {sandSlope:F2}");
-            Assert.That(frictionOnlySlope, Is.InRange(1.6f, 2.4f), $"同摩擦度无粘性的堆应接近 2:1，实际 {frictionOnlySlope:F2}");
-            Assert.That(soilSlope, Is.InRange(2.5f, 3.2f), $"土堆斜率应接近 3（2:1 的摩擦 + 粘性），实际 {soilSlope:F2}");
+            Assert.That(soilSlope, Is.InRange(1.5f, 2.5f), $"土堆斜率应由摩擦度 0.5 决定（2:1），实际 {soilSlope:F2}");
+            Assert.That(frictionOnlySlope, Is.InRange(1.5f, 2.5f), $"同摩擦度无粘性的堆应接近 2:1，实际 {frictionOnlySlope:F2}");
+            Assert.Greater(soilSlope, sandSlope * 1.6f, "土堆必须明显比沙堆陡");
 
-            Assert.Greater(soilSlope, frictionOnlySlope * 1.25f, "粘性必须把土堆抬得明显比同摩擦度更陡");
-            Assert.Greater(soilSlope, sandSlope * 2.2f, "土堆必须明显比沙堆陡");
+            // 粘性只作用在尖顶：土（σ=0.5）的顶盖比 1 格宽，对照（σ=0）保持 1 格尖顶。
+            Assert.GreaterOrEqual(TopWidth(soil, ProductionTypes.SoilId), 2, "土带粘性，尖顶应被磨平");
+            Assert.LessOrEqual(TopWidth(frictionOnly, TunableId), 1, "σ=0 的对照应保持尖顶");
 
             // 已收敛：再跑 100 tick 逐格不变。
             var snapshot = (Cell[])soil.Cells.Clone();
@@ -858,6 +843,53 @@ namespace TapTap2026.Tests
             }
 
             return count;
+        }
+
+        /// <summary>某列里该类型的格数（= 堆在那一列的厚度）。</summary>
+        private static int ColumnHeight(ParticleWorld world, ushort typeId, int x)
+        {
+            int height = 0;
+            for (int y = 1; y < world.Height; y++)
+            {
+                if (world.GetCell(x, y).typeId == typeId)
+                {
+                    height++;
+                }
+            }
+
+            return height;
+        }
+
+        /// <summary>
+        /// 顶盖宽度：厚度 ≥ 峰高-1 的列数。1 格宽 = 尖顶（干散材料），3~4 格 = 被粘性磨平的小平顶。
+        /// </summary>
+        private static int TopWidth(ParticleWorld world, ushort typeId)
+        {
+            int peak = 0;
+            for (int x = 0; x < world.Width; x++)
+            {
+                int height = ColumnHeight(world, typeId, x);
+                if (height > peak)
+                {
+                    peak = height;
+                }
+            }
+
+            if (peak < 2)
+            {
+                return 0;
+            }
+
+            int width = 0;
+            for (int x = 0; x < world.Width; x++)
+            {
+                if (ColumnHeight(world, typeId, x) >= peak - 1)
+                {
+                    width++;
+                }
+            }
+
+            return width;
         }
 
         /// <summary>在石头地板上逐颗投放同一种颗粒，跑到收敛；返回结果世界。</summary>
