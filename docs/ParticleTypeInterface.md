@@ -66,7 +66,7 @@ public struct Cell
 
 - 尺寸 **4 字节**，无填充。
 - `Array.Sort` 式的大数组访存因此是每格 4 字节；网格 1024×512 = 512K 格 = **2 MB** CPU 缓冲，同尺寸 `RGBA32` 纹理 = 2 MB。
-- `typeId` 为 `ushort`：最多 65535 个类型（0 被空气占用）。
+- `typeId` 为 `ushort`：最多 65534 个类型（0 被空气占用；实现上限 `ParticleRegistry.MaxTypeCount = ushort.MaxValue - 1`）。
 - `shade` 为 `byte`：调色板最多 256 色。
 
 ### flags 位分配（`CellFlags.cs` 集中定义，禁止散落魔法数字）
@@ -117,7 +117,7 @@ public enum ParticleTags : byte
 // Assets/Scripts/Simulation/ParticleTypeInfo.cs —— 作者侧结构（只在注册时读一次）
 public readonly struct ParticleTypeInfo
 {
-    public readonly ParticleTags Tags;           // 类别标签，至少一个（Solid / Liquid / Gas）
+    public readonly ParticleTags Tags;           // 类别标签，至少带一个（Solid / Liquid / Gas；None 会被注册校验拒绝）
     public readonly float    Density;            // 密度；内置规则不读，留给同类内再排序的类型自实现
     public readonly bool     AffectedByGravity;  // 是否受重力
     public readonly bool     IsStatic;           // 静态：扫描直接跳过，不进入 OnUpdate
@@ -138,13 +138,15 @@ public readonly struct ParticleTypeInfo
 | `Gas` | 1 | 气体：可被固/液置换，通常自行上升 |
 | （空气） | 0 | `typeId == 0`，不属于任何类型 |
 
+一个字节允许同时带多个标签（`[Flags]`）；`TagRank` 取其中最高的类别。
+
 **置换规则**：`rank(自己) > rank(目标)` 才能换过去。于是——
 
 - 固体只会被**同为固体**的粒子挡住：`TryFall` 撞到 Solid 就返回 false。
 - 同类之间 `rank` 相等，互不置换 ⇒ 沙能堆、石头能垒。
 - 固体落进液体/气体时 rank 更高 ⇒ 下沉穿过。
 
-`ParticleRules` 提供 `TagRank(ParticleTags)` 与 `IsSolid(world, x, y)` 两个原语，类型代码直接调用；`CanDisplace` / `CanFlowThrough` 已内置上述规则。
+`ParticleRules` 提供 `TagRank(ParticleTags)` 与 `IsSolid(world, x, y)` 两个原语，类型代码直接调用；`CanDisplace` / `CanFlowThrough` 已内置上述规则，并额外拒绝静态格（`IsStatic`）目标。`CanDisplace` 对**越界目标一律返回 false**（否则越界会被当成「空气可进入」，调用方以为能移动、随后的 `Swap` 却静默失败）；同时仍会拒绝静态格目标。
 
 ```csharp
 // Assets/Scripts/Simulation/ParticleType.cs —— 注册表条目（不可变）
@@ -169,7 +171,9 @@ public static class ParticleRegistry
     public const ushort AirTypeId = 0;
     public static int Count { get; }
     public static ParticleType[] Types { get; }    // Types[typeId] 直取，无字典
-    public static ushort Register(IParticleType behaviour);   // 返回分配到的 typeId
+    public static ushort Register(IParticleType behaviour);             // 单个：校验失败不留任何状态
+    public static ushort[] RegisterBatch(params IParticleType[] items); // 批量：先全部校验再统一写入，原子
+    public static void ValidateTypeInfo(ParticleTypeInfo info, string description);   // 自定义类型表复用同一套校验
 }
 ```
 
@@ -177,7 +181,9 @@ public static class ParticleRegistry
 
 - **`typeId` = 注册顺序**，从 1 开始，0 保留给空气。`ParticleRegistration.RegisterAll()` 是**全工程唯一的类型清单**。
 - 用 `ParticleType[]`（引用类型数组）而不是结构体数组：`Types[id].Info.Density` 只做指针寻址，不会每帧拷贝几十字节的结构体。
-- 注册时校验：调色板非空且 ≤256、`Density` 有限、类型数未溢出。违反 = **抛 `InvalidOperationException`**，且校验发生在写入任何状态之前，因此不会留下半注册的注册表（启动期立刻炸掉，优于运行期静默退化）。
+- 注册时校验（`ValidateTypeInfo`）：调色板非空且 ≤256、`Density` 有限、**至少带一个类别标签（`Tags != None`）**、类型数未溢出。违反 = **抛 `InvalidOperationException`**，且校验发生在写入任何状态之前。
+- `ParticleRegistration` 用 `RegisterBatch` 一次性注册：**先全部校验、再统一写入**，任一类型非法则整体不生效，`ParticleIds` 只会在全部成功后才回填——这样就不会出现「前几个类型已注册、后面的 `ParticleIds.Xxx` 仍是 0（空气）」的静默退化。失败后 `RegisterAll()` 的后续调用会继续抛出，不会当作成功。
+- **自定义类型表也要过同一套校验**：`new ParticleWorld(w, h, seed, types)` 会对每个非 null 条目调用 `ValidateTypeInfo`，非法条目直接抛 `ArgumentException`，而不是等到运行期 `Set` 才 DivideByZero。
 - `Types[0]` 恒为 `null`（空气）；数组容量可能大于 `Count + 1`，超出部分是 `null`。`ParticleWorld` 与渲染层对超出范围的 id 一律当作「不存在的类型」跳过。
 - 注册完成后再不修改。单线程读，无需锁。
 - 初始化入口固定在启动点，且域重载安全：
@@ -194,8 +200,8 @@ static void Bootstrap() => RegisterAll();
 public static class ParticleIds
 {
     public const ushort Air = ParticleRegistry.AirTypeId;
-    public static ushort Smoke;     // 由 ParticleRegistration.RegisterAll() 依序回填
-    public static ushort Water;
+    public static ushort Stone;     // 由 ParticleRegistration.RegisterAll() 依序回填
+    public static ushort Sand;
     // 每新增一个类型，这里加一个字段
 }
 ```
@@ -306,6 +312,9 @@ public sealed class ParticleWorld
 }
 ```
 
+> 种子约定：`seed == 0` 会被静默替换为内部默认种子（xorshift32 需要非零状态）。回放/存档请避免使用 0。
+
+
 ### 写操作的钩子与副作用（精确定义）
 
 | 调用 | 目标格原为 | `OnKill` | 新格 `shade` | `OnSpawn` |
@@ -328,7 +337,7 @@ public sealed class ParticleWorld
 
 ### 三条硬规则
 
-1. **世界不做合法性判断。** `Swap` 不会阻止你把石头换走，`Set` 不会阻止你覆盖静态格。是否允许替换（比标签、查 `IsStatic`）由类型逻辑自己决定，这正是 `ParticleRegistry.Types[...]` 暴露在外面的原因。
+1. **世界不做合法性判断。** `Swap` 不会阻止你把石头换走，`Set` 不会阻止你覆盖静态格。是否允许替换（比标签、查 `IsStatic`）由类型逻辑自己决定，这正是 `ParticleRegistry.Types[...]` 暴露在外面的原因。注意：共享原语 `ParticleRules.CanDisplace` / `CanFlowThrough` 为方便起见**内置**了静态格拒绝——它们服务常见情况；确实需要置换静态格的类型可以用裸 `Swap` 自行实现。
 2. **前置判断在调用前完成。** 先用 `IsInBounds` / `IsAir` / `GetCell` 判断，再无条件调用写操作。写操作内部的越界检查只是安全网。
 3. **移动之后立刻返回。** 任何会改变自身坐标的写操作（`Swap` / 覆盖自身的 `Set`）之后，`(x, y)` 与 `world.At(x,y)` 立刻失效。同一次 `OnUpdate` 内禁止继续基于旧坐标操作。一个 `OnUpdate` 只做一次决策 + 至多一次移动。
 
@@ -365,6 +374,7 @@ flowchart LR
 - 空气格与 `IsStatic` 类型**直接跳过**，不进行为调用（静态类型仍会收到 `OnSpawn` / `OnKill`）。
 - 扫描循环在**访问那一刻**从扁平数组读 `typeId` 再取委托，不做跨 tick 缓存。
 - 单线程，主线程。不存在并行扫描。
+- `Step` 用 `try/finally` 恢复写入标记：某个 `OnUpdate` 抛异常时 `_tick` 不自增、`_stamp` 按「旧 tick」恢复，因此异常后新建的粒子仍会在下一次 `Step` 被处理，不会白等一 tick。
 
 ---
 
@@ -439,7 +449,9 @@ if (_stepsSincePresent >= settings.StepsPerPresent) Present();   // 默认 Steps
   - 空气、未注册 id、`null` 槽位一律写背景色；`shade` 越界时回退 `palette[0]`。
   - 这个方法是纯函数、无引擎依赖，因此**可以在 EditMode 测试里直接断言**，不需要 GPU。
 - 目标对象：**1 个 quad**。运行时用代码建一个 4 顶点 mesh（不是 `GameObject.CreatePrimitive`，避免附带 Collider），挂在子物体上，顶点范围就是 `(0,0)`–`(Width, Height)` 世界单位，1 cell = 1 unit。
-- 材质：优先 `Universal Render Pipeline/2D/Sprite-Unlit-Default`，回退 `Sprites/Default`；都找不到时报错并停止上屏。可在 Inspector 覆盖。**发布包要注意 shader 剥离**，届时把该 shader 加入 Always Included Shaders 或直接指定材质资产。
+- 材质：优先 `Universal Render Pipeline/2D/Sprite-Unlit-Default`，回退 `Sprites/Default`；都找不到时报错并**停止上屏**（不再每帧刷日志）。可在 Inspector 覆盖。**发布包要注意 shader 剥离**，届时把该 shader 加入 Always Included Shaders 或直接指定材质资产。
+  - Inspector 指定的 `_material` 是共享资产：运行期一律 `new Material(_material)` 取副本，**绝不改写资产本身**；销毁/重建纹理前先把 `mainTexture` 置 null，避免材质持有 Missing 引用。
+  - 「渲染目标就绪」= 纹理尺寸匹配 **且** mesh 与材质都已挂上。shader 缺失导致首次失败后不会每帧重试；一旦补上 `_material`，下一次 `Present` 会自动重建并恢复上屏。
 - 纹理：`new Texture2D(Width, Height, TextureFormat.RGBA32, mipChain: false, linear: false)`，`filterMode = FilterMode.Point`（必须），`wrapMode = TextureWrapMode.Clamp`，`hideFlags = DontSave`。
 - 上传：一次 `SetPixels32` + `Apply(false, false)`。世界尺寸变化时才重建纹理与 mesh。
 - 相机：`orthographicSize = Height / 2`，位置 `(Width / 2, Height / 2, -10)`（可关）。相机移动**不触碰 `Cell[]`、不重建纹理**。
@@ -477,7 +489,8 @@ Assets/Scripts/
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射的行为测试
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 石头竖直柱/固体互阻/沙堆守恒收敛（隔离类型表）
+  SandStoneParticleTests.cs                   石头/沙子的生产注册路径（RegisterAll 回填 + 标签断言）+ 安息角剖面（三角堆）测试
 ```
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）与 `TapTap2026.Game`（引用 Simulation，装渲染与驱动）。
@@ -527,6 +540,6 @@ Assets/Tests/EditMode/
 1. **`vx` / `vy`**：v1 采用 4 字节 `Cell`（不含速度）；确认何时切到 6 字节。
 2. **tick 频率默认值**：现为 60 Hz、`MaxStepsPerFrame = 4`（放在 `ParticleSimulationSettings` 里，可改）。
 3. **上屏倍数**：`StepsPerPresent` 现为 1（每个逻辑帧渲染一次）。等 tick 频率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
-4. **`ParticleRules` 共享帮助方法的边界**：已提供 `TryFall` / `TryDiagonalFall` / `TryFlowHorizontal` / `CanDisplace`。`SandParticle` 因需要「落点下方也必须有空间」的额外约束而内联了自己的铺展扫描——确认这类特化规则还有哪些值得提升为共享原语。
+4. **`ParticleRules` 共享帮助方法的边界**：已提供 `TryFall` / `TryDiagonalFall` / `TryFlowHorizontal` / `CanDisplace`。当前 `SandParticle` 只组合 `TryFall` + `TryDiagonalFall`（安息角完全由斜落产生，没有横向铺展扫描）；`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
 5. **场景接线方式**：目前需手工挂 `ParticleSimulationDriver` + `ParticleRenderer`；是否值得加一个编辑器菜单项一键生成。
 6. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。
