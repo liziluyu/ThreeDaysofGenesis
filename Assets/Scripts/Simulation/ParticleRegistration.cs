@@ -39,11 +39,13 @@ namespace TapTap2026.Simulation
                 // ========================= 类型清单 =========================
                 ushort[] ids = ParticleRegistry.RegisterBatch(
                     new StoneParticle(),
-                    new SandParticle());
+                    new SandParticle(),
+                    new SoilParticle());
                 // ===========================================================
 
                 ParticleIds.Stone = ids[0];
                 ParticleIds.Sand = ids[1];
+                ParticleIds.Soil = ids[2];
                 _registered = true;
             }
             catch (Exception exception)

@@ -12,7 +12,7 @@ namespace TapTap2026.Simulation
     /// <para>类别之间存在固定的「轻重」次序，用于判断谁能让开谁：</para>
     /// <code>Solid(3) &gt; Liquid(2) &gt; Gas(1) &gt; 空气(0)</code>
     /// <para>规则：<b>高 rank 可以置换低 rank</b>。固体因此落穿液体与气体、液体落穿气体，
-    /// 而同类之间互不置换——这正是沙能堆成三角形、石头能竖直垒成柱的原因。</para>
+    /// 而同类之间互不置换——这正是沙能堆成 45° 三角堆、石头能堆成更陡的尖堆的原因。</para>
     /// </remarks>
     [Flags]
     public enum ParticleTags : byte

@@ -14,10 +14,13 @@ namespace TapTap2026.Simulation
 
         // ================= 新增类型在此追加字段（只能追加，不能插队） =================
 
-        /// <summary>石头。受重力的固体（只竖直下落，垒成柱子）。</summary>
+        /// <summary>石头。受重力的固体（斜落要 10 格净空，堆成 10:1 的陡尖堆）。</summary>
         public static ushort Stone;
 
-        /// <summary>沙。受重力的粉末。</summary>
+        /// <summary>沙。受重力的粉末（1:1 安息角）。</summary>
         public static ushort Sand;
+
+        /// <summary>土壤。受重力的粉末，安息角比沙陡一倍（2:1）。</summary>
+        public static ushort Soil;
     }
 }
