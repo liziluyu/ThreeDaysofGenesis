@@ -111,17 +111,28 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>正下方被挡住时尝试斜下方，左右顺序随机以消除方向偏置。</summary>
-        public static bool TryDiagonalFall(ParticleWorld world, int x, int y)
+        /// <param name="clearance">
+        /// 斜下方从落点起、连续需要能进入的格数，也就是这类材料的安息角：
+        /// 1 = 落点能进入就滑（1:1，约 45°，粉末默认）；2 = 落点与它下方那格都要能进入（2:1，约 63°）；
+        /// 10 = 连续 10 格净空（10:1，约 84°，石头）。再大就更陡，直到材料完全不失稳。越界格一律当作不可进入。
+        /// </param>
+        public static bool TryDiagonalFall(ParticleWorld world, int x, int y, int clearance = 1)
         {
             if (!world.IsInBounds(x, y - 1))
             {
                 return false;
             }
 
+            // 0 / 负值按 1 处理：最松的斜落是合法退路，但「无条件位移」不是。
+            if (clearance < 1)
+            {
+                clearance = 1;
+            }
+
             bool leftFirst = (world.NextUInt() & 1u) == 0u;
             return leftFirst
-                ? TrySlide(world, x, y, -1) || TrySlide(world, x, y, 1)
-                : TrySlide(world, x, y, 1) || TrySlide(world, x, y, -1);
+                ? TrySlide(world, x, y, -1, clearance) || TrySlide(world, x, y, 1, clearance)
+                : TrySlide(world, x, y, 1, clearance) || TrySlide(world, x, y, -1, clearance);
         }
 
         /// <summary>
@@ -143,13 +154,17 @@ namespace TapTap2026.Simulation
                 : TryFlowSide(world, x, y, 1, maxSpread) || TryFlowSide(world, x, y, -1, maxSpread);
         }
 
-        private static bool TrySlide(ParticleWorld world, int x, int y, int deltaX)
+        private static bool TrySlide(ParticleWorld world, int x, int y, int deltaX, int clearance)
         {
             int targetX = x + deltaX;
             int targetY = y - 1;
-            if (!world.IsInBounds(targetX, targetY) || !CanDisplace(world, x, y, targetX, targetY))
+            for (int step = 0; step < clearance; step++)
             {
-                return false;
+                // CanDisplace 内部已经拒绝越界，因此净空链上的每一格不必再单独判 IsInBounds。
+                if (!CanDisplace(world, x, y, targetX, targetY - step))
+                {
+                    return false;
+                }
             }
 
             world.Swap(x, y, targetX, targetY);
