@@ -2,7 +2,8 @@ namespace TapTap2026.Simulation
 {
     /// <summary>
     /// 无状态的共享移动规则。粒子类型在自己的 <c>OnUpdate</c> 里按需调用，不持有任何每格状态。
-    /// 所有方法都遵循：先判断、后无条件执行、成功即返回 true（调用方应立刻 return）。
+    /// 写操作型方法（<c>Try*</c>）遵循：先判断、后无条件执行、成功即返回 true（调用方应立刻 return）；
+    /// 纯换算 <see cref="SlideClearance"/> 与整段固体运动 <see cref="StepSolid"/> 见各自的注释。
     /// </summary>
     public static class ParticleRules
     {
@@ -110,29 +111,93 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        /// <summary>正下方被挡住时尝试斜下方，左右顺序随机以消除方向偏置。</summary>
+        /// <summary>
+        /// 正下方被挡住时尝试斜下方，左右顺序随机以消除方向偏置。
+        /// 固体请改用 <see cref="StepSolid"/>：它把 <see cref="ParticleTypeInfo.Friction"/> 换算成这里的净空。
+        /// </summary>
         /// <param name="clearance">
         /// 斜下方从落点起、连续需要能进入的格数，也就是这类材料的安息角：
         /// 1 = 落点能进入就滑（1:1，约 45°，粉末默认）；2 = 落点与它下方那格都要能进入（2:1，约 63°）；
         /// 10 = 连续 10 格净空（10:1，约 84°，石头）。再大就更陡，直到材料完全不失稳。越界格一律当作不可进入。
+        /// <c>&lt;= 0</c> 表示不斜滑（摩擦度 1 的固体），直接返回 false。
         /// </param>
         public static bool TryDiagonalFall(ParticleWorld world, int x, int y, int clearance = 1)
         {
-            if (!world.IsInBounds(x, y - 1))
+            // 净空 <= 0：材料完全不失稳，永不沿坡滚落。调用方（如 StepSolid）靠它表达「摩擦度 1」。
+            if (clearance <= 0 || !world.IsInBounds(x, y - 1))
             {
                 return false;
-            }
-
-            // 0 / 负值按 1 处理：最松的斜落是合法退路，但「无条件位移」不是。
-            if (clearance < 1)
-            {
-                clearance = 1;
             }
 
             bool leftFirst = (world.NextUInt() & 1u) == 0u;
             return leftFirst
                 ? TrySlide(world, x, y, -1, clearance) || TrySlide(world, x, y, 1, clearance)
                 : TrySlide(world, x, y, 1, clearance) || TrySlide(world, x, y, -1, clearance);
+        }
+
+        /// <summary>
+        /// 固体粒子的标准运动，由本格的 <see cref="ParticleTypeInfo.Friction"/> 驱动。
+        /// 正下可进入则下落一格（固体 rank 更高，因此能沉穿液体 / 气体）；正下被挡住时，
+        /// 摩擦度决定是否沿坡斜滑——摩擦度就是安息角。
+        /// </summary>
+        /// <remarks>
+        /// 每个固体类型的 <c>OnUpdate</c> 都应当是这一行；摩擦度从注册表读，类型无需自己抄一份常量。
+        /// </remarks>
+        public static void StepSolid(ParticleWorld world, int x, int y)
+        {
+            if (TryFall(world, x, y))
+            {
+                return;
+            }
+
+            // 正下被挡住且摩擦度 1：静止。斜落所需的净空 <= 0 直接表达「永不滚落」。
+            int clearance = SlideClearance(SelfFriction(world, x, y));
+            if (clearance <= 0)
+            {
+                return;
+            }
+
+            TryDiagonalFall(world, x, y, clearance);
+        }
+
+        /// <summary>
+        /// 把摩擦度 <c>[0, 1]</c> 换算成斜落所需的连续净空格数，也就是安息角斜率（rise/run）：
+        /// <c>1 / (1 - friction)</c>，四舍五入到整数格。
+        /// </summary>
+        /// <returns>
+        /// <c>0</c> 表示完全不斜滑（<paramref name="friction"/> &gt;= 1）；否则 &gt;= 1。
+        /// 0 → 1（45°，像沙）、0.5 → 2（2:1）、0.9 → 10（10:1，像石头）；越接近 1 越陡。
+        /// </returns>
+        public static int SlideClearance(float friction)
+        {
+            if (friction >= 1f)
+            {
+                return 0;
+            }
+
+            if (friction <= 0f)
+            {
+                return 1;
+            }
+
+            // 用 double 折算并 +0.5 取整：0.9f 在 float 里略小于 0.9，1/(1-0.9f) 才刚好落在 10 这一档。
+            double slope = 1.0 / (1.0 - friction);
+            int clearance = (int)(slope + 0.5);
+            return clearance < 1 ? 1 : clearance;
+        }
+
+        /// <summary>读本格类型的摩擦度。索引非法 / 空槽 / 空气一律按 0（最松）处理。</summary>
+        private static float SelfFriction(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            ParticleType[] types = world.Types;
+            if (id == ParticleRegistry.AirTypeId || id >= types.Length)
+            {
+                return 0f;
+            }
+
+            ParticleType type = types[id];
+            return type == null ? 0f : type.Info.Friction;
         }
 
         /// <summary>

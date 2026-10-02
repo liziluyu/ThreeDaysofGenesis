@@ -29,6 +29,17 @@ namespace TapTap2026.Simulation
         /// <summary>最大横流格数：单 tick 内单侧最多蔓延多少格。</summary>
         public readonly byte MaxFlowSpread;
 
+        /// <summary>
+        /// 摩擦度，范围 <c>[0, 1]</c>。只被固体运动规则读取（<see cref="ParticleRules.StepSolid"/>）：
+        /// 正下被挡住时，摩擦度决定粒子肯不肯沿坡斜滑，也就是安息角。
+        /// </summary>
+        /// <remarks>
+        /// 安息角斜率（rise/run）= <c>1 / (1 - Friction)</c>，实现上四舍五入到整数格净空：
+        /// <c>0</c> = 最松，1:1（45°，像沙）；<c>0.5</c> ≈ 2:1（63°）；<c>0.9</c> ≈ 10:1（84°，像石头）；
+        /// <c>1</c>（含更大值）= 下方有固体就完全静止，永不沿坡滚落。非固体类型该值不参与任何规则。
+        /// </remarks>
+        public readonly float Friction;
+
         /// <summary>调色板，长度 1..256。<see cref="Cell.shade"/> 直接作为下标。</summary>
         public readonly Color32[] Palette;
 
@@ -41,6 +52,7 @@ namespace TapTap2026.Simulation
             bool affectedByGravity,
             bool isStatic,
             byte maxFlowSpread,
+            float friction,
             Color32[] palette,
             string debugName)
         {
@@ -49,6 +61,7 @@ namespace TapTap2026.Simulation
             AffectedByGravity = affectedByGravity;
             IsStatic = isStatic;
             MaxFlowSpread = maxFlowSpread;
+            Friction = friction;
             Palette = palette;
             DebugName = debugName;
         }
