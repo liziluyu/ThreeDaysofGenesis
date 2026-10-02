@@ -39,7 +39,7 @@ namespace TapTap2026.Game
             set { _simulate = value; }
         }
 
-        /// <summary>把一个逻辑帧的固定步长立即上屏（暂停状态下改网格后可用）。</summary>
+        /// <summary>把网格**当前**状态立即上屏一次（暂停中改了网格后可用）。本方法不推进逻辑帧。</summary>
         public void PresentNow()
         {
             Present();
@@ -79,6 +79,16 @@ namespace TapTap2026.Game
         private void Start()
         {
             Present();
+        }
+
+        private void OnDestroy()
+        {
+            // 代码兜底创建的 ScriptableObject 不受场景管理，必须自己销毁，否则每次进播放都泄漏一个实例。
+            if (_fallbackSettings != null)
+            {
+                Destroy(_fallbackSettings);
+                _fallbackSettings = null;
+            }
         }
 
         private void Update()

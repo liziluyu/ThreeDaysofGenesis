@@ -23,7 +23,7 @@ namespace TapTap2026.Rendering
 
         [SerializeField] private Color32 _background = new Color32(0, 0, 0, 255);
 
-        [Tooltip("留空则运行时用 URP 2D 的无光照 sprite 着色器创建。")]
+        [Tooltip("留空则运行时用 URP 2D 的无光照 sprite 着色器创建。运行期一律实例化副本，不会改写本资产。")]
         [SerializeField] private Material _material;
 
         [Tooltip("留空则回退到 Camera.main。")]
@@ -38,8 +38,9 @@ namespace TapTap2026.Rendering
         private Material _runtimeMaterial;
         private MeshFilter _meshFilter;
         private MeshRenderer _meshRenderer;
+        private bool _targetFailed;
 
-        /// <summary>当前上屏用的纹理，未初始化时为 null。</summary>
+        /// <summary>当前上屏用的纹理，尚未就绪时为 null。</summary>
         public Texture2D Texture
         {
             get { return _texture; }
@@ -65,16 +66,14 @@ namespace TapTap2026.Rendering
 
         private void OnDestroy()
         {
+            // 这里不碰 _meshRenderer：销毁顺序不确定，子物体可能已被销毁。
+            _pixels = null;
+
             if (_runtimeMaterial != null)
             {
+                _runtimeMaterial.mainTexture = null;
                 Destroy(_runtimeMaterial);
                 _runtimeMaterial = null;
-            }
-
-            if (_mesh != null)
-            {
-                Destroy(_mesh);
-                _mesh = null;
             }
 
             if (_texture != null)
@@ -82,32 +81,40 @@ namespace TapTap2026.Rendering
                 Destroy(_texture);
                 _texture = null;
             }
+
+            if (_mesh != null)
+            {
+                Destroy(_mesh);
+                _mesh = null;
+            }
+        }
+
+        /// <summary>纹理尺寸匹配、且网格与材质都已挂上，才算可以上屏。</summary>
+        private bool IsTargetReady(ParticleWorld world)
+        {
+            return _texture != null
+                && _mesh != null
+                && _meshRenderer != null
+                && _meshRenderer.sharedMaterial != null
+                && _texture.width == world.Width
+                && _texture.height == world.Height;
         }
 
         private bool EnsureTarget(ParticleWorld world)
         {
-            if (_texture != null && _texture.width == world.Width && _texture.height == world.Height)
+            if (IsTargetReady(world))
             {
                 return true;
             }
 
-            if (_runtimeMaterial != null)
+            // 上次因找不到 shader 而失败，且调用方仍未提供材质：不重试、也不重复刷日志。
+            // 一旦在 Inspector 或代码里补上 _material，下一次 Present 会自动重建。
+            if (_targetFailed && _material == null)
             {
-                Destroy(_runtimeMaterial);
-                _runtimeMaterial = null;
+                return false;
             }
 
-            if (_texture != null)
-            {
-                Destroy(_texture);
-                _texture = null;
-            }
-
-            if (_mesh != null)
-            {
-                Destroy(_mesh);
-                _mesh = null;
-            }
+            ReleaseTarget();
 
             _pixels = new Color32[world.CellCount];
             _texture = new Texture2D(world.Width, world.Height, TextureFormat.RGBA32, false, false)
@@ -118,13 +125,16 @@ namespace TapTap2026.Rendering
                 hideFlags = HideFlags.DontSave,
             };
 
-            Material material = _material != null ? _material : CreateRuntimeMaterial();
+            // 运行期材质永远是我们自己的副本：_material 是可能被多个对象共用的资产，绝不能被改写。
+            Material material = _material != null ? new Material(_material) : CreateRuntimeMaterial();
             if (material == null)
             {
+                _targetFailed = true;
+                ReleaseTarget();
                 return false;
             }
 
-            material.mainTexture = _texture;
+            _runtimeMaterial = material;
 
             if (_meshRenderer == null)
             {
@@ -134,6 +144,7 @@ namespace TapTap2026.Rendering
             _mesh = BuildQuadMesh(world.Width, world.Height);
             _meshFilter.sharedMesh = _mesh;
             _meshRenderer.sharedMaterial = material;
+            material.mainTexture = _texture;
 
             if (_fitCameraOnInitialize)
             {
@@ -141,6 +152,41 @@ namespace TapTap2026.Rendering
             }
 
             return true;
+        }
+
+        /// <summary>释放所有运行期渲染资源，保留 <see cref="_meshRenderer"/><see cref="_meshFilter"/> 以便复用。</summary>
+        private void ReleaseTarget()
+        {
+            _pixels = null;
+
+            if (_texture != null)
+            {
+                // 先断开引用，再销毁纹理：否则材质会持有 Missing 引用。
+                if (_runtimeMaterial != null)
+                {
+                    _runtimeMaterial.mainTexture = null;
+                }
+
+                if (_meshRenderer != null)
+                {
+                    _meshRenderer.sharedMaterial = null;
+                }
+
+                Destroy(_texture);
+                _texture = null;
+            }
+
+            if (_runtimeMaterial != null)
+            {
+                Destroy(_runtimeMaterial);
+                _runtimeMaterial = null;
+            }
+
+            if (_mesh != null)
+            {
+                Destroy(_mesh);
+                _mesh = null;
+            }
         }
 
         private Material CreateRuntimeMaterial()
@@ -153,16 +199,15 @@ namespace TapTap2026.Rendering
                     continue;
                 }
 
-                _runtimeMaterial = new Material(shader)
+                return new Material(shader)
                 {
                     name = "ParticleGridMaterial",
                     hideFlags = HideFlags.DontSave,
                 };
-                return _runtimeMaterial;
             }
 
             Debug.LogError(
-                "[ParticleRenderer] 找不到 URP 2D 无光照 sprite 着色器，无法渲染粒子网格。请在 Inspector 手动指定 Material。");
+                "[ParticleRenderer] 找不到 URP 2D 无光照 sprite 着色器，已停止上屏。请在 Inspector 指定 Material 或在 Graphics 设置里保留该 shader。");
             return null;
         }
 

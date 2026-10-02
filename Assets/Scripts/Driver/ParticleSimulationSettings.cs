@@ -9,6 +9,9 @@ namespace TapTap2026.Game
     [CreateAssetMenu(menuName = "TapTap2026/Particle Simulation Settings", fileName = "ParticleSimulationSettings")]
     public sealed class ParticleSimulationSettings : ScriptableObject
     {
+        /// <summary><see cref="MaxStepsPerFrame"/> 的硬上限，与 Inspector 的 [Range] 保持一致。</summary>
+        public const int MaxStepsPerFrameLimit = 16;
+
         [SerializeField, Min(1)] private int _width = 320;
         [SerializeField, Min(1)] private int _height = 180;
 
@@ -16,7 +19,7 @@ namespace TapTap2026.Game
         [SerializeField, Min(1f)] private float _tickRate = 60f;
 
         [Tooltip("单帧内最多追多少个逻辑帧，防止卡顿后的死亡螺旋。")]
-        [SerializeField, Range(1, 16)] private int _maxStepsPerFrame = 4;
+        [SerializeField, Range(1, MaxStepsPerFrameLimit)] private int _maxStepsPerFrame = 4;
 
         [Tooltip("每多少个逻辑帧上屏一次。1 = 每个逻辑帧后渲染一次（默认）。调大可让多个逻辑帧只渲染一次。")]
         [SerializeField, Min(1)] private int _stepsPerPresent = 1;
@@ -38,9 +41,10 @@ namespace TapTap2026.Game
             get { return Mathf.Max(1f, _tickRate); }
         }
 
+        /// <summary>单帧内最多追几个逻辑帧。手改 YAML 越界时由 getter 兜底夹紧。</summary>
         public int MaxStepsPerFrame
         {
-            get { return Mathf.Max(1, _maxStepsPerFrame); }
+            get { return Mathf.Clamp(_maxStepsPerFrame, 1, MaxStepsPerFrameLimit); }
         }
 
         /// <summary>每多少个逻辑帧上屏一次。1 = 每个逻辑帧后渲染一次。</summary>
