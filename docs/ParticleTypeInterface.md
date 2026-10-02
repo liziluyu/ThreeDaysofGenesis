@@ -122,10 +122,27 @@ public readonly struct ParticleTypeInfo
     public readonly bool     AffectedByGravity;  // 是否受重力
     public readonly bool     IsStatic;           // 静态：扫描直接跳过，不进入 OnUpdate
     public readonly byte     MaxFlowSpread;      // 最大横流格数（单 tick 单侧横向最大蔓延）
+    public readonly float    Friction;           // 摩擦度 0..1，只被固体运动规则读取（见下）
     public readonly Color32[] Palette;           // 调色板，长度 1..256，索引 = Cell.shade
     public readonly string   DebugName;          // 仅调试显示，热路径禁用
 }
 ```
+
+### 摩擦度（Friction）：固体的安息角
+
+`Friction ∈ [0, 1]` 是固体的材料属性，**只被 `ParticleRules.StepSolid` 读取**（液/气不读，填 0 即可）。
+它决定固体正下被挡住时肯不肯沿坡斜滑，也就是安息角：
+
+| Friction | 斜落所需净空 | 安息角 |
+|---|---|---|
+| `0` | 1 格 | 1:1（约 45°，像沙） |
+| `0.5` | 2 格 | 2:1（约 63°） |
+| `0.9` | 10 格 | 10:1（约 84°，像石头） |
+| `1` | 永不斜滑 | 下方有固体就完全静止 |
+
+换算公式：安息角斜率（rise/run）= `1 / (1 - Friction)`，实现上四舍五入到整数格净空
+（`ParticleRules.SlideClearance`）。越接近 1 越陡；`Friction >= 1` 视为完全不失稳。
+因此固体的 `OnUpdate` 就是一行 `ParticleRules.StepSolid(world, x, y);`——摩擦度从注册表读，类型不必自己抄常量。
 
 ### 标签（Tag）：跨类型规则的唯一判据
 
@@ -181,7 +198,7 @@ public static class ParticleRegistry
 
 - **`typeId` = 注册顺序**，从 1 开始，0 保留给空气。`ParticleRegistration.RegisterAll()` 是**全工程唯一的类型清单**。
 - 用 `ParticleType[]`（引用类型数组）而不是结构体数组：`Types[id].Info.Density` 只做指针寻址，不会每帧拷贝几十字节的结构体。
-- 注册时校验（`ValidateTypeInfo`）：调色板非空且 ≤256、`Density` 有限、**至少带一个类别标签（`Tags != None`）**、类型数未溢出。违反 = **抛 `InvalidOperationException`**，且校验发生在写入任何状态之前。
+- 注册时校验（`ValidateTypeInfo`）：调色板非空且 ≤256、`Density` 有限、**`Friction` 在 `[0, 1]` 内**、**至少带一个类别标签（`Tags != None`）**、类型数未溢出。违反 = **抛 `InvalidOperationException`**，且校验发生在写入任何状态之前。
 - `ParticleRegistration` 用 `RegisterBatch` 一次性注册：**先全部校验、再统一写入**，任一类型非法则整体不生效，`ParticleIds` 只会在全部成功后才回填——这样就不会出现「前几个类型已注册、后面的 `ParticleIds.Xxx` 仍是 0（空气）」的静默退化。失败后 `RegisterAll()` 的后续调用会继续抛出，不会当作成功。
 - **自定义类型表也要过同一套校验**：`new ParticleWorld(w, h, seed, types)` 会对每个非 null 条目调用 `ValidateTypeInfo`，非法条目直接抛 `ArgumentException`，而不是等到运行期 `Set` 才 DivideByZero。
 - `Types[0]` 恒为 `null`（空气）；数组容量可能大于 `Count + 1`，超出部分是 `null`。`ParticleWorld` 与渲染层对超出范围的 id 一律当作「不存在的类型」跳过。
@@ -261,9 +278,11 @@ public sealed class XxxParticle : IParticleType
         affectedByGravity: true,
         isStatic: false,
         maxFlowSpread: 0,
+        friction: 0f,
         palette: Palette,
         debugName: nameof(XxxParticle));
 
+    // 固体：ParticleRules.StepSolid(world, x, y); 按上面的 friction 决定安息角
     public void OnUpdate(ParticleWorld world, int x, int y) { /* ... */ }
     public void OnSpawn (ParticleWorld world, int x, int y) { }
     public void OnKill  (ParticleWorld world, int x, int y, ushort killerTypeId) { }
@@ -479,9 +498,9 @@ Assets/Scripts/
     ParticleRules.cs                          无状态共享移动规则
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射
     Particles/
-      StoneParticle.cs                        石头（固体标签，斜落要 10 格净空 ⇒ 10:1 安息角，~84° 的陡尖堆）
-      SandParticle.cs                         沙（固体标签，1:1 安息角三角堆）
-      SoilParticle.cs                         土壤（固体标签，2:1 安息角三角堆，边坡比沙陡一倍）
+      StoneParticle.cs                        石头（固体标签，摩擦度 0.9 ⇒ 10:1 安息角，~84° 的陡尖堆）
+      SandParticle.cs                         沙（固体标签，摩擦度 0 ⇒ 1:1 安息角三角堆）
+      SoilParticle.cs                         土壤（固体标签，摩擦度 0.5 ⇒ 2:1 安息角三角堆，边坡比沙陡一倍）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad
   Driver/
@@ -497,8 +516,8 @@ Assets/Data/
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 斜落净空判据/石头堆 10:1 坡/固体互阻/沙堆守恒收敛/土堆斜率两倍于沙（隔离类型表）
-  SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签断言）+ 安息角剖面（三角堆）测试
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 摩擦度→净空换算/摩擦度 1 不滚落/斜落净空判据/石头堆 10:1 坡/固体互阻/沙堆守恒收敛/土堆斜率两倍于沙（隔离类型表）
+  SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签 + 摩擦度断言）+ 安息角剖面（三角堆）测试
 ```
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
@@ -519,7 +538,7 @@ Particle Sandbox
 
 - **沙箱初始是空世界**：`ParticleSimulationDriver.Awake` 建出的网格全是空气，没有任何粒子；`ParticleSandboxSeeder` 不再在 `Start` 自动搭建，内容只能由 `ParticleEditor` 画出来。
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 3 的实心圆（29 格）；按**右键**在已注册类型间循环切换；鼠标旁常驻色块 + 类型名 + `序号/总数`。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
-- **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为斜落（10 格净空）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
+- **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦（摩擦度 0.9 ⇒ 斜落要 10 格净空）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 
 ---
@@ -541,6 +560,7 @@ Particle Sandbox
 - [ ] 没有把 per-cell 状态放进单例字段。
 - [ ] 越界坐标先经 `IsInBounds` 判断，而不是依赖写操作静默失败。
 - [ ] 调色板 1..256 项，`shade` 语义一致。
+- [ ] 固体类型：`Info.Friction` 在 `[0, 1]` 内，`OnUpdate` 走 `ParticleRules.StepSolid(world, x, y)`（自行实现则要在注释里说明为何不走共享规则）。
 - [ ] 静态类型的 `OnUpdate` 不会被调用——留空并注明原因，不要往里写逻辑。
 
 ---
@@ -565,6 +585,6 @@ Particle Sandbox
 1. **`vx` / `vy`**：v1 采用 4 字节 `Cell`（不含速度）；确认何时切到 6 字节。
 2. **tick 频率默认值**：现为 60 Hz、`MaxStepsPerFrame = 4`（放在 `ParticleSimulationSettings` 里，可改）。
 3. **上屏倍数**：`StepsPerPresent` 现为 1（每个逻辑帧渲染一次）。等 tick 频率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
-4. **`ParticleRules` 共享帮助方法的边界**：已提供 `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，越大越陡）/ `TryFlowHorizontal` / `CanDisplace`。当前 `SandParticle` 用 `clearance = 1`、`SoilParticle` 用 2、`StoneParticle` 用 10（三者的安息角都完全由斜落产生，没有横向铺展扫描）；`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
+4. **`ParticleRules` 共享帮助方法的边界**：已提供 `StepSolid`（固体的标准运动：正下 → 按 `Info.Friction` 斜落）/ `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，`<= 0` = 不斜滑）/ `TryFlowHorizontal` / `CanDisplace` / `SlideClearance`（Friction → 净空档位）。当前三个固体都只写 `StepSolid` 一行，安息角完全由 `Friction`（沙 0、土 0.5、石 0.9）决定，摩擦度是**类型属性**（`ParticleTypeInfo.Friction`），同一类型所有粒子相同——若将来需要同一堆里混不同摩擦，再考虑把摩擦度下沉到 `Cell`。`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
 5. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
 6. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。
