@@ -136,12 +136,13 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 固体粒子的标准运动：正下可进入则下落一格；正下被挡住时按<b>摩擦度</b>决定的安息角斜滑；
-        /// 都动不了时，<b>粘性</b>材料会被磨平孤立的尖顶（见 <see cref="TryBluntCrest"/>）。
+        /// 固体粒子的标准运动：正下可进入则下落一格；正下被挡住时按<b>摩擦度</b>决定的安息角斜滑
+        /// （粘性材料再按<b>本列厚度</b>整形，见 <see cref="ShapeClearance"/>）；
+        /// 都动不了时，粘性材料会被磨平孤立的尖顶（见 <see cref="TryBluntCrest"/>）。
         /// </summary>
         /// <remarks>
         /// 每个固体类型的 <c>OnUpdate</c> 都应当是这一行；两个参数都从注册表读，类型无需自己抄常量。
-        /// 分工：摩擦度定侧翼坡度（材料自身的静摩擦，孤立一颗也生效），粘性定尖顶形状（靠邻域形态，糊状物站不住尖点）。
+        /// 分工：摩擦度定侧翼的自然坡度，粘性把堆塑成钟形（中段更陡、顶部与外侧更松）并磨平尖点。
         /// </remarks>
         public static void StepSolid(ParticleWorld world, int x, int y)
         {
@@ -156,13 +157,52 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            int clearance = SlideClearance(self.Info.Friction);
+            int clearance = ShapeClearance(world, x, self.Info.Friction, self.Info.Stickiness);
             if (clearance > 0 && TryDiagonalFall(world, x, y, clearance))
             {
                 return;
             }
 
             TryBluntCrest(world, x, y, self.Info.Stickiness);
+        }
+
+        /// <summary>满粘性（σ=1）时，钟形堆中段额外叠加的净空档数——越大中段越陡、堆越像钟。</summary>
+        public const int BellyAmplitude = 8;
+
+        /// <summary>
+        /// 把「本列相对厚度」映射成斜落净空，让粘性材料堆成<b>钟形</b>而不是三角锥：
+        /// 外侧（相对深度 r→0）与堆顶（r→1）用最松的净空 1（45°）铺开 / 收圆，
+        /// 中段（r≈0.5）抬到 <c>natural + σ·BellyAmplitude</c> 立起陡壁。
+        /// 相对深度 = <see cref="ParticleWorld.ColumnThickness"/> / <see cref="ParticleWorld.MaxColumnThickness"/>，
+        /// 因此形状与堆的绝对大小无关（同形状自相似），不需要任何固定尺度常数。
+        /// </summary>
+        /// <remarks>
+        /// 干散材料（σ=0）与「永不斜滑」（摩擦度 ≥ 1）直接返回自然净空，一次厚度读取都不做，
+        /// 行为与纯摩擦度逐格一致。<see cref="ParticleWorld.MaxColumnThickness"/> 按全场最厚列归一：
+        /// 同一个世界里生成的一大一小两堆会共用同一个尺度（小堆相对偏「薄」），这是已知的近似。
+        /// </remarks>
+        public static int ShapeClearance(ParticleWorld world, int x, float friction, float stickiness)
+        {
+            int natural = SlideClearance(friction);
+            if (stickiness <= 0f || natural <= 0)
+            {
+                return natural;
+            }
+
+            int thickest = world.MaxColumnThickness;
+            if (thickest <= 1)
+            {
+                // 全场只有一层，没有「堆形」可塑。
+                return natural;
+            }
+
+            float relativeDepth = (float)world.ColumnThickness(x) / thickest;
+            // 偏斜的钟形权重：在相对深度 2/3 处最陡（堆的上半段立壁），越往下越松（坡脚外扩），
+            // 堆顶回到 0（冠部收圆）。乘 27/4 归一，使峰值恰好为 1。
+            float belly = relativeDepth * relativeDepth * (1f - relativeDepth) * 6.75f;
+            int mid = natural + (int)(stickiness * BellyAmplitude + 0.5f);
+            int clearance = 1 + (int)((mid - 1) * belly + 0.5f);
+            return clearance < 1 ? 1 : clearance;
         }
 
         /// <summary>

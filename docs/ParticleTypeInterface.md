@@ -97,6 +97,18 @@ public struct Cell
 
 不会波及任何类型代码。推进到速度场模拟时改这一个文件即可（外加 `ParticleWorld` 的写入初始化）。
 
+### 关于每列厚度（派生缓存）
+
+`ParticleWorld` 另外维护一份 **`ushort[Width]`：每列的非空气格数**（`ColumnThickness(x)`），以及它的最大值
+（`MaxColumnThickness`，每次 `Step()` 开头刷新一次，O(Width)）。
+
+它是**由 `Cell[]` 派生的缓存，不是第二份真源**：仍然只有 `Set` / `Clear` / `Swap` 能改网格，
+这三个方法 O(1) 增量维护它（`Swap` 只在跨列且空气与否不同时更新，同列交换不变）。
+唯一允许的例外是测试里改 `shade`（不改变空气与否，缓存不受影响）；**直接写 `Cells[i].typeId` 会让缓存与真源不一致**。
+
+用途：固体运动规则用它衡量「本列堆了多厚」，从而把粘性堆塑成钟形（见 §4 与 `ParticleRules.ShapeClearance`）。
+代价：内存 +2 字节/列（1024 列 = 2 KB），写入路径各多一个分支。
+
 ---
 
 ## 4. 全局类型注册表
@@ -131,38 +143,45 @@ public readonly struct ParticleTypeInfo
 
 ### 摩擦度（Friction）与粘性（Stickiness）：固体的两个形状参数
 
-两个参数都是固体的材料属性，**只被 `ParticleRules.StepSolid` 读取**（液/气不读，填 0 即可），
-但它们管的是**不同的部位**，互不耦合：
+两个参数都是固体的材料属性，**只被 `ParticleRules.StepSolid` 读取**（液/气不读，填 0 即可）：
 
 | 参数 | 管什么 | 生效条件 | 直觉 |
 |---|---|---|---|
-| `Friction` | **侧翼坡度**（安息角） | 总是（材料自身的静摩擦） | 孤立一颗也滑不动；越接近 1 侧翼越陡 |
-| `Stickiness` | **尖顶形状**（圆钝度） | 孤立的 1 格宽尖点 | 糊状物站不住尖点，顶端会塌成小平顶 |
+| `Friction` | 侧翼的**自然坡度**（安息角） | 总是（材料自身的静摩擦） | 孤立一颗也滑不动；越接近 1 侧翼越陡 |
+| `Stickiness` | 把堆塑成**钟形** + 收圆尖顶 | 非平铺（本列厚度 > 1） | 糊状物：中段立陡壁、顶部收圆、坡脚外扩 |
 
 **摩擦度 → 斜落净空。** 安息角斜率（rise/run）= `1 / (1 - Friction)`，四舍五入到整数格净空
 （`ParticleRules.SlideClearance`）。整数净空意味着侧翼坡度是**量化**的：`1` = 1:1（45°）、
 `2` = 2:1（63°）、`10` = 10:1（84°）；`Friction >= 1` 直接返回净空 `0` = 下方有固体就永不斜滑。
 
-**粘性 → 磨平尖顶。** `StepSolid` 在「正下落不下、按摩擦度也斜滑不动」之后，检查本格是不是
-**1 格宽的孤立尖点**（正上方空 + 同排左右两侧都空）；是的话以 `Stickiness` 为概率向随机一侧倒下
-（`ParticleRules.TryBluntCrest`）。所以：
+**粘性 → 按本列厚度整形 + 收圆尖顶。** 粘性材料（σ > 0）的斜落净空不再是常数，而是随
+**本列相对厚度** `r = ColumnThickness(x) / MaxColumnThickness` 变化（`ParticleRules.ShapeClearance`）：
 
-- 粘性只在**尖点**上生效：坡面上的粒子（同排一侧是上坡）和平台内部的粒子（同排两侧都是同伴）
-  都不满足判据，**侧翼坡度完全不受粘性影响**，整座堆也不会被摊平。
-- `Stickiness = 0` 时连邻域都不读（先判 0 再读格），因此干散材料的行为与纯摩擦度逐格一致。
-- `Stickiness` 越大尖顶塌得越快；**稳态顶盖宽度基本一致**（实测 2~4 格），它调的是速度不是幅度。
+```
+净空(r) = 1 + round( (自然净空 + σ·BellyAmplitude - 1) · 6.75·r²·(1-r) )
+```
 
-当前生产类型的取值：
+权重 `6.75·r²·(1-r)` 在 `r = 2/3` 处取 1、在 `r → 0` 与 `r = 1` 处取 0，于是：
 
-| 类型 | `Friction` | `Stickiness` | 实测剖面（投放 81×90 / 600 颗 / 同种子） |
+- **r → 1（堆顶）**：净空回到 1（最松）⇒ 顶部收圆，不再是 1 格宽的尖刺；
+- **r ≈ 2/3（中段）**：净空 = 自然净空 + σ·`BellyAmplitude`（默认 8）⇒ 立起陡壁；
+- **r → 0（坡脚）**：净空回到 1 ⇒ 坡脚外扩（喇叭口）。
+
+相对深度用**全场最厚列**归一，所以形状与堆的绝对大小无关（自相似），不需要任何尺度常数。
+最后 `StepSolid` 仍会调一次 `TryBluntCrest` 把 1 格宽的孤立尖点推倒，作为兜底。
+
+- σ = 0 或 `Friction >= 1`：**一次厚度读取都不做**，行为与纯摩擦度逐格一致（干散材料不受影响）。
+- 已知近似：`MaxColumnThickness` 是全场量，因此同一个世界里一大一小两堆会共用同一个尺度（小堆相对偏「薄」）。
+- 调参入口：`Stickiness`（0..1，强度）与 `ParticleRules.BellyAmplitude`（中段额外陡度，默认 8）。
+
+当前生产类型的取值（实测：投放 81×90 / 600 颗 / 同种子）：
+
+| 类型 | `Friction` | `Stickiness` | 实测剖面 |
 |---|---|---|---|
-| 沙 | `0` | `0` | 尖顶，斜率 ≈ 0.94（1:1） |
-| 土 | `0.5` | `0.5` | **平头**，斜率 ≈ 1.83（2:1，与 σ=0 的对照完全一致，只有尖顶从 1 格宽变成 3 格） |
-| 石 | `0.9` | `0` | 尖顶，斜率 ≈ 10.1（10:1） |
-
-> 想试别的粘性，改 `Info` 的 `stickiness:` 即可。注意它**不会**让堆变陡（那是 `Friction` 的活）：
-> 它只决定「顶端是一根尖刺还是一个平头」，且只对**尖锥**有效——笔刷铺出来的方块塌落时不会形成
-> 1 格宽的尖点，因此看不出粘性差异（实测 sand / soil 的方块塌落剖面差异全部来自摩擦度）。
+| 沙 | `0` | `0` | 尖锥，斜率 ≈ 0.94（1:1），顶盖 3 格 |
+| 土 | `0.5` | `0.5` | 钟形：峰值 37、占地 31、**顶盖 7 格**、坡脚外扩，斜率 ≈ 2.32 |
+| 土（σ=0 对照） | `0.5` | `0` | 尖锥，斜率 ≈ 1.89，顶盖 1 格 |
+| 石 | `0.9` | `0` | 尖锥，斜率 ≈ 10.1（10:1），顶盖 1 格 |
 
 ### 标签（Tag）：跨类型规则的唯一判据
 
@@ -344,6 +363,10 @@ public sealed class ParticleWorld
     public bool Set  (int x, int y, ushort typeId);
     public bool Clear(int x, int y);            // 等价于 Set(x, y, 0)
 
+    // —— 派生缓存（由 Cell[] 派生，只读；维护见 §3）——
+    public int  ColumnThickness(int x);         // 该列非空气格数；越界返回 0
+    public int  MaxColumnThickness { get; }     // 全场最厚列；Step() 开头刷新
+
     // —— 确定性随机（世界持有种子）——
     public uint NextUInt();
     public int  NextInt (int  maxExclusive);    // maxExclusive <= 0 → 0
@@ -516,13 +539,13 @@ Assets/Scripts/
     ParticleRegistry.cs                       全局静态注册表 + Register 校验
     ParticleIds.cs                            类型 id 静态字段（注册时回填）
     ParticleRegistration.cs                   唯一类型清单（新增类型只改这里）
-    ParticleWorld.cs                          扁平数组、扫描、读写原语、RNG
-    ParticleRules.cs                          无状态共享移动规则
+    ParticleWorld.cs                          扁平数组、每列厚度缓存、扫描、读写原语、RNG
+    ParticleRules.cs                          无状态共享移动规则（含摩擦度 / 粘性整形）
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射
     Particles/
-      StoneParticle.cs                        石头（摩擦度 0.9 / 粘性 0 ⇒ 10:1 侧翼 + 尖顶，~84° 的陡尖堆）
-      SandParticle.cs                         沙（摩擦度 0 / 粘性 0 ⇒ 1:1 侧翼 + 尖顶三角堆）
-      SoilParticle.cs                         土壤（摩擦度 0.5 / 粘性 0.5 ⇒ 2:1 侧翼 + 被磨平的平头，成块的湿土）
+      StoneParticle.cs                        石头（摩擦度 0.9 / 粘性 0 ⇒ 10:1 尖锥，~84° 的陡尖堆）
+      SandParticle.cs                         沙（摩擦度 0 / 粘性 0 ⇒ 1:1 尖锥三角堆）
+      SoilParticle.cs                         土壤（摩擦度 0.5 / 粘性 0.5 ⇒ 钟形堆：中段立壁、顶部收圆、坡脚外扩）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad
   Driver/
@@ -538,7 +561,7 @@ Assets/Data/
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 摩擦度→净空换算/尖顶磨平的判据与边界（坡面、平台、无支撑落点）/摩擦度 1 不滚落/斜落净空判据/粘性磨平尖顶但不改坡度/石头堆 10:1 坡/固体互阻/沙堆守恒收敛/土堆与同摩擦度对照同坡但平头（隔离类型表）
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 每列厚度缓存的一致性/摩擦度→净空换算/粘性钟形整形（中段更陡、两端更松、干散不受影响）/尖顶磨平的判据与边界/斜落净空判据/石头堆 10:1 坡/固体互阻/沙堆守恒收敛/土堆收圆冠部（隔离类型表）
   SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签 + 摩擦度/粘性断言）+ 安息角剖面（三角堆）测试
 ```
 
@@ -607,10 +630,12 @@ Particle Sandbox
 1. **`vx` / `vy`**：v1 采用 4 字节 `Cell`（不含速度）；确认何时切到 6 字节。
 2. **tick 频率默认值**：现为 60 Hz、`MaxStepsPerFrame = 4`（放在 `ParticleSimulationSettings` 里，可改）。
 3. **上屏倍数**：`StepsPerPresent` 现为 1（每个逻辑帧渲染一次）。等 tick 频率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
-4. **`ParticleRules` 共享帮助方法的边界**：已提供 `StepSolid`（固体的标准运动：正下 → 按 `Info.Friction` 斜落 → 按 `Info.Stickiness` 磨平尖顶）/ `TryBluntCrest`（尖顶判据 + 概率倒塌）/ `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，`<= 0` = 不斜滑）/ `TryFlowHorizontal` / `CanDisplace` / `SlideClearance`（Friction → 净空档位）。三个固体都只写 `StepSolid` 一行：沙（摩擦 0 / 粘性 0，1:1 尖锥）、土（摩擦 0.5 / 粘性 0.5，2:1 + 平头）、石（摩擦 0.9 / 粘性 0，10:1 尖锥）。两个参数都是**类型属性**（`ParticleTypeInfo`），同一类型所有粒子相同——若将来需要同一堆里混不同摩擦 / 粘性，再考虑把这两个值下沉到 `Cell`。`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
+4. **`ParticleRules` 共享帮助方法的边界**：已提供 `StepSolid`（固体的标准运动：正下 → 按 `Info.Friction` 斜落（粘性再按 `ShapeClearance` 依本列厚度整形）→ `TryBluntCrest` 收圆尖顶）/ `ShapeClearance`（厚度 → 净空整形）/ `TryBluntCrest`（尖顶判据 + 概率倒塌）/ `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，`<= 0` = 不斜滑）/ `TryFlowHorizontal` / `CanDisplace` / `SlideClearance`（Friction → 自然净空档位）。三个固体都只写 `StepSolid` 一行：沙（摩擦 0 / 粘性 0，1:1 尖锥）、土（摩擦 0.5 / 粘性 0.5，钟形堆）、石（摩擦 0.9 / 粘性 0，10:1 尖锥）。两个参数都是**类型属性**（`ParticleTypeInfo`），同一类型所有粒子相同——若将来需要同一堆里混不同摩擦 / 粘性，再考虑把这两个值下沉到 `Cell`。`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
 
-5. **粘性堆要不要做成真正的「钟形曲线」**：v1 已落地的是**尖顶磨平**（`Stickiness` = 尖点倒塌概率），实测顶盖从 1 格宽变成 2~4 格宽、侧翼坡度不变、收敛、颗粒守恒，且只对尖锥有效（笔刷方块塌落看不出差异）。
-   若要做成顶端圆、侧翼外凸、底部外扩的真正曲面（钟形），**必须让安息角随「本列堆厚」平滑变化**——本仓库已试过并否决的路线：横向扩散蠕动（把堆摊平成薄饼，且永不收敛）、落哪停哪（无状态时等价于纯摩擦度）、固定 K 的厚度曲线（尺度相关，不可接受）。
-   评审结论（2026-10-02）：**要用「每列固体计数」世界级字段**——`ParticleWorld` 维护 `ushort[Width]`（每列非空气格数，`Swap`/`Set` 里 O(1) 增量），读厚度 = 一次数组下标，内存 +2 字节/列。届时需在 §1 里把它定性为「由 `Cell[]` 派生的缓存」，并补一致性测试。注意整数净空会把坡面量化成阶梯，不会得到数学上光滑的曲线。
+5. **钟形堆的调参与尺度**：已实现（`ShapeClearance` 按「本列厚度 / 全场最厚列」整形，见 §4）。留待按手感调整的是：
+   - `Stickiness` 与 `ParticleRules.BellyAmplitude`（默认 8）的具体取值——目前土用 σ=0.5，实测顶盖 7 格、峰值 37、坡脚外扩、斜率 2.32（同摩擦度干堆对照：顶盖 1 格、峰值 34、斜率 1.89）。**建议按实际画面调，不要只看数字。**
+   - `MaxColumnThickness` 是**全场**最厚列：同一世界里一大一小两堆会共用同一尺度（小堆相对偏「薄」）。若将来出现「小堆被大堆带平」的观感问题，再改成局部峰值估计（代价：需要窗口扫描或额外的每列局部最大值维护）。
+   - 权重曲线 `6.75·r²·(1-r)` 的峰位固定在 `r = 2/3`（上半段立壁、下半段外扩）。想更「圆顶」就把峰位往 `r → 1` 挪，想更「喇叭口」就往 `r → 0` 挪。
+   - 整数净空会把坡面量化成阶梯，不会得到数学上光滑的曲线。
 6. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
 7. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。
