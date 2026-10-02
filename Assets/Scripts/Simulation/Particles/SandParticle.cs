@@ -9,8 +9,7 @@ namespace TapTap2026.Simulation
     // 交互的 ParticleIds：无 —— 全部走 ParticleRules 的标签规则，不特判具体类型
     //
     // 行为：带 Solid 标签，运动完全由 ParticleRules.StepSolid 按 Info.Friction 驱动。
-    //       摩擦度 0 = 最松的 1:1 安息角（45°），因此堆积会形成三角形沙堆；
-    //       粘性 0 = 尖顶保持尖锐（干沙站得住尖点）。
+    //       摩擦度 0 = 最松的 1:1 安息角（45°），因此堆积会形成三角形沙堆。
     //       沙与沙同属 Solid，互不置换，所以在平地上安分不动、只在坡面斜滑。
     public sealed class SandParticle : IParticleType
     {
