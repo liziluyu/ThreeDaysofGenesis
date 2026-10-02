@@ -7,8 +7,51 @@ namespace TapTap2026.Simulation
     public static class ParticleRules
     {
         /// <summary>
+        /// 类别标签的轻重次序：<c>Solid(3) &gt; Liquid(2) &gt; Gas(1) &gt; 空气(0)</c>。
+        /// 一个字节能带多个标签时取最高的一个。
+        /// </summary>
+        public static int TagRank(ParticleTags tags)
+        {
+            if ((tags & ParticleTags.Solid) != 0)
+            {
+                return 3;
+            }
+
+            if ((tags & ParticleTags.Liquid) != 0)
+            {
+                return 2;
+            }
+
+            if ((tags & ParticleTags.Gas) != 0)
+            {
+                return 1;
+            }
+
+            return 0;
+        }
+
+        /// <summary>(x,y) 上的粒子是否带 <see cref="ParticleTags.Solid"/> 标签。越界与空气均为 false。</summary>
+        public static bool IsSolid(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            if (id == ParticleRegistry.AirTypeId)
+            {
+                return false;
+            }
+
+            ParticleType[] types = world.Types;
+            if (id >= types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = types[id];
+            return type != null && (type.Info.Tags & ParticleTags.Solid) != 0;
+        }
+
+        /// <summary>
         /// <paramref name="toX"/>,<paramref name="toY"/> 能否被 <paramref name="fromX"/>,<paramref name="fromY"/> 上的粒子占据。
-        /// 空气可进入；静态格不可；否则比较密度，重者可以换走轻者。
+        /// 空气可进入；静态格不可；否则比较类别标签，高 rank 可以置换低 rank（固体沉穿液体与气体，同类互不置换）。
         /// </summary>
         public static bool CanDisplace(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
@@ -32,7 +75,7 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            return other.Info.Density < self.Info.Density;
+            return TagRank(self.Info.Tags) > TagRank(other.Info.Tags);
         }
 
         /// <summary>正下方可进入则交换，下落一格。</summary>
@@ -67,7 +110,7 @@ namespace TapTap2026.Simulation
         /// 左右顺序随机；扫描途中遇到不可穿过的格（静态格、或比自己重的格）即视为阻断。
         /// 因此单 tick 可能横向跳 1..<paramref name="maxSpread"/> 格——这就是「最大横流格数」的含义。
         /// </summary>
-        /// <remarks>需要「落点下方也必须有空间」这类额外约束时，请在自己类型里内联扫描（见 SandParticle）。</remarks>
+        /// <remarks>需要「落点下方也必须有空间」这类额外约束时，请在自己类型里内联扫描。</remarks>
         public static bool TryFlowHorizontal(ParticleWorld world, int x, int y, int maxSpread)
         {
             if (maxSpread <= 0)
@@ -116,7 +159,7 @@ namespace TapTap2026.Simulation
             return false;
         }
 
-        /// <summary>流体能否沿本行「穿过」这一格继续向外流：空气、同类、以及更轻的格可以；静态格与更重的格不行。</summary>
+        /// <summary>流体能否沿本行「穿过」这一格继续向外流：空气、同类（同 rank）以及更轻的格可以；静态格与更重的格不行。</summary>
         private static bool CanFlowThrough(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
             ushort otherId = world.GetCell(toX, toY).typeId;
@@ -139,7 +182,7 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            return other.Info.Density <= self.Info.Density;
+            return TagRank(other.Info.Tags) <= TagRank(self.Info.Tags);
         }
     }
 }

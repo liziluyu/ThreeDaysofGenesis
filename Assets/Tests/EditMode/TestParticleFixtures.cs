@@ -20,7 +20,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(2f, true, false, 0, Palette, "TestGrainParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, true, false, 0, Palette, "TestGrainParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -53,7 +53,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(1f, true, false, 4, Palette, "TestLiquidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, true, false, 4, Palette, "TestLiquidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -89,7 +89,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(999f, false, true, 0, Palette, "TestStaticParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, false, true, 0, Palette, "TestStaticParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -115,7 +115,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(1f, false, false, 0, Palette, "TestWalkerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, Palette, "TestWalkerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -143,7 +143,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(1f, false, false, 0, Palette, "TestBadPaletteParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, Palette, "TestBadPaletteParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)

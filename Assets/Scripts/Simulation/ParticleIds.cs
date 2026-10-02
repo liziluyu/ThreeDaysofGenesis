@@ -13,5 +13,11 @@ namespace TapTap2026.Simulation
         public const ushort Air = ParticleRegistry.AirTypeId;
 
         // ================= 新增类型在此追加字段（只能追加，不能插队） =================
+
+        /// <summary>石头。静态固体。</summary>
+        public static ushort Stone;
+
+        /// <summary>沙。受重力的粉末。</summary>
+        public static ushort Sand;
     }
 }

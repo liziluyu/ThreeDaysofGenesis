@@ -26,7 +26,8 @@ namespace TapTap2026.Simulation
             _registered = true;
 
             // ========================= 类型清单 =========================
-            // ParticleIds.Xxx = ParticleRegistry.Register(new XxxParticle());
+            ParticleIds.Stone = ParticleRegistry.Register(new StoneParticle());
+            ParticleIds.Sand = ParticleRegistry.Register(new SandParticle());
             // ===========================================================
         }
 
