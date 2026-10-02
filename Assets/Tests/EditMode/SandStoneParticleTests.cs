@@ -102,6 +102,12 @@ namespace TapTap2026.Tests
             Assert.IsFalse(sand.IsStatic, "沙必须参与扫描");
             Assert.IsTrue(soil.AffectedByGravity, "土应受重力");
             Assert.IsFalse(soil.IsStatic, "土必须参与扫描");
+
+            // 摩擦度决定安息角：沙最松（0 = 45°），越往上越陡。
+            Assert.AreEqual(0f, sand.Friction, "沙的摩擦度应为 0（1:1 安息角）");
+            Assert.Greater(soil.Friction, sand.Friction, "土的摩擦度应高于沙");
+            Assert.Greater(stone.Friction, soil.Friction, "石头的摩擦度应高于土");
+            Assert.LessOrEqual(stone.Friction, 1f, "摩擦度不得超过 1");
         }
 
         /// <summary>

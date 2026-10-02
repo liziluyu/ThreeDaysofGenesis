@@ -20,7 +20,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, true, false, 0, Palette, "TestGrainParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, true, false, 0, 0f, Palette, "TestGrainParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -53,7 +53,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, true, false, 4, Palette, "TestLiquidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, true, false, 4, 0f, Palette, "TestLiquidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -89,7 +89,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, false, true, 0, Palette, "TestStaticParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, false, true, 0, 0f, Palette, "TestStaticParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -115,7 +115,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, Palette, "TestWalkerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, Palette, "TestWalkerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -144,7 +144,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, false, false, 8, Palette, "TestSolidFlowParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, false, false, 8, 0f, Palette, "TestSolidFlowParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -169,7 +169,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, Palette, "TestThrowerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, Palette, "TestThrowerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -196,7 +196,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, Palette, "TestBadPaletteParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, Palette, "TestBadPaletteParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -219,7 +219,54 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.None, 1f, false, false, 0, Palette, "TestNoTagParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.None, 1f, false, false, 0, 0f, Palette, "TestNoTagParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>摩擦度 1 的固体：走 <see cref="ParticleRules.StepSolid"/>，正下方有固体时永不斜滑。</summary>
+    internal sealed class TestStickySolidParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(70, 70, 70, 255) };
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 4f, true, false, 0, 1f, Palette, "TestStickySolidParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+            ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>摩擦度非法的类型：注册校验必须拒绝它。</summary>
+    internal sealed class TestBadFrictionParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(7, 8, 9, 255) };
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 1.5f, Palette, "TestBadFrictionParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -246,6 +293,7 @@ namespace TapTap2026.Tests
         internal const ushort WalkerId = 4;
         internal const ushort SolidFlowId = 5;
         internal const ushort ThrowerId = 6;
+        internal const ushort StickyId = 7;
 
         internal static readonly TestGrainParticle Grain = new TestGrainParticle();
         internal static readonly TestLiquidParticle Liquid = new TestLiquidParticle();
@@ -270,6 +318,7 @@ namespace TapTap2026.Tests
                         Bind(WalkerId, Walker),
                         Bind(SolidFlowId, new TestSolidFlowParticle()),
                         Bind(ThrowerId, new TestThrowerParticle()),
+                        Bind(StickyId, new TestStickySolidParticle()),
                     };
                 }
 

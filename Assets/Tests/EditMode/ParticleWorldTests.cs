@@ -106,6 +106,60 @@ namespace TapTap2026.Tests
             Assert.IsTrue(stoneLike.IsAir(2, 2));
         }
 
+        [Test]
+        public void SlideClearance_MapsFrictionToIntegerReposeSlope()
+        {
+            Assert.AreEqual(1, ParticleRules.SlideClearance(0f), "摩擦度 0 = 1:1（45°，像沙）");
+            Assert.AreEqual(2, ParticleRules.SlideClearance(0.5f), "摩擦度 0.5 = 2:1（63°）");
+            Assert.AreEqual(10, ParticleRules.SlideClearance(0.9f), "摩擦度 0.9 = 10:1（84°，像石头）");
+            Assert.AreEqual(0, ParticleRules.SlideClearance(1f), "摩擦度 1 = 永不斜滑");
+            Assert.AreEqual(0, ParticleRules.SlideClearance(2f), "越界摩擦度按「永不斜滑」处理，不静默退化成 45°");
+
+            // 摩擦度越高，安息角越陡（净空非递减）——不会出现「摩擦更大反而更滑」的反转。
+            int previous = 1;
+            for (int step = 0; step < 10; step++)
+            {
+                int clearance = ParticleRules.SlideClearance(step / 10f);
+                Assert.GreaterOrEqual(clearance, previous, $"摩擦度 {step / 10f} 的净空比更低的摩擦度还小");
+                previous = clearance;
+            }
+
+            // 净空 0 / 负值是不斜滑的哨兵值，TryDiagonalFall 不得把它当成最松的 1 格。
+            ParticleWorld direct = NewWorld();
+            direct.Set(2, 2, TestTypes.SolidFlowId);
+            Assert.IsFalse(ParticleRules.TryDiagonalFall(direct, 2, 2, 0));
+            Assert.IsFalse(ParticleRules.TryDiagonalFall(direct, 2, 2, -3));
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)direct.GetCell(2, 2).typeId);
+        }
+
+        [Test]
+        public void FrictionOneSolid_NeverRollsOff_EvenWithAClearDrop()
+        {
+            // 摩擦度 1 的固体坐在静态柱顶，正下被挡；两条斜下连到地面的整列都空。
+            // 任何 < 1 的摩擦度都会沿坡滚下去，唯独摩擦度 1 必须原地不动。
+            ParticleWorld world = NewWorld();
+            world.Set(2, 0, TestTypes.StaticId);
+            world.Set(2, 1, TestTypes.StaticId);
+            world.Set(2, 2, TestTypes.StaticId);
+            world.Set(2, 3, TestTypes.StickyId);
+
+            for (int i = 0; i < 20; i++)
+            {
+                world.Step();
+            }
+
+            Assert.AreEqual((int)TestTypes.StickyId, (int)world.GetCell(2, 3).typeId, "下方有固体时摩擦度 1 的固体不得滚落");
+            Assert.IsTrue(world.IsAir(1, 2), "摩擦度 1 不得沿坡滑到 (1,2)");
+            Assert.IsTrue(world.IsAir(3, 2), "摩擦度 1 不得沿坡滑到 (3,2)");
+
+            // 摩擦只影响斜滑，不影响正下：下方是空气时照常直落。
+            ParticleWorld falling = NewWorld();
+            falling.Set(2, 3, TestTypes.StickyId);
+            falling.Step();
+
+            Assert.AreEqual((int)TestTypes.StickyId, (int)falling.GetCell(2, 2).typeId, "摩擦度 1 不应阻止直落");
+        }
+
         // ============================== 写操作与钩子 ==============================
 
         [Test]
@@ -357,6 +411,16 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void Registry_RejectsFrictionOutsideUnitRange()
+        {
+            int before = ParticleRegistry.Count;
+
+            Assert.Throws<InvalidOperationException>(() => ParticleRegistry.Register(new TestBadFrictionParticle()));
+
+            Assert.AreEqual(before, ParticleRegistry.Count);
+        }
+
+        [Test]
         public void Registry_RejectsTypeWithoutCategoryTag()
         {
             int before = ParticleRegistry.Count;
@@ -380,7 +444,7 @@ namespace TapTap2026.Tests
         [Test]
         public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
         {
-            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, new Color32[0], "BadTableEntry");
+            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, new Color32[0], "BadTableEntry");
             var bad = new ParticleType(1, badInfo, null, null, null);
 
             Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));
