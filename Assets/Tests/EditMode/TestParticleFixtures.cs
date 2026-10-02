@@ -136,7 +136,60 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>调色板非法的类型，用于验证注册校验不会留下半注册状态。</summary>
+    /// <summary>测试专用的可流动固体：Solid 标签、非静态、不受重力、OnUpdate 不做任何事。</summary>
+    /// <remarks>用于直接调用 <see cref="ParticleRules.TryFlowHorizontal"/>，隔离出「穿行判定」这一条规则。</remarks>
+    internal sealed class TestSolidFlowParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(120, 120, 120, 255) };
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, false, false, 8, Palette, "TestSolidFlowParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>OnUpdate 按需抛异常的粒子，用于验证 Step 异常后写入标记仍然正确。</summary>
+    internal sealed class TestThrowerParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(200, 0, 200, 255) };
+
+        internal static bool Armed;
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, Palette, "TestThrowerParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+            if (Armed)
+            {
+                throw new System.InvalidOperationException("TestThrowerParticle 故意抛出。");
+            }
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>调色板非法的类型：注册校验必须拒绝它。</summary>
     internal sealed class TestBadPaletteParticle : IParticleType
     {
         internal static readonly Color32[] Palette = new Color32[0];
@@ -159,41 +212,69 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>一次性把测试类型注册进全局注册表，幂等。</summary>
+    /// <summary>没有任何类别标签的类型：注册校验必须拒绝它（rank 0 等同于空气）。</summary>
+    internal sealed class TestNoTagParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(1, 2, 3, 255) };
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.None, 1f, false, false, 0, Palette, "TestNoTagParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 测试用的隔离类型表。**完全不触碰全局注册表**，因此测试之间、以及与生产注册顺序之间互不污染。
+    /// </summary>
     internal static class TestTypes
     {
-        internal static TestGrainParticle Grain;
-        internal static TestLiquidParticle Liquid;
-        internal static TestStaticParticle Static;
-        internal static TestWalkerParticle Walker;
+        internal const ushort GrainId = 1;
+        internal const ushort LiquidId = 2;
+        internal const ushort StaticId = 3;
+        internal const ushort WalkerId = 4;
+        internal const ushort SolidFlowId = 5;
+        internal const ushort ThrowerId = 6;
 
-        internal static ushort GrainId;
-        internal static ushort LiquidId;
-        internal static ushort StaticId;
-        internal static ushort WalkerId;
+        internal static readonly TestGrainParticle Grain = new TestGrainParticle();
+        internal static readonly TestLiquidParticle Liquid = new TestLiquidParticle();
+        internal static readonly TestStaticParticle Static = new TestStaticParticle();
+        internal static readonly TestWalkerParticle Walker = new TestWalkerParticle();
 
-        private static bool _ready;
+        private static ParticleType[] _table;
 
-        internal static void EnsureRegistered()
+        /// <summary>下标 0 是空气（null），其余按上面的 id 常量排列。</summary>
+        internal static ParticleType[] Table
         {
-            if (_ready)
+            get
             {
-                return;
+                if (_table == null)
+                {
+                    _table = new[]
+                    {
+                        null,
+                        Bind(GrainId, Grain),
+                        Bind(LiquidId, Liquid),
+                        Bind(StaticId, Static),
+                        Bind(WalkerId, Walker),
+                        Bind(SolidFlowId, new TestSolidFlowParticle()),
+                        Bind(ThrowerId, new TestThrowerParticle()),
+                    };
+                }
+
+                return _table;
             }
-
-            ParticleRegistration.RegisterAll();
-
-            Grain = new TestGrainParticle();
-            Liquid = new TestLiquidParticle();
-            Static = new TestStaticParticle();
-            Walker = new TestWalkerParticle();
-
-            GrainId = ParticleRegistry.Register(Grain);
-            LiquidId = ParticleRegistry.Register(Liquid);
-            StaticId = ParticleRegistry.Register(Static);
-            WalkerId = ParticleRegistry.Register(Walker);
-
-            _ready = true;
         }
 
         internal static void ResetCounters()
@@ -204,6 +285,44 @@ namespace TapTap2026.Tests
             Grain.VictimIdSeenByKill = ushort.MaxValue;
             Static.UpdateCount = 0;
             Walker.UpdateCount = 0;
+            TestThrowerParticle.Armed = false;
+        }
+
+        private static ParticleType Bind(ushort id, IParticleType behaviour)
+        {
+            return new ParticleType(id, behaviour.Info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
+        }
+    }
+
+    /// <summary>生产粒子（Stone / Sand）的隔离类型表，供行为测试使用；同样不触碰全局注册表。</summary>
+    internal static class ProductionTypes
+    {
+        internal const ushort StoneId = 1;
+        internal const ushort SandId = 2;
+
+        private static ParticleType[] _table;
+
+        internal static ParticleType[] Table
+        {
+            get
+            {
+                if (_table == null)
+                {
+                    _table = new[]
+                    {
+                        null,
+                        Bind(StoneId, new StoneParticle()),
+                        Bind(SandId, new SandParticle()),
+                    };
+                }
+
+                return _table;
+            }
+        }
+
+        private static ParticleType Bind(ushort id, IParticleType behaviour)
+        {
+            return new ParticleType(id, behaviour.Info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
         }
     }
 }

@@ -15,14 +15,15 @@ namespace TapTap2026.Tests
         [SetUp]
         public void SetUp()
         {
-            TestTypes.EnsureRegistered();
             TestTypes.ResetCounters();
         }
 
         private static ParticleWorld NewWorld(uint seed = 12345u)
         {
-            return new ParticleWorld(W, H, seed);
+            return new ParticleWorld(W, H, seed, TestTypes.Table);
         }
+
+        // ============================== 基本契约 ==============================
 
         [Test]
         public void NewWorld_IsAllAir_AndUsesRowMajorIndexing()
@@ -65,35 +66,78 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void Set_SamplesShadeFromPalette_AndRaisesOnSpawn()
+        public void CanDisplace_RejectsOutOfBoundsTarget()
         {
             ParticleWorld world = NewWorld();
-            world.Set(4, 4, TestTypes.GrainId);
+            world.Set(0, 0, TestTypes.GrainId);
 
-            Cell cell = world.GetCell(4, 4);
-            Assert.AreEqual((int)TestTypes.GrainId, (int)cell.typeId);
-            Assert.AreEqual(1, TestTypes.Grain.SpawnCount);
-            Assert.IsTrue(cell.shade < TestGrainParticle.Palette.Length);
+            // 越界目标必须为 false：GetCell 把越界当空气，若不显式拒绝会误判为「可以移动」，而 Swap 会静默失败。
+            Assert.IsFalse(ParticleRules.CanDisplace(world, 0, 0, -1, 0));
+            Assert.IsFalse(ParticleRules.CanDisplace(world, 0, 0, 0, -1));
+            Assert.IsTrue(ParticleRules.CanDisplace(world, 0, 0, 1, 0));
+        }
+
+        // ============================== 写操作与钩子 ==============================
+
+        [Test]
+        public void Set_SamplesShade_FromTheTypesOwnPalette()
+        {
+            ParticleWorld world = NewWorld();
+            for (int x = 0; x < W; x++)
+            {
+                world.Set(x, 8, TestTypes.GrainId);
+            }
+
+            var seen = new bool[TestGrainParticle.Palette.Length];
+            for (int x = 0; x < W; x++)
+            {
+                int shade = world.GetCell(x, 8).shade;
+                Assert.IsTrue(shade >= 0 && shade < TestGrainParticle.Palette.Length, "shade 越出调色板范围：" + shade);
+                seen[shade] = true;
+            }
+
+            int distinct = 0;
+            for (int i = 0; i < seen.Length; i++)
+            {
+                if (seen[i])
+                {
+                    distinct++;
+                }
+            }
+
+            Assert.IsTrue(distinct > 1, W + " 次生成只出现 1 种 shade，说明并不是按调色板抽样");
+            Assert.AreEqual(W, TestTypes.Grain.SpawnCount);
         }
 
         [Test]
-        public void Set_MarksCellAsUnprocessedForTheNextTick()
+        public void Set_BetweenSteps_CreatesAParticleThatMovesOnTheVeryNextStep()
         {
             ParticleWorld world = NewWorld();
-            world.Set(4, 4, TestTypes.GrainId);
-
-            int expectedStamp = (world.Tick & 1) ^ 1;
-            Assert.AreEqual(expectedStamp, LowBit(world.GetCell(4, 4)));
+            world.Step();
+            world.Set(5, 8, TestTypes.GrainId);
 
             world.Step();
-            world.Set(4, 4, TestTypes.LiquidId);
-            expectedStamp = (world.Tick & 1) ^ 1;
-            Assert.AreEqual(expectedStamp, LowBit(world.GetCell(4, 4)));
+
+            Assert.AreEqual((int)TestTypes.GrainId, (int)world.GetCell(5, 7).typeId);
+            Assert.IsTrue(world.IsAir(5, 8));
         }
 
-        private static int LowBit(Cell cell)
+        [Test]
+        public void Step_WhenAnOnUpdateThrows_StillLeavesNewParticlesProcessableNextTick()
         {
-            return cell.flags & CellFlags.ProcessedParity;
+            ParticleWorld world = NewWorld();
+            world.Set(5, 8, TestTypes.ThrowerId);
+            TestThrowerParticle.Armed = true;
+
+            Assert.Throws<InvalidOperationException>(() => world.Step());
+
+            TestThrowerParticle.Armed = false;
+            world.Clear(5, 8);
+            world.Set(1, 8, TestTypes.WalkerId);
+
+            world.Step();
+
+            Assert.AreEqual((int)TestTypes.WalkerId, (int)world.GetCell(2, 8).typeId, "异常后新建的粒子被误判为本 tick 已处理");
         }
 
         [Test]
@@ -142,7 +186,7 @@ namespace TapTap2026.Tests
         public void Set_UnregisteredTypeId_IsRejected()
         {
             ParticleWorld world = NewWorld();
-            ushort badId = (ushort)(ParticleRegistry.Types.Length + 10);
+            ushort badId = (ushort)(world.Types.Length + 10);
 
             LogAssert.Expect(LogType.Error, new Regex("未注册的 typeId"));
 
@@ -166,6 +210,8 @@ namespace TapTap2026.Tests
             Assert.AreEqual(spawns, TestTypes.Grain.SpawnCount);
             Assert.AreEqual(0, TestTypes.Grain.KillCount);
         }
+
+        // ============================== 扫描语义 ==============================
 
         [Test]
         public void Swap_BlocksReprocessingWithinTheSameTick()
@@ -214,10 +260,39 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void FlowHorizontal_SolidDoesNotPassThroughSameKindSolid()
+        {
+            ParticleWorld world = new ParticleWorld(4, 3, 1u, TestTypes.Table);
+            world.Set(0, 1, TestTypes.SolidFlowId);
+            world.Set(1, 1, TestTypes.SolidFlowId);
+
+            // (2,1) 是空气，但路径上的同类固体挡住了：固体不得从同伴身上「穿」过去。
+            Assert.IsFalse(ParticleRules.TryFlowHorizontal(world, 0, 1, 4));
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)world.GetCell(0, 1).typeId);
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)world.GetCell(1, 1).typeId);
+        }
+
+        [Test]
+        public void FlowHorizontal_LiquidPassesThroughSameKindLiquidTowardsAir()
+        {
+            ParticleWorld world = new ParticleWorld(4, 2, 1u, TestTypes.Table);
+            world.Set(0, 1, TestTypes.LiquidId);
+            world.Set(1, 1, TestTypes.LiquidId);
+
+            Assert.IsTrue(ParticleRules.TryFlowHorizontal(world, 0, 1, 4));
+
+            Assert.IsTrue(world.IsAir(0, 1));
+            Assert.AreEqual((int)TestTypes.LiquidId, (int)world.GetCell(1, 1).typeId);
+            Assert.AreEqual((int)TestTypes.LiquidId, (int)world.GetCell(2, 1).typeId);
+        }
+
+        // ============================== 确定性与注册表 ==============================
+
+        [Test]
         public void SameSeedAndSameCommands_ProduceIdenticalGrids()
         {
-            ParticleWorld a = new ParticleWorld(24, 24, 777u);
-            ParticleWorld b = new ParticleWorld(24, 24, 777u);
+            ParticleWorld a = new ParticleWorld(24, 24, 777u, TestTypes.Table);
+            ParticleWorld b = new ParticleWorld(24, 24, 777u, TestTypes.Table);
 
             for (int y = 12; y < 20; y++)
             {
@@ -238,6 +313,7 @@ namespace TapTap2026.Tests
             {
                 Assert.AreEqual((int)a.Cells[i].typeId, (int)b.Cells[i].typeId, "typeId 在下标 " + i + " 处不一致");
                 Assert.AreEqual((int)a.Cells[i].shade, (int)b.Cells[i].shade, "shade 在下标 " + i + " 处不一致");
+                Assert.AreEqual((int)a.Cells[i].flags, (int)b.Cells[i].flags, "flags 在下标 " + i + " 处不一致");
             }
         }
 
@@ -252,9 +328,41 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void Registry_RejectsTypeWithoutCategoryTag()
+        {
+            int before = ParticleRegistry.Count;
+
+            Assert.Throws<InvalidOperationException>(() => ParticleRegistry.Register(new TestNoTagParticle()));
+
+            Assert.AreEqual(before, ParticleRegistry.Count);
+        }
+
+        [Test]
+        public void RegisterBatch_WithOneInvalidType_RegistersNothing()
+        {
+            int before = ParticleRegistry.Count;
+
+            Assert.Throws<InvalidOperationException>(() =>
+                ParticleRegistry.RegisterBatch(new TestWalkerParticle(), new TestBadPaletteParticle()));
+
+            Assert.AreEqual(before, ParticleRegistry.Count, "批量注册失败后不得留下半注册表");
+        }
+
+        [Test]
+        public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
+        {
+            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, new Color32[0], "BadTableEntry");
+            var bad = new ParticleType(1, badInfo, null, null, null);
+
+            Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));
+        }
+
+        // ============================== 像素映射 ==============================
+
+        [Test]
         public void PixelBuffer_MapsShadeToPaletteAndAirToBackground()
         {
-            ParticleWorld world = new ParticleWorld(4, 2, 1u);
+            ParticleWorld world = new ParticleWorld(4, 2, 1u, TestTypes.Table);
             world.Set(1, 0, TestTypes.GrainId);
             world.Set(2, 0, TestTypes.LiquidId);
 
@@ -269,12 +377,159 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void PixelBuffer_FallsBackToFirstPaletteColorWhenShadeIsOutOfRange()
+        {
+            ParticleWorld world = new ParticleWorld(2, 1, 1u, TestTypes.Table);
+            world.Set(0, 0, TestTypes.LiquidId);
+            world.At(0, 0).shade = 250;
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, default(Color32));
+
+            Assert.AreEqual(TestLiquidParticle.Palette[0], pixels[0]);
+        }
+
+        [Test]
         public void PixelBuffer_RejectsMismatchedBufferLength()
         {
-            ParticleWorld world = new ParticleWorld(4, 2, 1u);
+            ParticleWorld world = new ParticleWorld(4, 2, 1u, TestTypes.Table);
             var pixels = new Color32[world.CellCount - 1];
 
             Assert.Throws<ArgumentException>(() => ParticlePixelBuffer.Fill(world, pixels, default(Color32)));
+        }
+
+        // ============================== 生产粒子：石头与沙 ==============================
+
+        [Test]
+        public void Stone_StacksIntoAVerticalColumn_WithoutLateralDrift()
+        {
+            const int width = 9;
+            const int height = 12;
+            var world = new ParticleWorld(width, height, 1u, ProductionTypes.Table);
+
+            for (int x = 0; x < width; x++)
+            {
+                world.Set(x, 0, ProductionTypes.StoneId);
+            }
+
+            for (int y = 6; y < 10; y++)
+            {
+                world.Set(4, y, ProductionTypes.StoneId);
+            }
+
+            for (int i = 0; i < 60; i++)
+            {
+                world.Step();
+            }
+
+            // 石头只竖直下落：4 块全部垒在 x=4 的柱子上，一格都没侧移。
+            for (int y = 1; y <= 4; y++)
+            {
+                Assert.AreEqual((int)ProductionTypes.StoneId, (int)world.GetCell(4, y).typeId, "柱子 y=" + y + " 处缺失");
+            }
+
+            for (int y = 5; y < height; y++)
+            {
+                Assert.IsTrue(world.IsAir(4, y), "柱子顶部以上 y=" + y + " 不该有粒子");
+            }
+
+            Assert.AreEqual(width + 4, CountType(world, ProductionTypes.StoneId));
+        }
+
+        [Test]
+        public void Solid_StopsExactlyOnTopOfAnotherSolid()
+        {
+            const int width = 5;
+            const int height = 6;
+            var world = new ParticleWorld(width, height, 1u, ProductionTypes.Table);
+
+            for (int x = 0; x < width; x++)
+            {
+                world.Set(x, 0, ProductionTypes.StoneId);
+            }
+
+            world.Set(2, 5, ProductionTypes.StoneId);
+
+            for (int i = 0; i < 30; i++)
+            {
+                world.Step();
+            }
+
+            // 同类固体互不置换：落石停在已有固体正上方，不会再往下挤。
+            Assert.AreEqual((int)ProductionTypes.StoneId, (int)world.GetCell(2, 1).typeId);
+            Assert.IsTrue(world.IsAir(2, 2));
+            Assert.AreEqual(width + 1, CountType(world, ProductionTypes.StoneId));
+        }
+
+        [Test]
+        public void Sand_FormsAStablePileAndConservesGrainCount()
+        {
+            const int width = 40;
+            const int height = 24;
+            var world = new ParticleWorld(width, height, 20261002u, ProductionTypes.Table);
+
+            for (int x = 0; x < width; x++)
+            {
+                world.Set(x, 0, ProductionTypes.StoneId);
+            }
+
+            int placed = 0;
+            for (int y = 14; y < 22; y++)
+            {
+                for (int x = 16; x < 26; x++)
+                {
+                    world.Set(x, y, ProductionTypes.SandId);
+                    placed++;
+                }
+            }
+
+            for (int i = 0; i < 400; i++)
+            {
+                world.Step();
+            }
+
+            Assert.AreEqual(placed, CountType(world, ProductionTypes.SandId), "沙粒数量必须守恒");
+
+            // 不存在悬空沙粒：每一粒下方都必须是非空气。
+            for (int y = 1; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (world.GetCell(x, y).typeId == ProductionTypes.SandId)
+                    {
+                        Assert.AreNotEqual(
+                            (int)ParticleRegistry.AirTypeId,
+                            (int)world.GetCell(x, y - 1).typeId,
+                            $"({x},{y}) 的沙粒悬空");
+                    }
+                }
+            }
+
+            // 已收敛：再跑 100 tick 逐格不变（堆体不是永远在抖）。
+            var snapshot = (Cell[])world.Cells.Clone();
+            for (int i = 0; i < 100; i++)
+            {
+                world.Step();
+            }
+
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                Assert.AreEqual((int)snapshot[i].typeId, (int)world.Cells[i].typeId, "下标 " + i + " 的沙堆仍在移动");
+            }
+        }
+
+        private static int CountType(ParticleWorld world, ushort typeId)
+        {
+            int count = 0;
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                if (world.Cells[i].typeId == typeId)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
     }
 }
