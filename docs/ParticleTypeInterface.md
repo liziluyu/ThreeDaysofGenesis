@@ -157,11 +157,12 @@ public readonly struct ParticleTypeInfo
 
 | 类型 | `Friction` | `Stickiness` | 安息角 |
 |---|---|---|---|
-| 沙 | `0` | `0` | 1:1（约 45°） |
+| 沙 | `0` | `0` | 1:1（约 45°），干散：旁边有沙也照样滚 |
 | 土 | `0.5` | `0.5` | 约 3:1（摩擦给 2:1，粘性再抬一档；孤立土粒仍按 2:1 滑落） |
-| 石 | `0.9` | `0` | 10:1（约 84°） |
+| 石 | `0.9` | `0.9` | 摩擦给 10:1，粘性再抬 9 档到 **19:1（约 87°）**——靠着石头的外侧几乎不滚，垛成近乎垂直的石垛 |
 
-要试别的粘性，改 `Info` 的 `stickiness:` 即可（粘性档位是量化的，步长约 `0.1` 才看得出堆体变化）。
+要试别的粘性，改 `Info` 的 `stickiness:` 即可（粘性档位是量化的，步长约 `0.1` 才看得出堆体变化；
+`0.9` 与 `1` 的差别只在「粘住时还剩几格净空」与「完全不滑」之间，观感都接近垂直）。
 
 ### 标签（Tag）：跨类型规则的唯一判据
 
@@ -518,7 +519,7 @@ Assets/Scripts/
     ParticleRules.cs                          无状态共享移动规则
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射
     Particles/
-      StoneParticle.cs                        石头（固体标签，摩擦度 0.9 / 粘性 0 ⇒ 10:1 安息角，~84° 的陡尖堆）
+      StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
       SandParticle.cs                         沙（固体标签，摩擦度 0 / 粘性 0 ⇒ 1:1 安息角三角堆）
       SoilParticle.cs                         土壤（固体标签，摩擦度 0.5 / 粘性 0.5 ⇒ 约 3:1 安息角，比沙陡得多）
   Rendering/
@@ -536,7 +537,7 @@ Assets/Data/
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/粘性抬高堆体安息角/石头堆 10:1 坡/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/干散材料安息角随摩擦度（1:1/2:1/10:1）/高粘性石头垛远陡于干石对照/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）
   SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签 + 摩擦度/粘性断言）+ 安息角剖面（三角堆）测试
 ```
 
@@ -558,7 +559,7 @@ Particle Sandbox
 
 - **沙箱初始是空世界**：`ParticleSimulationDriver.Awake` 建出的网格全是空气，没有任何粒子；`ParticleSandboxSeeder` 不再在 `Start` 自动搭建，内容只能由 `ParticleEditor` 画出来。
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在已注册类型间循环切换；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
-- **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦（摩擦度 0.9 ⇒ 斜落要 10 格净空）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
+- **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 
 ---

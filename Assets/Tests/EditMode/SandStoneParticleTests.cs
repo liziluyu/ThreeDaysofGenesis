@@ -109,11 +109,11 @@ namespace TapTap2026.Tests
             Assert.Greater(stone.Friction, soil.Friction, "石头的摩擦度应高于土");
             Assert.LessOrEqual(stone.Friction, 1f, "摩擦度不得超过 1");
 
-            // 粘性只在旁边有固体时抬高安息角：只有土带粘性，沙与石头都没有。
-            Assert.AreEqual(0f, sand.Stickiness, "沙不应有粘性");
-            Assert.AreEqual(0f, stone.Stickiness, "石头不应有粘性");
-            Assert.Greater(soil.Stickiness, 0f, "土应带粘性（旁边有固体时更陡）");
-            Assert.LessOrEqual(soil.Stickiness, 1f, "粘性不得超过 1");
+            // 粘性按材料排序：沙是干的（0，旁边有粒子也照样滚），土中等，石头很高（靠着石头几乎不滚）。
+            Assert.AreEqual(0f, sand.Stickiness, "沙不应有粘性（干散）");
+            Assert.Greater(soil.Stickiness, sand.Stickiness, "土的粘性应高于沙");
+            Assert.Greater(stone.Stickiness, soil.Stickiness, "石头的粘性应高于土（高粘性）");
+            Assert.LessOrEqual(stone.Stickiness, 1f, "粘性不得超过 1");
         }
 
         /// <summary>

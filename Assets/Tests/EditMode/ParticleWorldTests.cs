@@ -580,33 +580,39 @@ namespace TapTap2026.Tests
 
         // ============================== 生产粒子：石头 / 沙 / 土 ==============================
 
+        /// <summary>
+        /// 摩擦度这一层的安息角契约（把粘性关掉，σ=0）：沙 1:1、土 2:1、石 10:1。
+        /// 同几何、同种子、同 100 颗逐颗投放、同石头地板，唯一变量是摩擦度。
+        /// 生产石头的粘性很高，堆得比 10:1 更陡，那是粘性的账——见 <see cref="Stone_HighStickinessPilesMuchSteeperThanDryStone"/>。
+        /// </summary>
         [Test]
-        public void Stone_PileIsTenTimesAsSteepAsSandPile()
+        public void DrySolid_ReposeSlopeFollowsFriction()
         {
             const int width = 41;
             const int height = 40;
             const int grains = 100;
 
-            ParticleWorld sand = DropPile(width, height, grains, ProductionTypes.SandId);
-            ParticleWorld soil = DropPile(width, height, grains, ProductionTypes.SoilId);
-            ParticleWorld stone = DropPile(width, height, grains, ProductionTypes.StoneId);
+            ParticleWorld sand = DropTunablePile(width, height, grains, 0f, 0f);
+            ParticleWorld soil = DropTunablePile(width, height, grains, 0.5f, 0f);
+            ParticleWorld stone = DropTunablePile(width, height, grains, 0.9f, 0f);
 
-            Assert.AreEqual(grains, CountType(sand, ProductionTypes.SandId), "沙粒数量必须守恒");
-            Assert.AreEqual(grains, CountType(soil, ProductionTypes.SoilId), "土粒数量必须守恒");
-            Assert.AreEqual(grains + width, CountType(stone, ProductionTypes.StoneId), "石块总数必须守恒（石头地板 + 投放的石块）");
+            Assert.AreEqual(grains, CountType(sand, TunableId), "沙粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(soil, TunableId), "土粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(stone, TunableId), "石粒数量必须守恒");
 
-            // 安息角斜率 = 堆高 / 半径（= 2·堆高/底宽）：沙 ~1（1:1，45°），土 ~3（摩擦 + 粘性），石头 ~10（10:1，84°）。
-            float sandSlope = Slope(sand, ProductionTypes.SandId);
-            float soilSlope = Slope(soil, ProductionTypes.SoilId);
-            float stoneSlope = Slope(stone, ProductionTypes.StoneId);
+            // 安息角斜率 = 堆高 / 半径（= 2·堆高/底宽）：沙 1（1:1，45°）、土 2（2:1，63°）、石 10（10:1，84°）。
+            float sandSlope = Slope(sand, TunableId);
+            float soilSlope = Slope(soil, TunableId);
+            float stoneSlope = Slope(stone, TunableId);
 
-            Assert.That(stoneSlope, Is.InRange(8.0f, 12.0f), $"石头堆斜率应接近 10（10:1），实际 {stoneSlope:F2}");
-            Assert.Greater(stoneSlope, soilSlope * 2.5f, "石头堆必须明显比土堆（约 3:1）陡");
-            Assert.Greater(stoneSlope, sandSlope * 7f, "石头堆必须明显比沙堆（1:1）陡");
+            Assert.That(sandSlope, Is.InRange(0.7f, 1.2f), $"沙堆斜率应接近 1（1:1），实际 {sandSlope:F2}");
+            Assert.That(soilSlope, Is.InRange(1.6f, 2.4f), $"土堆斜率应接近 2（2:1），实际 {soilSlope:F2}");
+            Assert.That(stoneSlope, Is.InRange(8.0f, 12.0f), $"石堆斜率应接近 10（10:1），实际 {stoneSlope:F2}");
+            Assert.Greater(stoneSlope, soilSlope * 4f, "石堆必须明显比土堆（2:1）陡");
+            Assert.Greater(stoneSlope, sandSlope * 7f, "石堆必须明显比沙堆（1:1）陡");
 
-            // 堆顶必须留在投放行以下：否则投放的石块会直接盖在堆顶（Set 同类型是空操作）而被吞掉，
-            // 上面的守恒与斜率断言都会失去意义。
-            Assert.Less(PileHeight(stone, ProductionTypes.StoneId), height - 1, "石头堆顶触到投放行了，世界太矮");
+            // 堆顶必须留在投放行以下：否则投放的颗粒会直接盖在堆顶（Set 同类型是空操作）而被吞掉。
+            Assert.Less(PileHeight(stone, TunableId), height - 1, "石堆顶触到投放行了，世界太矮");
 
             // 已收敛：再跑 100 tick 逐格不变（这么陡的坡面也不会永远侧滑）。
             var snapshot = (Cell[])stone.Cells.Clone();
@@ -617,7 +623,47 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < stone.CellCount; i++)
             {
-                Assert.AreEqual((int)snapshot[i].typeId, (int)stone.Cells[i].typeId, "下标 " + i + " 的石头堆仍在移动");
+                Assert.AreEqual((int)snapshot[i].typeId, (int)stone.Cells[i].typeId, "下标 " + i + " 的石堆仍在移动");
+            }
+        }
+
+        /// <summary>
+        /// 石头的高粘性（0.9）：靠着同排的石头时斜落净空从 10 抬到 19，于是石头垛站得比
+        /// 「同摩擦度、但无粘性」的干石对照陡得多，而且仍然收敛、颗粒守恒。
+        /// 同几何、同种子、同 50 颗逐颗投放，唯一变量是粘性。
+        /// </summary>
+        [Test]
+        public void Stone_HighStickinessPilesMuchSteeperThanDryStone()
+        {
+            const int width = 41;
+            const int height = 80;
+            const int grains = 50;
+
+            ParticleWorld dry = DropTunablePile(width, height, grains, 0.9f, 0f, ticksPerGrain: 80, settleTicks: 600);
+            ParticleWorld sticky = DropTunablePile(width, height, grains, 0.9f, 0.9f, ticksPerGrain: 80, settleTicks: 600);
+
+            Assert.AreEqual(grains, CountType(dry, TunableId), "干石对照的颗粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(sticky, TunableId), "高粘性石头的颗粒数量必须守恒");
+
+            float drySlope = Slope(dry, TunableId);
+            float stickySlope = Slope(sticky, TunableId);
+
+            Assert.That(drySlope, Is.InRange(8.0f, 12.0f), $"无粘性对照应接近 10:1，实际 {drySlope:F2}");
+            Assert.Greater(stickySlope, drySlope * 1.3f, $"高粘性必须让石头垛明显更陡，实际 {stickySlope:F2} vs {drySlope:F2}");
+
+            // 堆顶必须留在投放行以下（高粘性会把垛拉得很高，世界得够高）。
+            Assert.Less(PileHeight(sticky, TunableId), height - 1, "高粘性石堆顶触到投放行了，世界太矮");
+
+            // 已收敛。
+            var snapshot = (Cell[])sticky.Cells.Clone();
+            for (int i = 0; i < 100; i++)
+            {
+                sticky.Step();
+            }
+
+            for (int i = 0; i < sticky.CellCount; i++)
+            {
+                Assert.AreEqual((int)snapshot[i].typeId, (int)sticky.Cells[i].typeId, "下标 " + i + " 的高粘性石堆仍在移动");
             }
         }
 
@@ -677,7 +723,8 @@ namespace TapTap2026.Tests
         /// 从而把「材料参数」隔离成唯一变量。
         /// </summary>
         private static ParticleWorld DropTunablePile(
-            int width, int height, int grains, float friction, float stickiness)
+            int width, int height, int grains, float friction, float stickiness,
+            int ticksPerGrain = 40, int settleTicks = 400)
         {
             ParticleType[] table = TestTables.Build(
                 new StoneParticle(),
@@ -693,13 +740,13 @@ namespace TapTap2026.Tests
             for (int grain = 0; grain < grains; grain++)
             {
                 world.Set(centerX, height - 1, TunableId);
-                for (int tick = 0; tick < 40; tick++)
+                for (int tick = 0; tick < ticksPerGrain; tick++)
                 {
                     world.Step();
                 }
             }
 
-            for (int i = 0; i < 400; i++)
+            for (int i = 0; i < settleTicks; i++)
             {
                 world.Step();
             }

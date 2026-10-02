@@ -14,7 +14,7 @@ namespace TapTap2026.Simulation
 
         // ================= 新增类型在此追加字段（只能追加，不能插队） =================
 
-        /// <summary>石头。受重力的固体，摩擦度 0.9（10:1 的陡尖堆）。</summary>
+        /// <summary>石头。受重力的固体，摩擦度 0.9 + 高粘性 0.9（靠着石头时外侧几乎不滚，垛得很高）。</summary>
         public static ushort Stone;
 
         /// <summary>沙。受重力的粉末，摩擦度 0（1:1 安息角，45°）。</summary>

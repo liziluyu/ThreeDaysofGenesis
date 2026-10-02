@@ -2,15 +2,17 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // StoneParticle —— 石头（固体标签，摩擦度 0.9、无粘性，10:1 的陡尖堆）
+    // StoneParticle —— 石头（固体标签，摩擦度 0.9 + 高粘性 0.9）
     //
     // flags 私有位：无（bit3-7 全部空闲）
-    // 邻居查询范围：正下 + 左下/右下（斜落净空由摩擦度换算：0.9 → 10 格）
+    // 邻居查询范围：正下 + 左下/右下 + 斜滑反侧同一行（粘性判据：旁边有没有固体）
     // 交互的 ParticleIds：无 —— 全部走 ParticleRules 的标签规则，不特判具体类型
     //
-    // 行为：带 Solid 标签且受重力。正下可进入就下落；否则尝试斜下，但斜落要 10 格净空
-    //       （落点起连续 10 格都能进入）。于是堆体相邻列的高差最多 10 —— 安息角 10:1（约 84°），
-    //       比沙的 1:1、土的 2:1 陡得多；同时又和它们一样会自己塌成堆，而不是垒成直柱。
+    // 行为：带 Solid 标签且受重力。正下可进入就下落；否则尝试斜下：
+    //         - 摩擦度 0.9：斜落要连续 10 格净空（单独作用时是 10:1，约 84°）；
+    //         - 粘性 0.9：坡面外侧（斜滑反侧同排有固体、也就是「靠着一整块石头」）时净空再加 9 格
+    //                     到 19 格 —— 外侧几乎滑不动，于是石头站成近乎垂直的垛，而不是塌成锥。
+    //       孤立、旁边没石头的石块不受粘性影响，仍按 10 格净空滚落。
     //       它也不是 IsStatic——静态类型（墙体）永不参与扫描。
     public sealed class StoneParticle : IParticleType
     {
@@ -29,15 +31,14 @@ namespace TapTap2026.Simulation
             isStatic: false,
             maxFlowSpread: 0,
             friction: 0.9f,
-            stickiness: 0f,
+            stickiness: 0.9f,
             palette: Palette,
             debugName: nameof(StoneParticle));
 
         public void OnUpdate(ParticleWorld world, int x, int y)
         {
-            // 先试正下：正下是 Solid 标签就停住（同类石头、沙、将来的其它固体都算），
-            // 是液体/气体/空气则落穿它。摩擦度 0.9 → 10 格净空才肯斜落，
-            // 意味着「落点往下 10 格内有东西顶着」时视为稳定，坡面因此能站在 10:1 的陡度上。
+            // 摩擦度 0.9 → 10 格净空；靠着同排的石头（坡面外侧）时粘性 0.9 再抬到 19 格，
+            // 所以石头垛外侧几乎不滚落，只有孤立、旁边没石头的石块才按 10 格净空滑下去。
             ParticleRules.StepSolid(world, x, y);
         }
 
