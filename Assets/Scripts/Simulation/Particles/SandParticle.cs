@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // SandParticle —— 沙（固体标签的粉末，摩擦度 0）
+    // SandParticle —— 沙（固体标签的粉末，摩擦度 0、无粘性）
     //
     // flags 私有位：无（bit3-7 全部空闲）
     // 邻居查询范围：正下、左下、右下（斜落净空由摩擦度换算：0 → 1 格）
@@ -28,6 +28,7 @@ namespace TapTap2026.Simulation
             isStatic: false,
             maxFlowSpread: 0,
             friction: 0f,
+            stickiness: 0f,
             palette: Palette,
             debugName: nameof(SandParticle));
 

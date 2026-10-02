@@ -37,8 +37,23 @@ namespace TapTap2026.Simulation
         /// 安息角斜率（rise/run）= <c>1 / (1 - Friction)</c>，实现上四舍五入到整数格净空：
         /// <c>0</c> = 最松，1:1（45°，像沙）；<c>0.5</c> ≈ 2:1（63°）；<c>0.9</c> ≈ 10:1（84°，像石头）；
         /// <c>1</c>（含更大值）= 下方有固体就完全静止，永不沿坡滚落。非固体类型该值不参与任何规则。
+        /// 与 <see cref="Stickiness"/> 的差别：摩擦度是**材料自身**的静摩擦（孤零零一颗也有效果），
+        /// 粘性只在**旁边有固体邻居**时生效。
         /// </remarks>
         public readonly float Friction;
+
+        /// <summary>
+        /// 粘性，范围 <c>[0, 1]</c>。只被固体运动规则读取（<see cref="ParticleRules.StepSolid"/>）：
+        /// 斜滑方向**反侧同一行**上有固体邻居时，粒子粘住邻居，等效安息角被抬高——
+        /// 也就是「旁边有粒子就不肯往下滚」。孤立粒子（反侧同排没有固体）不受粘性影响，仍按摩擦度滑落。
+        /// </summary>
+        /// <remarks>
+        /// 粘性 <c>σ</c> 贡献的额外斜率是 <c>1 / (1 - σ) - 1</c>（<c>σ = 0</c> 时为 0），
+        /// 与摩擦度的斜率相加后取整：<c>0</c> = 不影响；<c>0.5</c> = 多 1 档（沙 + 0.5 ≈ 土的 2:1）；
+        /// <c>0.9</c> = 多 9 档；<c>1</c> = 只要旁边有固体就绝不滚落（形成陡壁 / 悬垂）。
+        /// 非固体类型该值不参与任何规则。
+        /// </remarks>
+        public readonly float Stickiness;
 
         /// <summary>调色板，长度 1..256。<see cref="Cell.shade"/> 直接作为下标。</summary>
         public readonly Color32[] Palette;
@@ -53,6 +68,7 @@ namespace TapTap2026.Simulation
             bool isStatic,
             byte maxFlowSpread,
             float friction,
+            float stickiness,
             Color32[] palette,
             string debugName)
         {
@@ -62,6 +78,7 @@ namespace TapTap2026.Simulation
             IsStatic = isStatic;
             MaxFlowSpread = maxFlowSpread;
             Friction = friction;
+            Stickiness = stickiness;
             Palette = palette;
             DebugName = debugName;
         }

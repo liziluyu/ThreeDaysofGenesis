@@ -20,7 +20,7 @@ namespace TapTap2026.Simulation
         /// <summary>沙。受重力的粉末，摩擦度 0（1:1 安息角，45°）。</summary>
         public static ushort Sand;
 
-        /// <summary>土壤。受重力的粉末，摩擦度 0.5（2:1 安息角，安息角比沙陡一倍）。</summary>
+        /// <summary>土壤。受重力的粉末，摩擦度 0.5 + 粘性 0.5（旁边有固体时约 3:1 的安息角）。</summary>
         public static ushort Soil;
     }
 }

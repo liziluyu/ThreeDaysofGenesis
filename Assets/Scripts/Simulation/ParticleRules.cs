@@ -136,12 +136,14 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 固体粒子的标准运动，由本格的 <see cref="ParticleTypeInfo.Friction"/> 驱动。
+        /// 固体粒子的标准运动，由本格的 <see cref="ParticleTypeInfo.Friction"/> 与
+        /// <see cref="ParticleTypeInfo.Stickiness"/> 共同驱动。
         /// 正下可进入则下落一格（固体 rank 更高，因此能沉穿液体 / 气体）；正下被挡住时，
-        /// 摩擦度决定是否沿坡斜滑——摩擦度就是安息角。
+        /// 摩擦度决定安息角，粘性在「斜滑方向的反侧同一行有固体邻居」时把安息角抬得更高。
         /// </summary>
         /// <remarks>
-        /// 每个固体类型的 <c>OnUpdate</c> 都应当是这一行；摩擦度从注册表读，类型无需自己抄一份常量。
+        /// 每个固体类型的 <c>OnUpdate</c> 都应当是这一行；两个参数都从注册表读，类型无需自己抄常量。
+        /// 两条规则的区别：摩擦度是材料自身的静摩擦（孤立一颗也生效），粘性靠邻居（旁边有固体才生效）。
         /// </remarks>
         public static void StepSolid(ParticleWorld world, int x, int y)
         {
@@ -150,54 +152,94 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // 正下被挡住且摩擦度 1：静止。斜落所需的净空 <= 0 直接表达「永不滚落」。
-            int clearance = SlideClearance(SelfFriction(world, x, y));
-            if (clearance <= 0)
+            ParticleType self = SelfType(world, x, y);
+            if (self == null)
             {
                 return;
             }
 
-            TryDiagonalFall(world, x, y, clearance);
+            TryCohesiveFall(world, x, y, self.Info.Friction, self.Info.Stickiness);
         }
 
         /// <summary>
-        /// 把摩擦度 <c>[0, 1]</c> 换算成斜落所需的连续净空格数，也就是安息角斜率（rise/run）：
-        /// <c>1 / (1 - friction)</c>，四舍五入到整数格。
+        /// 正下方被挡住时尝试斜落，左右顺序随机以消除方向偏置。
+        /// <paramref name="stickiness"/> 只在「斜滑所朝方向的反侧同一行上有固体邻居」时计入——
+        /// 粒子要**旁边有粒子**才粘得住；反侧无固体（孤立粒子）时完全按 <paramref name="friction"/> 滑落。
         /// </summary>
+        /// <remarks>固体请用 <see cref="StepSolid"/>（它负责从注册表取这两个参数并处理直落）。</remarks>
+        public static bool TryCohesiveFall(
+            ParticleWorld world, int x, int y, float friction, float stickiness)
+        {
+            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            return leftFirst
+                ? TrySlope(world, x, y, -1, friction, stickiness) || TrySlope(world, x, y, 1, friction, stickiness)
+                : TrySlope(world, x, y, 1, friction, stickiness) || TrySlope(world, x, y, -1, friction, stickiness);
+        }
+
+        /// <summary>
+        /// 单侧斜滑：净空按 <see cref="SlideClearance(float, float, bool)"/> 算。
+        /// 「粘住」的判据是斜滑**反侧同一行**的格子（也就是粒子正离开的那个侧邻）带 Solid 标签——
+        /// 粘性为 0 的类型连这一次邻居查询都不做，因此行为与纯摩擦度完全一致。
+        /// </summary>
+        private static bool TrySlope(
+            ParticleWorld world, int x, int y, int deltaX, float friction, float stickiness)
+        {
+            bool clinging = stickiness > 0f && IsSolid(world, x - deltaX, y);
+            int clearance = SlideClearance(friction, stickiness, clinging);
+            return clearance > 0 && TrySlide(world, x, y, deltaX, clearance);
+        }
+
+        /// <summary>纯摩擦度的斜落净空。等价于 <c>SlideClearance(friction, 0f, false)</c>。</summary>
         /// <returns>
         /// <c>0</c> 表示完全不斜滑（<paramref name="friction"/> &gt;= 1）；否则 &gt;= 1。
         /// 0 → 1（45°，像沙）、0.5 → 2（2:1）、0.9 → 10（10:1，像石头）；越接近 1 越陡。
         /// </returns>
         public static int SlideClearance(float friction)
         {
-            if (friction >= 1f)
+            return SlideClearance(friction, 0f, false);
+        }
+
+        /// <summary>
+        /// 摩擦度与粘性共同决定斜落所需的连续净空格数，也就是安息角斜率（rise/run）：
+        /// 摩擦度贡献 <c>1 / (1 - friction)</c>，粘住在邻居上时再叠加粘性贡献
+        /// <c>1 / (1 - stickiness) - 1</c>（<c>stickiness = 0</c> 时为 0，故不改变纯摩擦度的结果）。
+        /// </summary>
+        /// <param name="clinging">
+        /// 「斜滑反侧同一行上有固体邻居」。为 false 时 <paramref name="stickiness"/> 完全不参与。
+        /// </param>
+        /// <returns>
+        /// <c>0</c> = 永不斜滑（<paramref name="friction"/> &gt;= 1，或粘住时 <paramref name="stickiness"/> &gt;= 1）；
+        /// 否则 &gt;= 1，四舍五入到整数格。
+        /// </returns>
+        public static int SlideClearance(float friction, float stickiness, bool clinging)
+        {
+            if (friction >= 1f || (clinging && stickiness >= 1f))
             {
                 return 0;
             }
 
-            if (friction <= 0f)
-            {
-                return 1;
-            }
-
             // 用 double 折算并 +0.5 取整：0.9f 在 float 里略小于 0.9，1/(1-0.9f) 才刚好落在 10 这一档。
             double slope = 1.0 / (1.0 - friction);
+            if (clinging)
+            {
+                slope += 1.0 / (1.0 - stickiness) - 1.0;
+            }
+
             int clearance = (int)(slope + 0.5);
             return clearance < 1 ? 1 : clearance;
         }
 
-        /// <summary>读本格类型的摩擦度。索引非法 / 空槽 / 空气一律按 0（最松）处理。</summary>
-        private static float SelfFriction(ParticleWorld world, int x, int y)
+        /// <summary>读本格类型条目。空气 / 越界 / 空槽一律返回 <c>null</c>。</summary>
+        private static ParticleType SelfType(ParticleWorld world, int x, int y)
         {
             ushort id = world.GetCell(x, y).typeId;
             ParticleType[] types = world.Types;
             if (id == ParticleRegistry.AirTypeId || id >= types.Length)
             {
-                return 0f;
+                return null;
             }
 
-            ParticleType type = types[id];
-            return type == null ? 0f : type.Info.Friction;
+            return types[id];
         }
 
         /// <summary>

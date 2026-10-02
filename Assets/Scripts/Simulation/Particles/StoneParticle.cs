@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // StoneParticle —— 石头（固体标签，摩擦度 0.9，10:1 的陡尖堆）
+    // StoneParticle —— 石头（固体标签，摩擦度 0.9、无粘性，10:1 的陡尖堆）
     //
     // flags 私有位：无（bit3-7 全部空闲）
     // 邻居查询范围：正下 + 左下/右下（斜落净空由摩擦度换算：0.9 → 10 格）
@@ -29,6 +29,7 @@ namespace TapTap2026.Simulation
             isStatic: false,
             maxFlowSpread: 0,
             friction: 0.9f,
+            stickiness: 0f,
             palette: Palette,
             debugName: nameof(StoneParticle));
 

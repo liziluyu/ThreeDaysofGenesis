@@ -2,16 +2,18 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // SoilParticle —— 土壤（固体标签的粉末，摩擦度 0.5）
+    // SoilParticle —— 土壤（固体标签的粉末，摩擦度 0.5 + 粘性 0.5）
     //
     // flags 私有位：无（bit3-7 全部空闲）
-    // 邻居查询范围：正下 + 左下/右下（斜落净空由摩擦度换算：0.5 → 2 格）
+    // 邻居查询范围：正下、左下/右下、以及斜滑反侧同一行（粘性判据：旁边有没有固体）
     // 交互的 ParticleIds：无 —— 全部走 ParticleRules 的标签规则，不特判具体类型
     //
-    // 行为：与沙一样带 Solid 标签、受重力、只做「下落 + 斜落」，因此同样是粉末，
-    //       在平地与同类上安分不动。与沙的唯一区别是摩擦度更高：
-    //       土粒要连续 2 格净空才肯斜滑，45° 坡面上「落点正下方」被同坡粒子占住，土粒于是停住。
-    //       结果沙堆是 1:1 的三角形（高 = 底/2），土堆是 2:1 的三角形（底长不变时高翻倍）。
+    // 行为：带 Solid 标签、受重力、只做「下落 + 斜落」，因此同样是粉末，在平地与同类上安分不动。
+    //       与沙的区别是两条规则叠加：
+    //         - 摩擦度 0.5：土粒要连续 2 格净空才肯斜滑（落点正下方被顶着就停），单独作用时是 2:1 的堆；
+    //         - 粘性 0.5：旁边有固体邻居（斜滑反侧同一行）时，安息角再抬一档到 3 格净空，堆体约 3:1；
+    //                     孤立、旁边没粒子的土粒不受粘性影响，仍按 2 格净空滑落。
+    //       于是土堆明显比 1:1 的沙堆陡，又远不及 10:1 的石头堆——「成块的土」而不是「滑溜的沙」。
     public sealed class SoilParticle : IParticleType
     {
         private static readonly Color32[] Palette =
@@ -29,13 +31,14 @@ namespace TapTap2026.Simulation
             isStatic: false,
             maxFlowSpread: 0,
             friction: 0.5f,
+            stickiness: 0.5f,
             palette: Palette,
             debugName: nameof(SoilParticle));
 
         public void OnUpdate(ParticleWorld world, int x, int y)
         {
-            // 摩擦度 0.5 → 2 格净空：正下被挡住时，落点下方还被顶着就视为稳定，
-            // 所以坡面比沙的 45° 更陡，形成 2:1 的尖堆。
+            // 摩擦度 0.5 → 2 格净空；旁边有固体邻居时粘性 0.5 再抬一档到 3 格：
+            // 正下被挡住时若落点下方还被顶着就视为稳定，于是坡面比沙的 45° 陡得多，约 3:1。
             ParticleRules.StepSolid(world, x, y);
         }
 
