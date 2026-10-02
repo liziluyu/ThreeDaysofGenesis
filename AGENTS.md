@@ -11,9 +11,10 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 - **分层**（程序集边界即架构边界）：
   - `TapTap2026.Simulation`（`Assets/Scripts/Simulation/`）：纯模拟，**不引用任何渲染对象**。扁平 `Cell[]`（4 字节/格）+ `(x,y)` 直接寻址；类型行为经全局静态注册表（`ParticleRegistry`）以 `typeId → 委托` 直调，热路径零分配、零虚分派。
   - `TapTap2026.Game`（`Assets/Scripts/Driver/` + `Assets/Scripts/Rendering/`）：引用 Simulation。`ParticleSimulationDriver`（MonoBehaviour）用固定步长累加器推进 `Step()`，并唯一决定上屏时机；`ParticleRenderer` 把 `Cell[]` 经 `ParticlePixelBuffer.Fill` 映射成一张 `Texture2D`，整个网格只有 1 个渲染对象。
+  - `TapTap2026.Editor`（`Assets/Scripts/Editor/`，仅 Editor 平台）：编辑器工具，当前只有 `SystemProxyGuard`——系统代理 Mono 解析失败时把 `WebRequest.DefaultWebProxy` 钉为直连（见 MCP 一节）。
 - **跨类型规则只看标签不看 typeId**：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。新增粒子类型 = 一个文件 + `ParticleRegistration.RegisterAll()` 追加一行 + `ParticleIds` 加一个字段（只能追加，顺序是存档兼容性的一部分）。流程与评审清单见文档 §11。
 - **确定性**：模拟只认 `world.Tick` 与世界持有的 xorshift32；禁止 `UnityEngine.Random` / `Time.*` / `Input`。同种子同命令序列逐格可复现。
-- **场景**：`Assets/Scenes/SampleScene.unity` 是唯一 build 场景（Main Camera + Global Light 2D）；粒子系统需手工挂 `ParticleSimulationDriver` + `ParticleRenderer` 并接线（文档 §10 末尾）。
+- **场景**：`Assets/Scenes/SampleScene.unity` 是唯一 build 场景（Main Camera + Global Light 2D）；`Particle Sandbox` 物体上挂 `ParticleSimulationDriver` + `ParticleRenderer` + `ParticleSandboxSeeder`（默认不跑，右键菜单 `Reseed()` 才搭容器）+ `ParticleEditor`（左键刷、右键切换、鼠标旁显示当前粒子），接线细节见文档 §10。
 
 ## Key Directories
 
@@ -21,8 +22,10 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |---|---|
 |`Assets/Scenes/SampleScene.unity`|唯一的场景；唯一启用的 build 场景。|
 |`Assets/Scripts/Simulation/`|模拟内核 + 粒子类型（`Particles/`）。`TapTap2026.Simulation.asmdef`。|
-|`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）。|
+|`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 搭容器、`ParticleEditor` 左键刷当前粒子、右键切换类型、鼠标旁显示当前类型）。|
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
+|`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
+|`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用）。|
 |`Assets/Tests/EditMode/`|EditMode 测试（29 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）。|
 |`docs/`|设计文档（`ParticleTypeInterface.md`）。在 `Assets/` 之外，Unity 不导入，无需 `.meta`。|
 |`Assets/Settings/`|URP 配置：`UniversalRP.asset`、`Renderer2D.asset` 等。|
@@ -51,6 +54,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 - **前提：Unity 编辑器必须开着本工程**，MCP 工具由编辑器内插件提供。
 - 常用工具：`tests-run`（跑 EditMode/PlayMode 测试；注意它会要求所有打开的场景无未保存修改）、`assets-*`（查/改资产、材质、prefab）、`scene-*`（场景 CRUD）、`gameobject-*`、`script-execute`（Roslyn 动态执行 C#）、`console-get-logs`。
 - 验证工作流首选 `tests-run`（编辑器在线时）；编辑器不在线时用上面的批处理命令。
+- **连不上先查系统代理**：`HKCU\...\Internet Settings\ProxyServer` 若是 `https=http://127.0.0.1:31181` 这类 Mono 无法解析的形式（dev-sidecar/Clash 会周期性写回），Mono 抛 `UriFormatException: Invalid URI: The hostname could not be parsed.`，插件 SignalR 全断、`tools/list` 返回 0 个工具。`SystemProxyGuard` 会在域重载时自动改钉 `WebRequest.DefaultWebProxy` 为直连，**不要去手改注册表**（会被代理工具覆盖）。
 
 ## Code Conventions & Common Patterns
 

@@ -486,6 +486,13 @@ Assets/Scripts/
   Driver/
     ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）
     ParticleSimulationDriver.cs               MonoBehaviour：固定步长驱动 + 上屏调度
+    ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
+    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型、鼠标旁显示当前类型
+  Editor/
+    TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
+    SystemProxyGuard.cs                       系统代理无法被 Mono 解析时把 WebRequest.DefaultWebProxy 钉为直连（保 Unity-MCP 连通）
+Assets/Data/
+  ParticleSimulationSettings.asset            实例化后的全局参数资产（320x180 / 60Hz / seed 123456789）
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
@@ -493,9 +500,26 @@ Assets/Tests/EditMode/
   SandStoneParticleTests.cs                   石头/沙子的生产注册路径（RegisterAll 回填 + 标签断言）+ 安息角剖面（三角堆）测试
 ```
 
-程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）与 `TapTap2026.Game`（引用 Simulation，装渲染与驱动）。
+程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 
-**场景接线**（需要手工做一次）：新建空 GameObject → 挂 `ParticleSimulationDriver` 与 `ParticleRenderer` → 把渲染器拖到驱动的 `_renderer` 字段。`_settings` 留空会使用代码默认值并给出警告，正式使用请在 `Assets/Data/` 下创建 `ParticleSimulationSettings` 资产并指定。
+**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂四个组件并已两两接线：
+
+```
+Particle Sandbox
+├─ ParticleRenderer            (无外部引用，材质运行期自建；_fitCameraOnInitialize=1)
+├─ ParticleSimulationDriver    _renderer → 上面的 ParticleRenderer
+│                              _settings → Assets/Data/ParticleSimulationSettings.asset
+├─ ParticleSandboxSeeder       _driver   → 上面的 ParticleSimulationDriver
+│                              （默认什么都不做；地板厚 3、挡墙厚 3、沙 50%x60% 仅在显式 Reseed 时使用）
+└─ ParticleEditor              _driver   → 上面的 ParticleSimulationDriver
+                               _renderer → 上面的 ParticleRenderer（屏幕→格子的换算基准）
+                               _drawHud=1
+```
+
+- **沙箱初始是空世界**：`ParticleSimulationDriver.Awake` 建出的网格全是空气，没有任何粒子；`ParticleSandboxSeeder` 不再在 `Start` 自动搭建，内容只能由 `ParticleEditor` 画出来。
+- **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 3 的实心圆（29 格）；按**右键**在已注册类型间循环切换；鼠标旁常驻色块 + 类型名 + `序号/总数`。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
+- **想快速看演示内容**：选中 `Particle Sandbox` → 在 `ParticleSandboxSeeder` 组件上右键 → **「铺设演示内容（石头容器 + 沙堆）」**（等价于调用 `Reseed()`）。挡墙是**从地板砌到顶的整列**：`StoneParticle` 带 Solid 标签且受重力（非静态），悬空石块会掉下来，整列每块都有下方支撑才稳定；沙靠斜落收敛成安息角堆。
+- 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 
 ---
 
@@ -541,5 +565,5 @@ Assets/Tests/EditMode/
 2. **tick 频率默认值**：现为 60 Hz、`MaxStepsPerFrame = 4`（放在 `ParticleSimulationSettings` 里，可改）。
 3. **上屏倍数**：`StepsPerPresent` 现为 1（每个逻辑帧渲染一次）。等 tick 频率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
 4. **`ParticleRules` 共享帮助方法的边界**：已提供 `TryFall` / `TryDiagonalFall` / `TryFlowHorizontal` / `CanDisplace`。当前 `SandParticle` 只组合 `TryFall` + `TryDiagonalFall`（安息角完全由斜落产生，没有横向铺展扫描）；`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
-5. **场景接线方式**：目前需手工挂 `ParticleSimulationDriver` + `ParticleRenderer`；是否值得加一个编辑器菜单项一键生成。
+5. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
 6. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。
