@@ -479,8 +479,9 @@ Assets/Scripts/
     ParticleRules.cs                          无状态共享移动规则
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射
     Particles/
-      StoneParticle.cs                        石头（固体标签，竖直堆叠）
-      SandParticle.cs                         沙（固体标签，三角形沙堆）
+      StoneParticle.cs                        石头（固体标签，斜落要 10 格净空 ⇒ 10:1 安息角，~84° 的陡尖堆）
+      SandParticle.cs                         沙（固体标签，1:1 安息角三角堆）
+      SoilParticle.cs                         土壤（固体标签，2:1 安息角三角堆，边坡比沙陡一倍）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad
   Driver/
@@ -496,8 +497,8 @@ Assets/Data/
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 石头竖直柱/固体互阻/沙堆守恒收敛（隔离类型表）
-  SandStoneParticleTests.cs                   石头/沙子的生产注册路径（RegisterAll 回填 + 标签断言）+ 安息角剖面（三角堆）测试
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 斜落净空判据/石头堆 10:1 坡/固体互阻/沙堆守恒收敛/土堆斜率两倍于沙（隔离类型表）
+  SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签断言）+ 安息角剖面（三角堆）测试
 ```
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
@@ -518,7 +519,7 @@ Particle Sandbox
 
 - **沙箱初始是空世界**：`ParticleSimulationDriver.Awake` 建出的网格全是空气，没有任何粒子；`ParticleSandboxSeeder` 不再在 `Start` 自动搭建，内容只能由 `ParticleEditor` 画出来。
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 3 的实心圆（29 格）；按**右键**在已注册类型间循环切换；鼠标旁常驻色块 + 类型名 + `序号/总数`。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
-- **想快速看演示内容**：选中 `Particle Sandbox` → 在 `ParticleSandboxSeeder` 组件上右键 → **「铺设演示内容（石头容器 + 沙堆）」**（等价于调用 `Reseed()`）。挡墙是**从地板砌到顶的整列**：`StoneParticle` 带 Solid 标签且受重力（非静态），悬空石块会掉下来，整列每块都有下方支撑才稳定；沙靠斜落收敛成安息角堆。
+- **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为斜落（10 格净空）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 
 ---
@@ -564,6 +565,6 @@ Particle Sandbox
 1. **`vx` / `vy`**：v1 采用 4 字节 `Cell`（不含速度）；确认何时切到 6 字节。
 2. **tick 频率默认值**：现为 60 Hz、`MaxStepsPerFrame = 4`（放在 `ParticleSimulationSettings` 里，可改）。
 3. **上屏倍数**：`StepsPerPresent` 现为 1（每个逻辑帧渲染一次）。等 tick 频率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
-4. **`ParticleRules` 共享帮助方法的边界**：已提供 `TryFall` / `TryDiagonalFall` / `TryFlowHorizontal` / `CanDisplace`。当前 `SandParticle` 只组合 `TryFall` + `TryDiagonalFall`（安息角完全由斜落产生，没有横向铺展扫描）；`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
+4. **`ParticleRules` 共享帮助方法的边界**：已提供 `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，越大越陡）/ `TryFlowHorizontal` / `CanDisplace`。当前 `SandParticle` 用 `clearance = 1`、`SoilParticle` 用 2、`StoneParticle` 用 10（三者的安息角都完全由斜落产生，没有横向铺展扫描）；`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
 5. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
 6. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。

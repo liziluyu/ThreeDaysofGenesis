@@ -26,7 +26,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
 |`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
 |`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用）。|
-|`Assets/Tests/EditMode/`|EditMode 测试（29 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）。|
+|`Assets/Tests/EditMode/`|EditMode 测试（31 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）。|
 |`docs/`|设计文档（`ParticleTypeInterface.md`）。在 `Assets/` 之外，Unity 不导入，无需 `.meta`。|
 |`Assets/Settings/`|URP 配置：`UniversalRP.asset`、`Renderer2D.asset` 等。|
 |`Assets/Plugins/NuGet/`|MCP 插件的 NuGet 依赖 DLL（LFS 跟踪），由插件安装器生成，**不要手改**。|
@@ -90,7 +90,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 
 ## Testing & QA
 
-- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **29 个测试**全绿。
+- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **31 个测试**全绿。
 - 约定：测试用**隔离类型表**（`new ParticleWorld(w, h, seed, types)` 四参构造 + 测试专用 `ParticleType[]`），不污染全局注册表；生产注册路径的测试（`RegisterAll` 回填）集中在 `SandStoneParticleTests`。
 - **运行方式**（按可用性排序）：MCP `tests-run`（编辑器在线）→ Test Runner 窗口 → 批处理命令（编辑器离线）。
 - PlayMode：`testables` 未配置、`playModeTestRunnerEnabled: 0`，暂不支持。

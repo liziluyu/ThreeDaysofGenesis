@@ -9,9 +9,9 @@ namespace TapTap2026.Game
     /// （Inspector 右键菜单或代码）才会搭建。纯演示/调试用，不属于模拟内核，也不参与固定步长驱动。
     /// </summary>
     /// <remarks>
-    /// <para>挡墙做成**从地板一直砌到顶的整列**：<c>StoneParticle</c> 是受重力的固体（非静态），
-    /// 悬空的石块会掉下来；整列每块都由下方支撑，因此稳定不塌。</para>
-    /// <para>沙只横向铺展靠斜落，因而是自然收敛的安息角堆。</para>
+    /// <para><b>预设已弃用</b>：石头改为「斜落需 10 格净空」之后，整列挡墙内缘高处的石块会沿斜面
+    /// 滑入容器（正下方有支撑挡不住斜落），墙体不再稳定。本组件保留仅为兼容旧场景，
+    /// 新演示内容请直接由 <c>ParticleEditor</c> 手绘。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleSandboxSeeder : MonoBehaviour
