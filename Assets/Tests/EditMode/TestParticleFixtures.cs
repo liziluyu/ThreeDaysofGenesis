@@ -294,11 +294,12 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>生产粒子（Stone / Sand）的隔离类型表，供行为测试使用；同样不触碰全局注册表。</summary>
+    /// <summary>生产粒子（Stone / Sand / Soil）的隔离类型表，供行为测试使用；同样不触碰全局注册表。</summary>
     internal static class ProductionTypes
     {
         internal const ushort StoneId = 1;
         internal const ushort SandId = 2;
+        internal const ushort SoilId = 3;
 
         private static ParticleType[] _table;
 
@@ -313,6 +314,7 @@ namespace TapTap2026.Tests
                         null,
                         Bind(StoneId, new StoneParticle()),
                         Bind(SandId, new SandParticle()),
+                        Bind(SoilId, new SoilParticle()),
                     };
                 }
 

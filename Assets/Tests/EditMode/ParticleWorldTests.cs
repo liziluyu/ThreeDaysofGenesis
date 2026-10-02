@@ -77,6 +77,35 @@ namespace TapTap2026.Tests
             Assert.IsTrue(ParticleRules.CanDisplace(world, 0, 0, 1, 0));
         }
 
+        [Test]
+        public void TryDiagonalFall_ClearanceIsTheStackHeightThatMakesASlopeStick()
+        {
+            // 局面：可动粒子在 (2,2)，两条斜下 (1,1)/(3,1) 都空，但它们正下方 (1,0)/(3,0) 被静态格顶着。
+            // 落点只有 1 格净空 —— 沙（clearance 1）会滑，土（clearance 2）视为稳定。
+            ParticleWorld sandLike = NewWorld();
+            sandLike.Set(2, 2, TestTypes.SolidFlowId);
+            sandLike.Set(1, 0, TestTypes.StaticId);
+            sandLike.Set(3, 0, TestTypes.StaticId);
+
+            Assert.IsTrue(ParticleRules.TryDiagonalFall(sandLike, 2, 2, 1), "落点可进入就该滑（45° 安息角）");
+            Assert.IsTrue(sandLike.IsAir(2, 2));
+
+            ParticleWorld stoneLike = NewWorld();
+            stoneLike.Set(2, 2, TestTypes.SolidFlowId);
+            stoneLike.Set(1, 0, TestTypes.StaticId);
+            stoneLike.Set(3, 0, TestTypes.StaticId);
+
+            Assert.IsFalse(ParticleRules.TryDiagonalFall(stoneLike, 2, 2, 2), "落点下方被顶住时不该滑（更陡的安息角）");
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)stoneLike.GetCell(2, 2).typeId);
+
+            // 清掉一侧的顶托：那一侧净空 2 格，石头也该滑下去。
+            stoneLike.Clear(1, 0);
+
+            Assert.IsTrue(ParticleRules.TryDiagonalFall(stoneLike, 2, 2, 2));
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)stoneLike.GetCell(1, 1).typeId);
+            Assert.IsTrue(stoneLike.IsAir(2, 2));
+        }
+
         // ============================== 写操作与钩子 ==============================
 
         [Test]
@@ -398,42 +427,47 @@ namespace TapTap2026.Tests
             Assert.Throws<ArgumentException>(() => ParticlePixelBuffer.Fill(world, pixels, default(Color32)));
         }
 
-        // ============================== 生产粒子：石头与沙 ==============================
+        // ============================== 生产粒子：石头 / 沙 / 土 ==============================
 
         [Test]
-        public void Stone_StacksIntoAVerticalColumn_WithoutLateralDrift()
+        public void Stone_PileIsTenTimesAsSteepAsSandPile()
         {
-            const int width = 9;
-            const int height = 12;
-            var world = new ParticleWorld(width, height, 1u, ProductionTypes.Table);
+            const int width = 41;
+            const int height = 40;
+            const int grains = 100;
 
-            for (int x = 0; x < width; x++)
+            ParticleWorld sand = DropPile(width, height, grains, ProductionTypes.SandId);
+            ParticleWorld soil = DropPile(width, height, grains, ProductionTypes.SoilId);
+            ParticleWorld stone = DropPile(width, height, grains, ProductionTypes.StoneId);
+
+            Assert.AreEqual(grains, CountType(sand, ProductionTypes.SandId), "沙粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(soil, ProductionTypes.SoilId), "土粒数量必须守恒");
+            Assert.AreEqual(grains + width, CountType(stone, ProductionTypes.StoneId), "石块总数必须守恒（石头地板 + 投放的石块）");
+
+            // 安息角斜率 = 堆高 / 半径（= 2·堆高/底宽）：沙 ~1（1:1，45°），土 ~2（2:1，63°），石头 ~10（10:1，84°）。
+            float sandSlope = Slope(sand, ProductionTypes.SandId);
+            float soilSlope = Slope(soil, ProductionTypes.SoilId);
+            float stoneSlope = Slope(stone, ProductionTypes.StoneId);
+
+            Assert.That(stoneSlope, Is.InRange(8.0f, 12.0f), $"石头堆斜率应接近 10（10:1），实际 {stoneSlope:F2}");
+            Assert.Greater(stoneSlope, soilSlope * 4f, "石头堆必须明显比土堆（2:1）陡");
+            Assert.Greater(stoneSlope, sandSlope * 7f, "石头堆必须明显比沙堆（1:1）陡");
+
+            // 堆顶必须留在投放行以下：否则投放的石块会直接盖在堆顶（Set 同类型是空操作）而被吞掉，
+            // 上面的守恒与斜率断言都会失去意义。
+            Assert.Less(PileHeight(stone, ProductionTypes.StoneId), height - 1, "石头堆顶触到投放行了，世界太矮");
+
+            // 已收敛：再跑 100 tick 逐格不变（这么陡的坡面也不会永远侧滑）。
+            var snapshot = (Cell[])stone.Cells.Clone();
+            for (int i = 0; i < 100; i++)
             {
-                world.Set(x, 0, ProductionTypes.StoneId);
+                stone.Step();
             }
 
-            for (int y = 6; y < 10; y++)
+            for (int i = 0; i < stone.CellCount; i++)
             {
-                world.Set(4, y, ProductionTypes.StoneId);
+                Assert.AreEqual((int)snapshot[i].typeId, (int)stone.Cells[i].typeId, "下标 " + i + " 的石头堆仍在移动");
             }
-
-            for (int i = 0; i < 60; i++)
-            {
-                world.Step();
-            }
-
-            // 石头只竖直下落：4 块全部垒在 x=4 的柱子上，一格都没侧移。
-            for (int y = 1; y <= 4; y++)
-            {
-                Assert.AreEqual((int)ProductionTypes.StoneId, (int)world.GetCell(4, y).typeId, "柱子 y=" + y + " 处缺失");
-            }
-
-            for (int y = 5; y < height; y++)
-            {
-                Assert.IsTrue(world.IsAir(4, y), "柱子顶部以上 y=" + y + " 不该有粒子");
-            }
-
-            Assert.AreEqual(width + 4, CountType(world, ProductionTypes.StoneId));
         }
 
         [Test]
@@ -518,6 +552,31 @@ namespace TapTap2026.Tests
             }
         }
 
+        [Test]
+        public void Soil_PileIsTwiceAsSteepAsSandPile()
+        {
+            const int width = 41;
+            const int height = 40;
+            const int grains = 120;
+
+            // 同尺寸、同种子、同样逐颗投放：唯一变量是粒子类型。
+            ParticleWorld sand = DropPile(width, height, grains, ProductionTypes.SandId);
+            ParticleWorld soil = DropPile(width, height, grains, ProductionTypes.SoilId);
+
+            Assert.AreEqual(grains, CountType(sand, ProductionTypes.SandId), "沙粒数量必须守恒");
+            Assert.AreEqual(grains, CountType(soil, ProductionTypes.SoilId), "土粒数量必须守恒");
+
+            // 安息角斜率 = 堆高 / 半底宽：沙 ~1（45°），土 ~2（2 格高 : 1 格宽）。
+            float sandSlope = Slope(sand, ProductionTypes.SandId);
+            float soilSlope = Slope(soil, ProductionTypes.SoilId);
+
+            Assert.That(sandSlope, Is.InRange(0.7f, 1.2f), $"沙堆斜率应接近 1，实际 {sandSlope:F2}");
+            Assert.That(soilSlope, Is.InRange(1.6f, 2.4f), $"土堆斜率应接近 2，实际 {soilSlope:F2}");
+
+            // 底长不变时土堆高度约为沙堆的两倍：斜率之比 ≈ 2。
+            Assert.Greater(soilSlope, sandSlope * 1.6f, "土堆必须明显比沙堆陡");
+        }
+
         private static int CountType(ParticleWorld world, ushort typeId)
         {
             int count = 0;
@@ -530,6 +589,68 @@ namespace TapTap2026.Tests
             }
 
             return count;
+        }
+
+        private static int RowCount(ParticleWorld world, ushort typeId, int y)
+        {
+            int count = 0;
+            for (int x = 0; x < world.Width; x++)
+            {
+                if (world.GetCell(x, y).typeId == typeId)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>在石头地板上逐颗投放同一种颗粒，跑到收敛；返回结果世界。</summary>
+        private static ParticleWorld DropPile(int width, int height, int grains, ushort typeId)
+        {
+            var world = new ParticleWorld(width, height, 20261002u, ProductionTypes.Table);
+            for (int x = 0; x < width; x++)
+            {
+                // y=0 的石头无法侧滑（斜落要再往下、越界），等价于一块地面。
+                world.Set(x, 0, ProductionTypes.StoneId);
+            }
+
+            int centerX = width / 2;
+            for (int grain = 0; grain < grains; grain++)
+            {
+                world.Set(centerX, height - 1, typeId);
+                for (int tick = 0; tick < 40; tick++)
+                {
+                    world.Step();
+                }
+            }
+
+            for (int i = 0; i < 400; i++)
+            {
+                world.Step();
+            }
+
+            return world;
+        }
+
+        private static int PileHeight(ParticleWorld world, ushort typeId)
+        {
+            for (int y = world.Height - 1; y > 0; y--)
+            {
+                if (RowCount(world, typeId, y) > 0)
+                {
+                    return y;
+                }
+            }
+
+            return 0;
+        }
+
+        /// <summary>安息角斜率：堆高 / 半底宽（即堆高 / 半径）。1 = 45°，2 = 2 格高 : 1 格宽，10 ≈ 84°。</summary>
+        private static float Slope(ParticleWorld world, ushort typeId)
+        {
+            int baseWidth = RowCount(world, typeId, 1);
+            return baseWidth == 0 ? 0f : 2f * PileHeight(world, typeId) / baseWidth;
         }
     }
 }
