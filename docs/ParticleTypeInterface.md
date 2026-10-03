@@ -487,6 +487,8 @@ public sealed class LightController
 #### 世界 API
 
 ```csharp
+    public int  TransitionTicks { get; set; } // 昼夜过渡刻数（夹在 [0, LitTicks/2]）
+    public float Daylight { get; }          // 归一化日照度 0..1：1 = 白天上限、0 = 夜晚下限（只读，给渲染层做整场明暗）
 // Assets/Scripts/Simulation/HeatMap.cs —— 纯 C# 类，随 ParticleWorld 一起创建
 public sealed class HeatMap
 {
@@ -496,6 +498,7 @@ public sealed class HeatMap
     public const float MaxThermalConductivity = 1f; // 每材料相对导热率 σ 的上限
     public const float DefaultConductivity = 0.15f;
     public const float DefaultVoidHeatLoss = 0.1f;  // 顶行向虚空散热：默认值
+- **视觉表现：整场明暗（昼夜亮度）**。光照系统本身只注入热量，画面上由 `ParticleRenderer` 把整张网格按亮度缩放体现：白天保持上限（1 = 现在的正常亮度），夜晚保持下限（`_nightBrightness`，默认 0.5 = 半亮），只在白天开始 / 结束的 `TransitionTicks` 刻里平滑过渡。亮度 = `Mathf.Lerp(_nightBrightness, 1, world.Light.Daylight)`，由 `ParticlePixelBuffer.Fill(world, pixels, background, brightness)` 一次性乘进每个像素（含空气格的背景色）；强度 0 / 光照关闭 / 无暗相位时不产生明暗变化。缩放是纯映射（不碰模拟、可脱离 GPU 断言），参数在 Inspector 上。
     public const float DefaultAirThermalConductivity = 1f; // 空气 σ 默认值
 
     public HeatMap(int width, int height, Cell[] cells, ParticleType[] types); // 单边 1..ParticleWorld.MaxSide
@@ -767,11 +770,12 @@ Assets/Scripts/
     ParticleRegistration.cs                   唯一类型清单（新增类型只改这里）
     ParticleWorld.cs                          扁平数组、扫描、读写原语、RNG
     HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每 tick 四邻热传导；T = Q / C
-    LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量
+    LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
     Particles/
       StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
+- **昼夜亮度就在这一步乘进去**：`ParticleRenderer.Present` 先由 `Mathf.Lerp(_nightBrightness, 1, world.Light.Daylight)` 求出整场亮度，再调 4 参重载 `ParticlePixelBuffer.Fill(world, _pixels, _background, brightness)`，把每个像素（含背景色）整体缩放——白天为 1、夜晚为 `_nightBrightness`。纯映射、可脱离 GPU 断言；`_nightBrightness = 1` 即关闭昼夜明暗。
       SandParticle.cs                         沙（固体标签，摩擦度 0 / 粘性 0 ⇒ 1:1 安息角三角堆）
       SoilParticle.cs                         土壤（固体标签，摩擦度 0.5 / 粘性 0.5 ⇒ 约 3:1 安息角，比沙陡得多）
       WaterParticle.cs                        水（液体：下落 → 斜滑 → 横流摊平（maxFlowSpread 5），无安息角；T ≥ 沸点 40 剧烈蒸发，T ≥ 20 常温慢蒸发）
@@ -779,7 +783,7 @@ Assets/Scripts/
       CloudParticle.cs                        云滴（气体：散滴沿四向射线找最近同伴并靠拢成团 + 团内随风流热压漂移 + 1/120 缓沉；八邻云/水 ≥ 3 碰并成雨；T > 露点蒸回蒸汽）
       AtmosphereParticle.cs                   大气（气体：空气粒子化，浮力 + 热压流 = 海陆风的载体；世界初始化时由 driver 填满空格；调色板全透明 = 隐形天空，热力叠加时可当风的可视化层）
   Rendering/
-    ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad
+    ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 缩放整场亮度：白天上限、夜晚下限）
   Driver/
     ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）
     ParticleSimulationDriver.cs               MonoBehaviour：固定步长驱动 + 上屏调度
@@ -817,7 +821,7 @@ Particle Sandbox
 │                              _renderer → 上面的 ParticleRenderer（屏幕→格子的换算基准）
 │                              _drawHud=1
 └─ ParticleLightDriver         _driver   → 上面的 ParticleSimulationDriver
-                                _enabled=1 / _litTicks=60 / _darkTicks=60 / _intensity=5
+                                _enabled=1 / _litTicks=60 / _darkTicks=60 / _intensity=5 / _transitionTicks=60
                                 （每帧写回 world.Light，重建世界后自动重新应用）
 ```
 
@@ -827,7 +831,7 @@ Particle Sandbox
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 - **热力学参数（`ParticleSimulationSettings` 资产）**：`_conductivity`（资产 0.24）、`_voidHeatLoss`（资产 0.12）、`_radiativeLoss`（资产 0.05）与 `_airThermalConductivity`（资产 1），驱动每帧写回 `world.Heat`。改这几个值即可调「竖直温差的陡峭度」（`_conductivity` 越大热量摊得越平、越不会有光照热点）与「整体冷热」，无需改代码。
-- **光照（`ParticleLightDriver`）**：四个字段（是否光照 / 亮相位刻数 / 暗相位刻数 / 强度）每帧写回 `world.Light`。想在编辑器里看到热，把 `ParticleSimulationDriver` 的 `_heatDebugOverlay` 勾上（叠加是整场的、越热越红）；`_heatDebugFullScale` 决定满量程温度，量纲由玩法约定，默认 10。两个字段默认关闭，不影响正式观感。
+- **光照（`ParticleLightDriver`）**：五个字段（是否光照 / 亮相位刻数 / 暗相位刻数 / 强度 / 昼夜过渡刻数）每帧写回 `world.Light`。**画面明暗**由渲染器的 `_nightBrightness` 与 `LightController.Daylight` 共同决定：白天 1、夜晚 `_nightBrightness`，过渡长度 = `_transitionTicks`。想在编辑器里看到热，把 `ParticleSimulationDriver` 的 `_heatDebugOverlay` 勾上（叠加是整场的、越热越红）；`_heatDebugFullScale` 决定满量程温度，量纲由玩法约定，默认 10。两个字段默认关闭，不影响正式观感。
 
 ---
 
@@ -841,6 +845,7 @@ Particle Sandbox
 
 评审清单：
 
+│                              _nightBrightness=0.5（夜晚亮度倍率；1 = 不随昼夜变暗）
 - [ ] 一个类型一个文件；`sealed`；无基类；非 MonoBehaviour。
 - [ ] `OnUpdate` 内无分配、无 LINQ、无字符串、无 `UnityEngine.Random`、无 `Time.*`。
 - [ ] 每个写操作之前都有显式判断；写操作之后**立即 return**。

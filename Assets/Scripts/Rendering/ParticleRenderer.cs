@@ -11,6 +11,8 @@ namespace TapTap2026.Rendering
     /// <remarks>
     /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步。
     /// 上屏时机完全由调用方（<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
+    /// <para>上屏前按 <see cref="LightController.Daylight"/> 把整场亮度缩到
+    /// <c>Lerp(_nightBrightness, 1, Daylight)</c>：白天上限、夜晚下限，过渡由光照周期给出。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleRenderer : MonoBehaviour
@@ -22,6 +24,10 @@ namespace TapTap2026.Rendering
         };
 
         [SerializeField] private Color32 _background = new Color32(0, 0, 0, 255);
+
+        [Header("昼夜亮度（光照系统的可见表现）")]
+        [Tooltip("夜晚亮度倍率 0..1。白天恒为 1（现在的正常亮度），夜晚取本值；1 = 不随昼夜变暗。")]
+        [SerializeField, Range(0f, 1f)] private float _nightBrightness = 0.5f;
 
         [Tooltip("留空则运行时用 URP 2D 的无光照 sprite 着色器创建。运行期一律实例化副本，不会改写本资产。")]
         [SerializeField] private Material _material;
@@ -59,7 +65,10 @@ namespace TapTap2026.Rendering
                 return;
             }
 
-            ParticlePixelBuffer.Fill(world, _pixels, _background);
+            // 整场明暗：白天上限（1）、夜晚下限（_nightBrightness），过渡由 LightController.Daylight 给出。
+            float brightness = Mathf.Lerp(_nightBrightness, 1f, world.Light.Daylight);
+            ParticlePixelBuffer.Fill(world, _pixels, _background, brightness);
+
             _texture.SetPixels32(_pixels);
             _texture.Apply(false, false);
         }

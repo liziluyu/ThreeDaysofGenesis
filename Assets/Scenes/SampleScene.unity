@@ -413,6 +413,7 @@ MonoBehaviour:
   _background:
     serializedVersion: 2
     rgba: 4278190080
+  _nightBrightness: 0.5
   _material: {fileID: 0}
   _camera: {fileID: 0}
   _fitCameraOnInitialize: 1
@@ -465,6 +466,7 @@ MonoBehaviour:
   _litTicks: 600
   _darkTicks: 600
   _intensity: 10
+  _transitionTicks: 60
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

@@ -628,6 +628,90 @@ namespace TapTap2026.Tests
 
             // 摩擦度越高，安息角越陡（净空非递减）——不会出现「摩擦更大反而更滑」的反转。
             int previous = 1;
+        [Test]
+        public void Light_DaylightHoldsAtTheLimitsOutsideTheTransitions()
+        {
+            // 亮 10 刻 / 暗 4 刻、过渡 2 刻（周期 14）。除白天首尾各 2 刻的坡道外，白天恒 1、夜里恒 0。
+            ParticleWorld world = NewWorld();
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 10;
+            world.Light.DarkTicks = 4;
+            world.Light.TransitionTicks = 2;
+            world.Light.Intensity = 0f; // 只看明暗，不注入热
+
+            var expected = new[]
+            {
+                0f, 0.5f, 1f, 1f, 1f, 1f, 1f, 1f, 1f, 0.5f, // 破晓两刻 → 上限 → 黄昏两刻
+                0f, 0f, 0f, 0f,                               // 整个暗相位保持下限
+            };
+
+            for (int t = 0; t < expected.Length; t++)
+            {
+                Assert.AreEqual(expected[t], world.Light.Daylight, 1e-6f, $"第 {t} 刻的日照度");
+                world.Step();
+            }
+
+            Assert.AreEqual(expected[0], world.Light.Daylight, 1e-6f, "新周期从下限重新开始");
+            Assert.IsTrue(world.Light.IsLit, "白天首刻仍算亮相位（施热与明暗各自独立）");
+        }
+
+        [Test]
+        public void Light_DaylightClampsTheRampAndHandlesDegenerateCycles()
+        {
+            ParticleWorld world = NewWorld();
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 4;
+            world.Light.DarkTicks = 4;
+            world.Light.TransitionTicks = 100; // 远超白天长度：夹到 LitTicks / 2 = 2
+
+            Assert.AreEqual(0f, world.Light.Daylight, 1e-6f, "第 1 刻仍从下限起");
+            world.Step();
+            Assert.AreEqual(0.5f, world.Light.Daylight, 1e-6f, "2 刻的升坡");
+            world.Step();
+            Assert.AreEqual(1f, world.Light.Daylight, 1e-6f);
+
+            // 过渡 0 = 硬切：白天一到立刻是上限。
+            world.Light.TransitionTicks = 0;
+            world.Light.Reset();
+            Assert.AreEqual(1f, world.Light.Daylight, 1e-6f);
+
+            // 总开关关闭：没有昼夜循环，恒为上限。
+            world.Light.Enabled = false;
+            Assert.AreEqual(1f, world.Light.Daylight, 1e-6f);
+
+            // 从不照亮（LitTicks = 0）：恒为下限。
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 0;
+            Assert.AreEqual(0f, world.Light.Daylight, 1e-6f);
+
+            // 一直照亮（DarkTicks = 0）：白天不会结束，恒为上限（没有过渡）。
+            world.Light.LitTicks = 10;
+            world.Light.DarkTicks = 0;
+            world.Light.TransitionTicks = 5;
+            Assert.AreEqual(1f, world.Light.Daylight, 1e-6f);
+        }
+
+        [Test]
+        public void Light_DaylightBrightnessScalesTheWholePixelBuffer()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(2, 1, TestTypes.StaticId);
+            world.Light.Enabled = false; // 无昼夜：亮度倍率 1，像素原样
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(40, 40, 40, 255));
+            Color32 ground = pixels[world.Index(2, 1)];
+            Color32 background = pixels[world.Index(0, 0)];
+
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(40, 40, 40, 255), 0.5f);
+
+            Assert.AreEqual((byte)(ground.r / 2), pixels[world.Index(2, 1)].r, "夜晚：地面亮度减半");
+            Assert.AreEqual((byte)(ground.g / 2), pixels[world.Index(2, 1)].g);
+            Assert.AreEqual(ground.a, pixels[world.Index(2, 1)].a, "只缩亮度，不动 alpha");
+            Assert.AreEqual((byte)(background.r / 2), pixels[world.Index(0, 0)].r, "背景（空气）同样减半");
+            Assert.AreEqual(255, (int)pixels[world.Index(2, 1)].a);
+        }
+
             for (int step = 0; step < 10; step++)
             {
                 int clearance = ParticleRules.SlideClearance(step / 10f);

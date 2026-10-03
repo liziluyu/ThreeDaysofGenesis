@@ -21,6 +21,16 @@ namespace TapTap2026.Simulation
         /// <param name="background">空气格的显示颜色。</param>
         public static void Fill(ParticleWorld world, Color32[] pixels, Color32 background)
         {
+            Fill(world, pixels, background, 1f);
+        }
+
+        /// <summary>
+        /// 同上，并额外把所有像素（含背景色）按 <paramref name="brightness"/> 整体缩放明暗——
+        /// 整场亮度调节，白天上限、夜晚下限，由调用方从 <see cref="LightController.Daylight"/> 映射得到。
+        /// </summary>
+        /// <param name="brightness">亮度倍率，夹在 [0, 1]；1 = 原样。</param>
+        public static void Fill(ParticleWorld world, Color32[] pixels, Color32 background, float brightness)
+        {
             if (world == null)
             {
                 throw new ArgumentNullException(nameof(world));
@@ -47,6 +57,12 @@ namespace TapTap2026.Simulation
                 : 0f;
             bool overlay = heat.DebugHeatOverlay && inverseScale > 0f;
 
+            bool dim = brightness < 1f;
+            if (dim && brightness < 0f)
+            {
+                brightness = 0f;
+            }
+
             for (int i = 0; i < cells.Length; i++)
             {
                 Color32 color = BaseColor(cells[i], types, background);
@@ -58,6 +74,15 @@ namespace TapTap2026.Simulation
                     {
                         color = Color32.Lerp(color, HotColor, t >= 1f ? 1f : t);
                     }
+                }
+
+                if (dim)
+                {
+                    color = new Color32(
+                        (byte)(color.r * brightness),
+                        (byte)(color.g * brightness),
+                        (byte)(color.b * brightness),
+                        color.a);
                 }
 
                 pixels[i] = color;
