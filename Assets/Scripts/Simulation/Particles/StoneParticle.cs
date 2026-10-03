@@ -27,6 +27,7 @@ namespace TapTap2026.Simulation
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,
             density: 3.0f,
+            heatCapacity: 0.9f,   // 石头：热容适中
             affectedByGravity: true,
             isStatic: false,
             maxFlowSpread: 0,

@@ -86,7 +86,7 @@ namespace TapTap2026.Simulation
         /// 校验一份类型属性。注册流程与自定义类型表（<see cref="ParticleWorld"/> 的四参构造）共用本方法，
         /// 保证任何进入运行期的类型都经过同一套检查。
         /// </summary>
-        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、Friction 或 Stickiness 不在 [0,1]、或未带任何类别标签。</exception>
+        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、HeatCapacity 非有限正数、Friction 或 Stickiness 不在 [0,1]、或未带任何类别标签。</exception>
         public static void ValidateTypeInfo(ParticleTypeInfo info, string description)
         {
             string name = string.IsNullOrEmpty(description) ? "<未命名类型>" : description;
@@ -102,6 +102,12 @@ namespace TapTap2026.Simulation
             {
                 throw new InvalidOperationException(
                     $"[ParticleRegistry] {name} 的 Density 必须是有限值，实际为 {info.Density}。");
+            }
+
+            if (float.IsNaN(info.HeatCapacity) || float.IsInfinity(info.HeatCapacity) || info.HeatCapacity <= 0f)
+            {
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 的 HeatCapacity 必须是有限正数（温度 = 热量 / 热容），实际为 {info.HeatCapacity}。");
             }
 
             if (float.IsNaN(info.Friction) || float.IsInfinity(info.Friction) ||

@@ -24,6 +24,8 @@ namespace TapTap2026.Simulation
         private readonly int _width;
         private readonly int _height;
         private readonly Cell[] _cells;
+        private readonly HeatMap _heat;
+        private readonly LightController _light;
         private readonly ParticleType[] _types;
 
         private int _tick;
@@ -83,6 +85,8 @@ namespace TapTap2026.Simulation
             _height = height;
             _types = types;
             _cells = new Cell[width * height];
+            _heat = new HeatMap(width, height, _cells, types);
+            _light = new LightController();
             _tick = 0;
             _rng = seed == 0u ? DefaultSeed : seed;
             _stamp = OutsideStamp;
@@ -101,6 +105,26 @@ namespace TapTap2026.Simulation
         public Cell[] Cells
         {
             get { return _cells; }
+        }
+
+        /// <summary>
+        /// 与网格同形的热图（每格一个热量 Q），世界持有并随世界重建。
+        /// 热量**由物质携带**：<see cref="Swap"/> 会把 Q 一起搬走；<see cref="Set"/> / <see cref="Clear"/>
+        /// 换上的是新物质，其热量重置为环境值。温度是导出量（<c>T = Q / C</c>）。
+        /// 每 tick 由 <see cref="Step"/> 做一次全格四邻热传导；粒子类型通过它查询 / 修改任意位置的温度与热量。
+        /// </summary>
+        public HeatMap Heat
+        {
+            get { return _heat; }
+        }
+
+        /// <summary>
+        /// 光照控制器：按时序通断，照亮时向每列最上面的固体粒子注入热量。
+        /// 每 tick 由 <see cref="Step"/> 驱动；游戏侧通过 <c>world.Light.Enabled</c> 等属性配置。
+        /// </summary>
+        public LightController Light
+        {
+            get { return _light; }
         }
 
         /// <summary>网格宽（格数）。</summary>
@@ -212,6 +236,7 @@ namespace TapTap2026.Simulation
             Cell swap = _cells[a];
             _cells[a] = _cells[b];
             _cells[b] = swap;
+            _heat.SwapHeat(a, b);
 
             byte stamp = _stamp;
             _cells[a].flags = CellFlags.WithProcessed(_cells[a].flags, stamp);
@@ -262,6 +287,9 @@ namespace TapTap2026.Simulation
             cell.typeId = typeId;
             cell.flags = _stamp;
 
+            // 新物质替换掉旧物质：热由物质携带，旧热随旧物质离场，新物质从环境热量开始。
+            _heat.ResetHeatAt(index);
+
             if (typeId == ParticleRegistry.AirTypeId)
             {
                 cell.shade = 0;
@@ -308,6 +336,12 @@ namespace TapTap2026.Simulation
         /// 驱动一次完整网格扫描。与渲染解耦：本方法不接触任何渲染资源，
         /// 由上层决定跑完几次 Step 之后才上屏一次。
         /// </summary>
+        /// <remarks>
+        /// 一个 tick 分三段：<b>①粒子扫描</b>（各 <c>OnUpdate</c> 可读写热图）→
+        /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
+        /// <b>③光照</b>（<see cref="LightController.Step"/>，向每列最上面的固体施热）。
+        /// 因此光照 / 传导注入的热量会在下一个 tick 被粒子读到、并参与下一轮扩散。
+        /// </remarks>
         public void Step()
         {
             byte stamp = (byte)(_tick & 1);
@@ -341,6 +375,12 @@ namespace TapTap2026.Simulation
                 }
 
                 _tick++;
+
+                // 网格扫描之后：先做一次全格四邻热传导，再让光照向每列最上面的固体施热。
+                // 两步都在 try 内，异常（如某类型 OnUpdate 抛出）时本 tick 的 _tick 不自增，
+                // 传导 / 光照一并不生效，与「异常后 particle 仍会在下一次 Step 被处理」的约定一致。
+                _heat.Step();
+                _light.Step(this);
             }
             finally
             {

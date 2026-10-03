@@ -65,6 +65,418 @@ namespace TapTap2026.Tests
             }
         }
 
+        // ============================== 热图（Q / 温度） ==============================
+
+        [Test]
+        public void Heat_DefaultsToAmbientEverywhere()
+        {
+            ParticleWorld world = NewWorld();
+
+            Assert.AreEqual(W, world.Heat.Width);
+            Assert.AreEqual(H, world.Heat.Height);
+            Assert.AreEqual(W * H, world.Heat.CellCount);
+
+            for (int i = 0; i < world.Heat.CellCount; i++)
+            {
+                Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.Values[i]);
+            }
+        }
+
+        [Test]
+        public void Heat_SetHeatAndGetHeat_RoundTripsPerCell_WithRowMajorIndexing()
+        {
+            ParticleWorld world = NewWorld();
+
+            Assert.IsTrue(world.Heat.SetHeat(3, 2, 42.5f));
+            Assert.IsTrue(world.Heat.SetHeat(0, 0, -10f));
+            Assert.IsTrue(world.Heat.SetHeat(W - 1, H - 1, 900f));
+
+            Assert.AreEqual(42.5f, world.Heat.GetHeat(3, 2));
+            Assert.AreEqual(-10f, world.Heat.GetHeat(0, 0));
+            Assert.AreEqual(900f, world.Heat.GetHeat(W - 1, H - 1));
+            Assert.AreEqual(42.5f, world.Heat.Values[2 * W + 3], "下标必须与 Cell 一致：y * Width + x");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(3, 3), "不同格之间不得串值");
+        }
+
+        [Test]
+        public void Heat_OutOfBounds_ReadsAmbient_AndWritesAreNoOps()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.SetHeat(0, 0, 7f);
+
+            Assert.IsFalse(world.Heat.IsInBounds(-1, 0));
+            Assert.IsFalse(world.Heat.IsInBounds(0, H));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(-1, 0));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(W, 0));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, -1));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, H));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetTemperature(-1, 0));
+
+            Assert.IsFalse(world.Heat.SetHeat(-1, 0, 100f));
+            Assert.IsFalse(world.Heat.SetHeat(W, 0, 100f));
+            Assert.IsFalse(world.Heat.AddHeat(0, H, 100f));
+
+            Assert.AreEqual(7f, world.Heat.GetHeat(0, 0));
+            for (int i = 1; i < world.Heat.CellCount; i++)
+            {
+                Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.Values[i], "越界写不得影响界内任何格");
+            }
+        }
+
+        [Test]
+        public void Heat_AddHeatAccumulatesOntoTheCellsCurrentValue()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.SetHeat(5, 5, 10f);
+
+            Assert.IsTrue(world.Heat.AddHeat(5, 5, 2.5f));
+            Assert.IsTrue(world.Heat.AddHeat(5, 5, -0.5f));
+
+            Assert.AreEqual(12f, world.Heat.GetHeat(5, 5));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(5, 6));
+        }
+
+        [Test]
+        public void Heat_TemperatureIsHeatDividedByTheCellsHeatCapacity()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(5, 5, TestTypes.HeatId);   // 测试热源：热容 2
+            world.Heat.SetHeat(5, 5, 10f);
+            world.Heat.SetHeat(6, 6, 10f);       // 空气：热容 1
+
+            Assert.AreEqual(2f, world.Heat.GetCapacity(5, 5));
+            Assert.AreEqual(5f, world.Heat.GetTemperature(5, 5), "T = Q / C = 10 / 2");
+            Assert.AreEqual(1f, world.Heat.GetCapacity(6, 6), "空气用 AirHeatCapacity");
+            Assert.AreEqual(10f, world.Heat.GetTemperature(6, 6), "同一份热量，热容小则温度高");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetTemperature(7, 7));
+        }
+
+        [Test]
+        public void Heat_TemperatureByIndex_MatchesCoordinates()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(3, 2, TestTypes.HeatId); // 热容 2
+            world.Heat.SetHeat(3, 2, 10f);
+
+            int index = world.Index(3, 2);
+            Assert.AreEqual(5f, world.Heat.GetTemperatureAt(index), "T = Q / C");
+            Assert.AreEqual(world.Heat.GetTemperature(3, 2), world.Heat.GetTemperatureAt(index));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetTemperatureAt(-1));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetTemperatureAt(world.CellCount));
+        }
+
+        [Test]
+        public void Heat_SwapCarriesHeatWithTheParticle()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(5, 12, TestTypes.GrainId);
+            world.Heat.SetHeat(5, 12, 300f);
+
+            world.Swap(5, 12, 5, 9);
+
+            Assert.AreEqual(300f, world.Heat.GetHeat(5, 9), "热由物质携带：Swap 把 Q 一起搬走");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(5, 12), "旧位置不留下热量");
+        }
+
+        [Test]
+        public void Heat_FallingParticleKeepsItsHeat()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f; // 关掉传导，单独验证「热随物质走」
+            world.Set(5, 12, TestTypes.GrainId);
+            world.Heat.SetHeat(5, 12, 300f);
+
+            for (int i = 0; i < 3; i++)
+            {
+                world.Step();
+            }
+
+            Assert.AreEqual((int)TestTypes.GrainId, (int)world.GetCell(5, 9).typeId, "颗粒应已落到 (5,9)");
+            Assert.AreEqual(300f, world.Heat.GetHeat(5, 9), "颗粒带着热一起下落");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(5, 12), "离开的位置不留热");
+        }
+
+        [Test]
+        public void Heat_ReplacingTheMaterialResetsItsHeatToAmbient()
+        {
+            ParticleWorld world = NewWorld();
+
+            world.Heat.SetHeat(4, 4, 55f);
+            world.Set(4, 4, TestTypes.GrainId);
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 4), "生成新物质：从环境热量开始");
+
+            world.Heat.SetHeat(4, 4, 55f);
+            world.Set(4, 4, TestTypes.GrainId); // 同类型重复 Set 是空操作
+            Assert.AreEqual(55f, world.Heat.GetHeat(4, 4), "同类型重复 Set 不替换物质，热量保留");
+
+            world.Clear(4, 4);
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 4), "抹除：旧物质连同它的热一起离场");
+        }
+
+        [Test]
+        public void Heat_ConductionSpreadsHeatToFourNeighboursAndConservesTotal()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.VoidHeatLoss = 0f;  // 隔离出「界内传导守恒」这一条
+            world.Heat.SetHeat(5, 5, 10f); // 全空气：热容 1，故 T = Q
+
+            world.Step();
+
+            // 中心向外散一格：0.15 * 4 邻居 * (0 - 10) = -6 → 4；每个邻居 +0.15 * (10 - 0) = 1.5。
+            Assert.AreEqual(4f, world.Heat.GetHeat(5, 5), 1e-4f);
+            Assert.AreEqual(1.5f, world.Heat.GetHeat(4, 5), 1e-4f);
+            Assert.AreEqual(1.5f, world.Heat.GetHeat(6, 5), 1e-4f);
+            Assert.AreEqual(1.5f, world.Heat.GetHeat(5, 4), 1e-4f);
+            Assert.AreEqual(1.5f, world.Heat.GetHeat(5, 6), 1e-4f);
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 4), 1e-4f, "只扩散到四邻，不含对角");
+            Assert.AreEqual(10f, SumHeat(world), 1e-3f, "传导只搬运热量，总量守恒");
+        }
+
+        [Test]
+        public void Heat_ConductionIsOffWhenConductivityIsZero()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f;
+            world.Heat.SetHeat(5, 5, 10f);
+
+            world.Step();
+
+            Assert.AreEqual(10f, world.Heat.GetHeat(5, 5));
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 5));
+        }
+
+        [Test]
+        public void Heat_TopRowRadiatesIntoTheVoid_OtherRowsDoNot()
+        {
+            ParticleWorld world = new ParticleWorld(1, 3, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;   // 只看散热这一条
+            world.Heat.VoidHeatLoss = 0.1f;
+            world.Heat.SetHeat(0, 2, 100f); // 顶行（y = Height-1）
+            world.Heat.SetHeat(0, 1, 100f); // 内部行
+
+            world.Step();
+
+            Assert.AreEqual(90f, world.Heat.GetHeat(0, 2), 1e-4f, "顶行按温度散掉 0.1 * T");
+            Assert.AreEqual(100f, world.Heat.GetHeat(0, 1), 1e-4f, "内部行不接触虚空，热量不变");
+        }
+
+        [Test]
+        public void Heat_VoidHeatLossKeepsDrainingTheTopRowEveryTick()
+        {
+            ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0.2f;
+            world.Heat.SetHeat(0, 0, 100f);
+
+            world.Step();
+            Assert.AreEqual(80f, world.Heat.GetHeat(0, 0), 1e-4f);
+
+            world.Step();
+            Assert.AreEqual(64f, world.Heat.GetHeat(0, 0), 1e-4f, "是每 tick 持续流失，不是一次性");
+
+            for (int i = 0; i < 40; i++)
+            {
+                world.Step();
+            }
+
+            Assert.Greater(world.Heat.GetHeat(0, 0), 0f, "是按比例衰减，不会变成负数");
+        }
+
+        [Test]
+        public void Heat_VoidHeatLossZero_ClosesTheTopBoundary()
+        {
+            ParticleWorld world = new ParticleWorld(1, 3, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.SetHeat(0, 2, 100f);
+
+            for (int i = 0; i < 10; i++)
+            {
+                world.Step();
+            }
+
+            Assert.AreEqual(100f, world.Heat.GetHeat(0, 2), 1e-4f, "0 = 封闭系统，顶行不再流失");
+        }
+
+        [Test]
+        public void Heat_VoidHeatLossIsClampedToTheStableRange()
+        {
+            ParticleWorld world = NewWorld();
+
+            world.Heat.VoidHeatLoss = -5f;
+            Assert.AreEqual(0f, world.Heat.VoidHeatLoss);
+
+            world.Heat.VoidHeatLoss = 99f;
+            Assert.AreEqual(HeatMap.MaxConductivity, world.Heat.VoidHeatLoss);
+        }
+
+        [Test]
+        public void Heat_LightSettlesAtASteadyTemperatureInsteadOfHeatingForever()
+        {
+            // 1x1 世界：唯一那格既是顶行、又是每列最上面的固体。每 tick 先散掉 0.1 * T，再被光照注入 5。
+            // 稳态：0.1 * T = 5 ⇒ T = 强度 / 散热系数 = 50。
+            ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
+            world.Set(0, 0, TestTypes.StaticId); // 热容 1
+            world.Heat.VoidHeatLoss = 0.1f;
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 100000;
+            world.Light.DarkTicks = 0;
+            world.Light.Intensity = 5f;
+
+            for (int i = 0; i < 50; i++)
+            {
+                world.Step();
+            }
+
+            float early = world.Heat.GetTemperature(0, 0);
+
+            for (int i = 0; i < 450; i++)
+            {
+                world.Step();
+            }
+
+            float settled = world.Heat.GetTemperature(0, 0);
+
+            Assert.AreEqual(50f, settled, 0.01f, "稳态温度 = 光照强度 / 虚空散热系数");
+            Assert.Less(early, settled, "单调爬升到稳态，而不是无止境增长");
+            Assert.Less(settled, 51f, "有出口，热量不再只增不减");
+        }
+
+        [Test]
+        public void HeatMap_RejectsBadDimensionsAndBuffers()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new HeatMap(0, 1, new Cell[0], TestTypes.Table));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new HeatMap(1, 0, new Cell[0], TestTypes.Table));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new HeatMap(-1, 1, new Cell[0], TestTypes.Table));
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => new HeatMap(ParticleWorld.MaxSide + 1, 1, new Cell[ParticleWorld.MaxSide + 1], TestTypes.Table));
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => new HeatMap(1, ParticleWorld.MaxSide + 1, new Cell[ParticleWorld.MaxSide + 1], TestTypes.Table));
+
+            Assert.Throws<ArgumentException>(() => new HeatMap(2, 1, new Cell[1], TestTypes.Table), "cells 长度必须匹配");
+            Assert.Throws<ArgumentException>(() => new HeatMap(1, 1, null, TestTypes.Table));
+            Assert.Throws<ArgumentException>(() => new HeatMap(1, 1, new Cell[1], null));
+
+            var largest = new HeatMap(ParticleWorld.MaxSide, 1, new Cell[ParticleWorld.MaxSide], TestTypes.Table);
+            Assert.AreEqual(ParticleWorld.MaxSide, largest.CellCount);
+        }
+
+        [Test]
+        public void HeatParticle_ReadsAndWritesHeatDuringStep()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f; // 排除传导干扰，只看粒子自身的读写
+            world.Set(5, 5, TestTypes.HeatId);
+            world.Heat.SetHeat(5, 5, 10f);
+            TestHeatParticle.Delta = 2f;
+
+            world.Step();
+
+            Assert.AreEqual(12f, world.Heat.GetHeat(5, 5), "粒子的 OnUpdate 必须能改世界热图");
+            Assert.AreEqual(10f, TestHeatParticle.LastObservedHeat, "粒子先读到写入前的值");
+
+            world.Step();
+
+            Assert.AreEqual(14f, world.Heat.GetHeat(5, 5));
+            Assert.AreEqual(12f, TestHeatParticle.LastObservedHeat);
+            Assert.AreEqual((int)TestTypes.HeatId, (int)world.GetCell(5, 5).typeId, "热源粒子不移动");
+        }
+
+        // ============================== 光照 ==============================
+
+        [Test]
+        public void Light_HeatsTheTopmostSolidOfEachColumn()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f;
+            world.Set(0, 0, TestTypes.StaticId);  // 第 0 列：最上面的固体就是 (0,0)
+            world.Set(1, 0, TestTypes.StaticId);  // 第 1 列：只有上面的 (1,3) 该被照到
+            world.Set(1, 3, TestTypes.StaticId);
+            world.Set(2, 0, TestTypes.StaticId);  // 第 2 列：液体在 (2,2)，不是固体，不遮挡
+            world.Set(2, 2, TestTypes.LiquidId);
+
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 100;
+            world.Light.DarkTicks = 100;
+            world.Light.Intensity = 7f;
+
+            world.Step();
+
+            Assert.IsTrue(world.Light.IsLit);
+            Assert.AreEqual(7f, world.Heat.GetHeat(0, 0), 1e-4f);
+            Assert.AreEqual(7f, world.Heat.GetHeat(1, 3), 1e-4f, "取每列最上面的固体");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(1, 0), 1e-4f, "下方的固体不会被照到");
+            Assert.AreEqual(7f, world.Heat.GetHeat(2, 0), 1e-4f, "液体 / 气体不遮挡，照到下面的固体");
+        }
+
+        [Test]
+        public void Light_FollowsItsLitAndDarkDutyCycle()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f;
+            world.Set(0, 0, TestTypes.StaticId);
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 2;
+            world.Light.DarkTicks = 2;
+            world.Light.Intensity = 1f;
+
+            world.Step(); // 第 1 刻：亮
+            world.Step(); // 第 2 刻：亮
+            Assert.AreEqual(2f, world.Heat.GetHeat(0, 0), 1e-4f, "亮相位每刻都在加热");
+
+            world.Step(); // 第 3 刻：暗
+            world.Step(); // 第 4 刻：暗
+            Assert.AreEqual(2f, world.Heat.GetHeat(0, 0), 1e-4f, "暗相位不加热");
+
+            world.Step(); // 第 5 刻：新周期，重新亮
+            Assert.AreEqual(3f, world.Heat.GetHeat(0, 0), 1e-4f, "周期循环回亮相位");
+            Assert.AreEqual(5, world.Light.Elapsed);
+        }
+
+        [Test]
+        public void Light_DisabledOrZeroIntensity_InjectsNoHeat()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f;
+            world.Set(0, 0, TestTypes.StaticId);
+            world.Light.Intensity = 5f;
+            world.Light.LitTicks = 10;
+            world.Light.DarkTicks = 10;
+
+            world.Light.Enabled = false;
+            world.Step();
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, 0), 1e-4f, "总开关关闭");
+
+            world.Light.Enabled = true;
+            world.Light.Intensity = 0f;
+            world.Step();
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, 0), 1e-4f, "强度 0");
+        }
+
+        [Test]
+        public void Light_WhenDisabled_DoesNotAdvanceItsPhase()
+        {
+            ParticleWorld world = NewWorld();
+            world.Heat.Conductivity = 0f;
+            world.Set(0, 0, TestTypes.StaticId);
+            world.Light.LitTicks = 1;
+            world.Light.DarkTicks = 1;
+            world.Light.Intensity = 1f;
+            world.Light.Enabled = false;
+
+            for (int i = 0; i < 4; i++)
+            {
+                world.Step();
+            }
+
+            Assert.AreEqual(0, world.Light.Elapsed, "关闭时不推进相位");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, 0), 1e-4f);
+
+            world.Light.Enabled = true;
+            world.Step();
+            Assert.AreEqual(1f, world.Heat.GetHeat(0, 0), 1e-4f, "重新打开从亮相位开始");
+        }
+
         [Test]
         public void CanDisplace_RejectsOutOfBoundsTarget()
         {
@@ -531,7 +943,7 @@ namespace TapTap2026.Tests
         [Test]
         public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
         {
-            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
+            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
             var bad = new ParticleType(1, badInfo, null, null, null);
 
             Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));
@@ -576,6 +988,68 @@ namespace TapTap2026.Tests
             var pixels = new Color32[world.CellCount - 1];
 
             Assert.Throws<ArgumentException>(() => ParticlePixelBuffer.Fill(world, pixels, default(Color32)));
+        }
+
+        [Test]
+        public void PixelBuffer_HeatOverlay_TintsHotterCellsRedder()
+        {
+            ParticleWorld world = new ParticleWorld(4, 1, 1u, TestTypes.Table);
+            world.Set(0, 0, TestTypes.GrainId);
+            world.Set(1, 0, TestTypes.GrainId);
+            world.Set(2, 0, TestTypes.GrainId);
+
+            var background = new Color32(10, 20, 30, 255);
+            var plain = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, plain, background);
+
+            world.Heat.DebugHeatOverlay = true;
+            world.Heat.DebugFullScaleTemperature = 10f;
+            world.Heat.SetHeat(1, 0, 10f); // 颗粒热容 1 ⇒ T = 10 ⇒ 满量程：纯红
+            world.Heat.SetHeat(2, 0, 5f);  // T = 5 ⇒ 半程
+
+            var tinted = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, tinted, background);
+
+            Assert.AreEqual(plain[0], tinted[0], "没有热量的格不受叠加影响");
+            Assert.AreEqual(255, (int)tinted[1].r);
+            Assert.AreEqual(0, (int)tinted[1].g);
+            Assert.AreEqual(0, (int)tinted[1].b);
+            Assert.Greater((int)tinted[2].r, (int)plain[2].r, "半程：红分量被抬高");
+            Assert.Less((int)tinted[2].g, (int)plain[2].g, "半程：绿分量被压低");
+            Assert.Greater((int)tinted[1].r, (int)tinted[2].r, "越热越红");
+            Assert.Less((int)tinted[1].g, (int)tinted[2].g);
+        }
+
+        [Test]
+        public void PixelBuffer_HeatOverlay_AlsoTintsAirCells()
+        {
+            ParticleWorld world = new ParticleWorld(2, 1, 1u, TestTypes.Table);
+            var background = new Color32(10, 20, 30, 255);
+            world.Heat.DebugHeatOverlay = true;
+            world.Heat.DebugFullScaleTemperature = 1f;
+            world.Heat.SetHeat(1, 0, 1f); // 空气热容 1 ⇒ T = 1 ⇒ 满量程
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, background);
+
+            Assert.AreEqual(background, pixels[0]);
+            Assert.AreEqual(255, (int)pixels[1].r, "热力叠加是整场的，空气格也显示");
+            Assert.AreEqual(0, (int)pixels[1].g);
+        }
+
+        [Test]
+        public void PixelBuffer_HeatOverlay_IsIgnoredWhenFullScaleIsNonPositive()
+        {
+            ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
+            var background = new Color32(10, 20, 30, 255);
+            world.Heat.DebugHeatOverlay = true;
+            world.Heat.DebugFullScaleTemperature = 0f;
+            world.Heat.SetHeat(0, 0, 100f);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, background);
+
+            Assert.AreEqual(background, pixels[0], "满量程 <= 0 时叠加失效（也不会除零）");
         }
 
         // ============================== 生产粒子：石头 / 沙 / 土 ==============================
@@ -891,6 +1365,18 @@ namespace TapTap2026.Tests
             }
 
             return count;
+        }
+
+        private static float SumHeat(ParticleWorld world)
+        {
+            float sum = 0f;
+            float[] values = world.Heat.Values;
+            for (int i = 0; i < values.Length; i++)
+            {
+                sum += values[i];
+            }
+
+            return sum;
         }
 
         private static int RowCount(ParticleWorld world, ushort typeId, int y)

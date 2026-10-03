@@ -354,6 +354,7 @@ GameObject:
   - component: {fileID: 1926363750}
   - component: {fileID: 1926363749}
   - component: {fileID: 1926363753}
+  - component: {fileID: 1926363754}
   m_Layer: 0
   m_Name: Particle Sandbox
   m_TagString: Untagged
@@ -378,23 +379,6 @@ MonoBehaviour:
   _wallThickness: 3
   _sandWidthRatio: 0.5
   _sandHeightRatio: 0.6
---- !u!114 &1926363753
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1926363748}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 69a1caf46e244062b2c3c2352fb9647b, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  _driver: {fileID: 1926363750}
-  _renderer: {fileID: 1926363751}
-  _camera: {fileID: 0}
-  _brushRadius: 3
-  _drawHud: 1
 --- !u!114 &1926363750
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -410,6 +394,10 @@ MonoBehaviour:
   _settings: {fileID: 11400000, guid: 2b53f4f489ad03c4aa002a1383d2e6ea, type: 2}
   _renderer: {fileID: 1926363751}
   _simulate: 1
+  _widthOverride: 100
+  _heightOverride: 100
+  _heatDebugOverlay: 0
+  _heatDebugFullScale: 10
 --- !u!114 &1926363751
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -443,6 +431,40 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1926363753
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1926363748}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 69a1caf46e244062b2c3c2352fb9647b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _driver: {fileID: 1926363750}
+  _renderer: {fileID: 1926363751}
+  _camera: {fileID: 0}
+  _brushRadius: 3
+  _drawHud: 1
+--- !u!114 &1926363754
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1926363748}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b7d41e5c9a2f43e08d6b1c7f3a9e5d20, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _driver: {fileID: 1926363750}
+  _enabled: 1
+  _litTicks: 60
+  _darkTicks: 60
+  _intensity: 5
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

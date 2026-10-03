@@ -26,6 +26,15 @@ namespace TapTap2026.Game
 
         [SerializeField] private int _seed = 123456789;
 
+        [Header("热力学")]
+        [Tooltip("热传导系数：每对相邻格每 tick 交换的热量占比。越大越等温（热量摊得越平）；" +
+                 "越小热越憋在源头，竖直温差越大。")]
+        [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _conductivity = HeatMap.DefaultConductivity;
+
+        [Tooltip("顶行向虚空散热的系数：温度越高散得越快，是热量离开世界的唯一出口。" +
+                 "0 = 封闭系统（光照下会无限升温）。")]
+        [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _voidHeatLoss = HeatMap.DefaultVoidHeatLoss;
+
         public int Width
         {
             get { return Mathf.Clamp(_width, 1, ParticleWorld.MaxSide); }
@@ -56,6 +65,18 @@ namespace TapTap2026.Game
         public uint Seed
         {
             get { return unchecked((uint)_seed); }
+        }
+
+        /// <summary>热传导系数，夹在 <c>[0, HeatMap.MaxConductivity]</c>（该上限来自显式扩散的稳定性）。</summary>
+        public float Conductivity
+        {
+            get { return Mathf.Clamp(_conductivity, 0f, HeatMap.MaxConductivity); }
+        }
+
+        /// <summary>顶行向虚空散热的系数，夹在 <c>[0, HeatMap.MaxConductivity]</c>。</summary>
+        public float VoidHeatLoss
+        {
+            get { return Mathf.Clamp(_voidHeatLoss, 0f, HeatMap.MaxConductivity); }
         }
     }
 }

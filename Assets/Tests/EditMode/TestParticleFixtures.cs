@@ -20,7 +20,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, true, false, 0, 0f, 0f, Palette, "TestGrainParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, true, false, 0, 0f, 0f, Palette, "TestGrainParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -53,7 +53,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -89,7 +89,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, false, true, 0, 0f, 0f, Palette, "TestStaticParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, 1f, false, true, 0, 0f, 0f, Palette, "TestStaticParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -115,7 +115,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, 0f, Palette, "TestWalkerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestWalkerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -144,7 +144,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, false, false, 8, 0f, 0f, Palette, "TestSolidFlowParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, 1f, false, false, 8, 0f, 0f, Palette, "TestSolidFlowParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -169,7 +169,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, 0f, Palette, "TestThrowerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestThrowerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -196,7 +196,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, 0f, Palette, "TestBadPaletteParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestBadPaletteParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -219,7 +219,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.None, 1f, false, false, 0, 0f, 0f, Palette, "TestNoTagParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.None, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestNoTagParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -242,7 +242,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 4f, true, false, 0, 1f, 0f, Palette, "TestFrictionOneSolidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 4f, 1f, true, false, 0, 1f, 0f, Palette, "TestFrictionOneSolidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -266,7 +266,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 3f, true, false, 0, 0f, 1f, Palette, "TestCohesionParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 3f, 1f, true, false, 0, 0f, 1f, Palette, "TestCohesionParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -299,12 +299,49 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, true, false, 0, _friction, _stickiness, Palette, "TestTunableSolidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, true, false, 0, _friction, _stickiness, Palette, "TestTunableSolidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
         {
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 测试专用的热源：每 tick 先读自己所在格的热量（记到 <see cref="LastObservedHeat"/>），再累加 <see cref="Delta"/>；
+    /// 不移动、不做其它事。用于验证粒子能在 <c>OnUpdate</c> 里查改世界热图。
+    /// </summary>
+    internal sealed class TestHeatParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(255, 120, 0, 255) };
+
+        internal const float DefaultDelta = 5f;
+
+        /// <summary>每 tick 的热量增量。测试可改，<see cref="TestTypes.ResetCounters"/> 会复位。</summary>
+        internal static float Delta = DefaultDelta;
+
+        /// <summary>最近一次 <c>OnUpdate</c> 读到（写入前）的热量。用于验证「先查后改」。</summary>
+        internal static float LastObservedHeat = float.NaN;
+
+        /// <summary>热容刻意取 2（空气是 1），用于验证 <c>T = Q / C</c> 的换算。</summary>
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 2f, false, false, 0, 0f, 0f, Palette, "TestHeatParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+            LastObservedHeat = world.Heat.GetHeat(x, y);
+            world.Heat.AddHeat(x, y, Delta);
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -323,7 +360,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 0f, 1.5f, Palette, "TestBadStickinessParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 0f, 1.5f, Palette, "TestBadStickinessParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -346,7 +383,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, false, false, 0, 1.5f, 0f, Palette, "TestBadFrictionParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 1.5f, 0f, Palette, "TestBadFrictionParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -375,6 +412,7 @@ namespace TapTap2026.Tests
         internal const ushort ThrowerId = 6;
         internal const ushort FrictionOneId = 7;
         internal const ushort CohesionId = 8;
+        internal const ushort HeatId = 9;
 
         internal static readonly TestGrainParticle Grain = new TestGrainParticle();
         internal static readonly TestLiquidParticle Liquid = new TestLiquidParticle();
@@ -401,6 +439,7 @@ namespace TapTap2026.Tests
                         Bind(ThrowerId, new TestThrowerParticle()),
                         Bind(FrictionOneId, new TestFrictionOneSolidParticle()),
                         Bind(CohesionId, new TestCohesionParticle()),
+                        Bind(HeatId, new TestHeatParticle()),
                     };
                 }
 
@@ -417,6 +456,8 @@ namespace TapTap2026.Tests
             Static.UpdateCount = 0;
             Walker.UpdateCount = 0;
             TestThrowerParticle.Armed = false;
+            TestHeatParticle.Delta = TestHeatParticle.DefaultDelta;
+            TestHeatParticle.LastObservedHeat = float.NaN;
         }
 
         private static ParticleType Bind(ushort id, IParticleType behaviour)

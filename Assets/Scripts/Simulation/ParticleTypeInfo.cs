@@ -20,6 +20,13 @@ namespace TapTap2026.Simulation
         /// </summary>
         public readonly float Density;
 
+        /// <summary>
+        /// 热容 C（必须为有限正数）。热量与温度的换算是 <c>T = Q / C</c>（见 <see cref="HeatMap"/>）：
+        /// 同一份热量下热容越大、升温越慢；反之散热越快。单位自定，只要各类型之间相对大小合理即可。
+        /// 空气没有类型条目，用 <see cref="HeatMap.AirHeatCapacity"/>。
+        /// </summary>
+        public readonly float HeatCapacity;
+
         /// <summary>是否受重力。由该类型自己的 <c>OnUpdate</c> 决定如何使用。</summary>
         public readonly bool AffectedByGravity;
 
@@ -64,6 +71,7 @@ namespace TapTap2026.Simulation
         public ParticleTypeInfo(
             ParticleTags tags,
             float density,
+            float heatCapacity,
             bool affectedByGravity,
             bool isStatic,
             byte maxFlowSpread,
@@ -74,6 +82,7 @@ namespace TapTap2026.Simulation
         {
             Tags = tags;
             Density = density;
+            HeatCapacity = heatCapacity;
             AffectedByGravity = affectedByGravity;
             IsStatic = isStatic;
             MaxFlowSpread = maxFlowSpread;

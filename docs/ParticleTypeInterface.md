@@ -68,6 +68,7 @@ public struct Cell
 - `Array.Sort` 式的大数组访存因此是每格 4 字节；网格 1024×512 = 512K 格 = **2 MB** CPU 缓冲，同尺寸 `RGBA32` 纹理 = 2 MB。
 - `typeId` 为 `ushort`：最多 65534 个类型（0 被空气占用；实现上限 `ParticleRegistry.MaxTypeCount = ushort.MaxValue - 1`）。
 - `shade` 为 `byte`：调色板最多 256 色。
+- **热不进 `Cell`**：每格的热量 Q 存在与网格同形的独立平行数组里（`world.Heat`，见 §6）。`Cell` 仍是 4 字节；热由**物质携带**——`Swap` 会把 Q 一起搬走，`Set`/`Clear` 换上新材料则重置为环境热量。温度是导出量：`T = Q / C`，热容 C 是**类型属性**（`ParticleTypeInfo.HeatCapacity`）。
 
 ### flags 位分配（`CellFlags.cs` 集中定义，禁止散落魔法数字）
 
@@ -119,6 +120,7 @@ public readonly struct ParticleTypeInfo
 {
     public readonly ParticleTags Tags;           // 类别标签，至少带一个（Solid / Liquid / Gas；None 会被注册校验拒绝）
     public readonly float    Density;            // 密度；内置规则不读，留给同类内再排序的类型自实现
+    public readonly float    HeatCapacity;       // 热容 C（有限正数）；温度 = 热量 / C，见 §6
     public readonly bool     AffectedByGravity;  // 是否受重力
     public readonly bool     IsStatic;           // 静态：扫描直接跳过，不进入 OnUpdate
     public readonly byte     MaxFlowSpread;      // 最大横流格数（单 tick 单侧横向最大蔓延）
@@ -218,7 +220,7 @@ public static class ParticleRegistry
 
 - **`typeId` = 注册顺序**，从 1 开始，0 保留给空气。`ParticleRegistration.RegisterAll()` 是**全工程唯一的类型清单**。
 - 用 `ParticleType[]`（引用类型数组）而不是结构体数组：`Types[id].Info.Density` 只做指针寻址，不会每帧拷贝几十字节的结构体。
-- 注册时校验（`ValidateTypeInfo`）：调色板非空且 ≤256、`Density` 有限、**`Friction` 与 `Stickiness` 都在 `[0, 1]` 内**、**至少带一个类别标签（`Tags != None`）**、类型数未溢出。违反 = **抛 `InvalidOperationException`**，且校验发生在写入任何状态之前。
+- 注册时校验（`ValidateTypeInfo`）：调色板非空且 ≤256、`Density` 有限、**`HeatCapacity` 为有限正数**、**`Friction` 与 `Stickiness` 都在 `[0, 1]` 内**、**至少带一个类别标签（`Tags != None`）**、类型数未溢出。违反 = **抛 `InvalidOperationException`**，且校验发生在写入任何状态之前。
 - `ParticleRegistration` 用 `RegisterBatch` 一次性注册：**先全部校验、再统一写入**，任一类型非法则整体不生效，`ParticleIds` 只会在全部成功后才回填——这样就不会出现「前几个类型已注册、后面的 `ParticleIds.Xxx` 仍是 0（空气）」的静默退化。失败后 `RegisterAll()` 的后续调用会继续抛出，不会当作成功。
 - **自定义类型表也要过同一套校验**：`new ParticleWorld(w, h, seed, types)` 会对每个非 null 条目调用 `ValidateTypeInfo`，非法条目直接抛 `ArgumentException`，而不是等到运行期 `Set` 才 DivideByZero。
 - `Types[0]` 恒为 `null`（空气）；数组容量可能大于 `Count + 1`，超出部分是 `null`。`ParticleWorld` 与渲染层对超出范围的 id 一律当作「不存在的类型」跳过。
@@ -295,6 +297,7 @@ public sealed class XxxParticle : IParticleType
     public ParticleTypeInfo Info => new ParticleTypeInfo(
         tags: ParticleTags.Solid,
         density: 1.0f,
+        heatCapacity: 1.0f,
         affectedByGravity: true,
         isStatic: false,
         maxFlowSpread: 0,
@@ -330,6 +333,8 @@ public sealed class ParticleWorld
     public bool Parity => (Tick & 1) != 0;      // 本次 Step 的扫描方向奇偶
     public Cell[] Cells { get; }                // 底层数组，只读契约：外部只允许读
     public ParticleType[] Types { get; }        // Types[0] == null（空气）
+    public HeatMap Heat { get; }                // 与网格同形的热量场 Q（float/格），见下
+    public LightController Light { get; }       // 光照控制器（按时序向每列最上面的固体施热），见下
 
     // —— 读 ——
     public int  Index(int x, int y);            // y * Width + x
@@ -355,6 +360,179 @@ public sealed class ParticleWorld
 > 种子约定：`seed == 0` 会被静默替换为内部默认种子（xorshift32 需要非零状态）。回放/存档请避免使用 0。
 
 
+### 热力学（`HeatMap` + `LightController`）：简化的 Q ↔ T 模型
+
+每个世界持有一张与网格同形的热图，每格存**热量 Q**（`float`）。温度不单独存储，而是按该格物质的**热容 C** 换算：
+
+```
+T = Q / C        C = 该格粒子类型的 Info.HeatCapacity（空气用 HeatMap.AirHeatCapacity）
+```
+
+这套模型刻意简化、不完美：单一全局导热系数、无对流、无相变潜热、Q 不钳制（负值表示冷）；散热只发生在网格顶行、不区分材料辐射率。它保证的是三条最基础的热力学直觉：**界内热量守恒**、**温度随物质变化**、**热会散逸到天空（因此光照下会收敛到稳态而不是无限升温）**。
+
+#### 热量由物质携带
+
+| 操作 | 对 Q 的影响 |
+|---|---|
+| `Swap(A, B)` | **Q 随物质一起搬走**——热沙下沉后仍然是热的，落到同一格的空气被换到高处。 |
+| `Set(x,y,T)` / `Clear` | 换上**新物质**，该格 Q 重置为 `AmbientHeat`（0）——旧物质连同它的热一起离场。 |
+| `Set(x,y,T)` 目标已是 T | 空操作，物质没换，Q 保留。 |
+| 粒子 `OnUpdate` 内 `AddHeat` | 直接改该格 Q，可正可负。 |
+
+因此「热属于物质」而非「属于位置」；想要热量留在原地（例如一炉恒热），由类型自己把 Q 抄给新位置。
+
+#### 热传导：每 tick 一次全格四邻扩散
+
+`ParticleWorld.Step` 在粒子扫描之后调用 `HeatMap.Step()`，做一次显式差分扩散。每对相邻格交换的热量正比于**温度差**：
+
+```
+ΔQ(A←B) = Conductivity * (T_B - T_A)
+```
+
+一对相邻格之间的交换**大小相等、方向相反**，因此**界内热量守恒**——热只是在格与格之间搬家。扩散读的是本 tick 开始时的温度场（先算全部差值、再整体写回，双缓冲），所以结果与扫描顺序无关、确定可复现。`Conductivity = 0` 关闭传导。
+
+#### 散热：顶行向虚空
+
+同一次 `HeatMap.Step()` 里，**网格最上面一行**（`y = Height - 1`）还会向界外上方的「虚空」流失热量：
+
+```
+ΔQ(顶行) = -VoidHeatLoss * T
+```
+
+虚空恒为 `AmbientHeat`（0），相当于一个无限大的冷库，热量只出不进。**这是热量离开世界的唯一出口**：没有它，光照注入的热只增不减（实测 `Intensity = 5` 时温度每 tick 涨 ~5.6，永不收敛）；有它之后，持续受热的世界会收敛到稳态：
+
+```
+T_稳态 ≈ 输入功率 / VoidHeatLoss        （光照 + 无其它热源时）
+```
+
+`VoidHeatLoss = 0` 即封闭系统（保留旧的只增不减行为）。它与 `Conductivity` **独立**——不被导热率缩放，因此可以「导热很强但几乎不散热」，反之亦然。
+
+两个系数都可以在 **`ParticleSimulationSettings` 资产**（`Assets/Data/`）里调，`ParticleSimulationDriver` 每帧写回世界，运行时改即时生效、重建世界后自动重新应用：
+
+| Settings 字段 | 范围 | 默认 | 作用 |
+|---|---|---|---|
+| `_conductivity` | `[0, 0.24]` | `0.15` | 相邻格之间每 tick 交换的热量占比；越大越等温 |
+| `_voidHeatLoss` | `[0, 0.24]` | `0.1` | 顶行向虚空散热的系数；越大稳态温度越低 |
+
+#### 「越高空越冷」：能，但是涌现出来的
+
+竖直温差不是一个写死的「高度 → 温度」法则，而是**热源在下、冷库（虚空）在上**加传导的自然结果。稳态下每列是 1D 热流，串起来可得两条可调公式：
+
+```
+每格温差（lapse） = 注入功率 / Conductivity      ← 想让「每升一格冷多少」变陡，就把 Conductivity 调小
+顶层温度         = 注入功率 / VoidHeatLoss      ← 想让整条曲线整体冷下来，就把 VoidHeatLoss 调大
+```
+
+实测（8×48，石地板 y=0..2，光照强度 5 常亮，跑到稳态）：
+
+| 场景 | 底部（地板顶） | → 顶部 | 结论 |
+|---|---|---|---|
+| `k = 0.15`（默认） | 1174 | 32 | 单调递减 ✅ |
+| `k = 0.03`（更隔热的空气） | 4236 | 17 | 更陡，符合 `斜率 = 功率 / k` ✅ |
+| 关掉光照 | 0 | 0 | 没有热源就没有温差 ❌ |
+
+**能成立的前提**：热源在下方（光照打的是「每列最上面的固体」，所以空列里光源就是地板）、网格顶行在热源上方。**反例会失效**：如果固体一直填到网格顶行（光源与散热口重合），实测剖面几乎是平的（y=0 → 47.9，y=47 → 49.9，略微反向），因为「冷库」只在网格最上面那一行，而那一行同时也是被加热的那一行。
+
+**稳定性**：显式格式要求 `(Conductivity * 邻居数 + VoidHeatLoss) / 热容 < 2`。两者上限都是 `MaxConductivity = 0.24`，配合热容 ≳ 0.5 即可稳定；把热容设得极小又拉满导热会看到温度来回振荡。
+
+> 已简化的地方：散热只发生在网格顶行，而不是**任意暴露表面**（堆顶、侧壁都不散热）；也不区分材料辐射率。想要「只有露天的表面才向天空散热」，需要按列找最上面的非空格再施散热——留作后续扩展（见 §13.7）。
+
+#### 光照：`LightController`
+
+世界持有一个光照控制器（`world.Light`），每 tick 在传导之后由 `Step` 驱动。它是个**占空比循环光源**，照亮时向**每一列最上面的固体粒子**注入 `Intensity` 的热量 Q（不是温度——升温多少取决于该物质的热容）。
+
+```csharp
+// Assets/Scripts/Simulation/LightController.cs —— 纯 C#，无 Unity 依赖
+public sealed class LightController
+{
+    public bool  Enabled   { get; set; }    // 是否光照（总开关）；关闭时不注入、相位也不推进
+    public int   LitTicks  { get; set; }    // 亮相位持续刻数（>= 0）；0 = 从不照亮
+    public int   DarkTicks { get; set; }    // 暗相位持续刻数（>= 0）；0 = 一直照亮
+    public float Intensity { get; set; }    // 亮度：亮相位每刻向每列最上面的固体注入的热量 Q
+
+    public int  Elapsed { get; }            // 已推进的刻数（只读）
+    public bool IsLit   { get; }            // 当前是否处于亮相位
+    public void Reset();                    // 相位拨回起点
+    // Step(world) 由 ParticleWorld.Step 调用，正常玩法不要手动调用
+}
+```
+
+- 通断语义：先亮相位 `LitTicks` 刻 → 暗相位 `DarkTicks` 刻 → 循环往复（白天 / 黑夜、呼吸式频闪）。
+  `LitTicks = 0` 从不亮；`DarkTicks = 0` 一直亮；`Enabled = false` 全关。
+- 「每一列最上面的固体」：对每个 `x` 从 `y = Height-1` 向下扫，遇到第一个带 `Solid` 标签的格就往那格加 `Intensity`，然后换下一列。
+- 简化：光是**垂直、一次性、全网格**的，没有方向、没有遮挡衰减——光会穿过上层的液体 / 气体照到下面的固体。需要阴影 / 衰减再另行扩展。
+
+#### 世界 API
+
+```csharp
+// Assets/Scripts/Simulation/HeatMap.cs —— 纯 C# 类，随 ParticleWorld 一起创建
+public sealed class HeatMap
+{
+    public const float AmbientHeat = 0f;            // 环境热量：初值、越界读返回值、新物质初值
+    public const float AirHeatCapacity = 1f;        // 空气热容（空气没有类型条目）
+    public const float MaxConductivity = 0.24f;     // 显式扩散的稳定上限（Conductivity 与 VoidHeatLoss 共用）
+    public const float DefaultConductivity = 0.15f;
+    public const float DefaultVoidHeatLoss = 0.1f;  // 顶行向虚空散热：默认值
+
+    public HeatMap(int width, int height, Cell[] cells, ParticleType[] types); // 单边 1..ParticleWorld.MaxSide
+
+    public int   Width  { get; }
+    public int   Height { get; }
+    public int   CellCount { get; }                 // == Width * Height，float 缓冲 4 字节/格
+    public float[] Values { get; }                  // 底层 **Q** 缓冲，只读契约
+    public float Conductivity { get; set; }         // [0, MaxConductivity]，超出夹紧
+    public float VoidHeatLoss { get; set; }         // [0, MaxConductivity]；顶行向虚空散热的系数，0 = 封闭系统
+
+    public bool  DebugHeatOverlay { get; set; }     // 调试开关：叠层显示热力图（越热越红），只影响显示
+    public float DebugFullScaleTemperature { get; set; } // 叠加满量程温度：达到它即纯红；<= 0 关闭叠加
+
+    public int   Index(int x, int y);               // y * Width + x，与 Cell 一致
+    public bool  IsInBounds(int x, int y);
+    public float GetHeat(int x, int y);             // 热量 Q；越界返回 AmbientHeat
+    public float GetCapacity(int x, int y);         // 该格物质热容 C；越界 / 空气返回 AirHeatCapacity
+    public float GetTemperature(int x, int y);      // T = Q / C；越界返回 AmbientHeat
+    public float GetTemperatureAt(int index);       // 同上，按扁平下标（渲染层逐格映射用）
+    public bool  SetHeat(int x, int y, float heat); // 越界无操作，返回 false
+    public bool  AddHeat(int x, int y, float delta);// 累加；越界无操作，返回 false
+    public void  Step();                            // 由 ParticleWorld.Step 调用，粒子不要手动调
+}
+```
+
+**调试热力叠加**：`DebugHeatOverlay = true` 时，`ParticlePixelBuffer.Fill` 在正常配色之上再叠一层按温度染色的红（`T / DebugFullScaleTemperature` 达到 1 即纯红）——**空气格也会显示**，因为热是整场的。只影响上屏像素，不改任何模拟状态。场景里由 `ParticleSimulationDriver` 的「调试」字段（`_heatDebugOverlay` / `_heatDebugFullScale`）每帧写回，所以 rebuild 世界后依然生效。
+
+粒子侧就是把热当成「另一份可读写的场」——**读温度用来判断、加/减热量用来改变**：
+
+```csharp
+public void OnUpdate(ParticleWorld world, int x, int y)
+{
+    // 用温度做相变判断（同一份 Q 下，热容大的物质温度低）
+    if (world.Heat.GetTemperature(x, y) >= IgnitionTemperature && world.IsAir(x, y + 1))
+    {
+        world.Set(x, y + 1, ParticleIds.Smoke);
+    }
+
+    world.Heat.AddHeat(x, y, -CoolingRate); // 自身散热（直接改 Q）
+}
+```
+
+语义（不可协商）：
+
+1. **Q 由物质携带**（见上表）：`Swap` 搬 Q，`Set` / `Clear` 重置 Q。
+2. **传导与散热都是世界的职责**：每 tick 自动四邻扩散一次、并让顶行向虚空散一次热，粒子**不要**自己再做，否则重复计算。
+3. **只增不减已被堵住**：热量唯一的出口是顶行向虚空散热（`VoidHeatLoss`）；除此之外没有环境基线、不钳制，Q 可正可负，量纲由玩法约定。
+4. **越界语义与 `Cell` 一致**：越界读返回 `AmbientHeat`、越界写是无操作返回 `false`；调用前仍应先 `IsInBounds`。
+5. **归世界所有**：`ParticleWorld` 构造时按同一宽高建热图；尺寸变化重建世界会**重置为全 0**。
+
+#### 当前生产类型的热容
+
+| 类型 | `HeatCapacity` | 直觉 |
+|---|---|---|
+| 沙（`SandParticle`） | `0.8` | 干沙：热容小，晒热得快、凉得也快 |
+| 土（`SoilParticle`） | `1.4` | 湿土：热容大，升温慢、保温久 |
+| 石（`StoneParticle`） | `0.9` | 石头：热容适中 |
+| 空气 | `AirHeatCapacity = 1` | 空气没有类型条目，固定常量 |
+
+
 ### 写操作的钩子与副作用（精确定义）
 
 | 调用 | 目标格原为 | `OnKill` | 新格 `shade` | `OnSpawn` |
@@ -365,6 +543,8 @@ public sealed class ParticleWorld
 | `Clear(x,y)` | 类型 U（U ≠ 0） | `U.OnKill(x,y,0)` | — | — |
 | `Clear(x,y)` | 空气 | — | — | — |
 | `Swap(A,B)` | 任意 | **不触发** | **随 Cell 一起移动，不重新抽样** | 不触发 |
+
+> `Swap` 除了交换两格 `Cell`，还会交换两格的**热量 Q**（热由物质携带，见「热力学」一节）。`Set` / `Clear` 换上新材料时，该格 Q 重置为 `AmbientHeat`。
 
 `Set` 的执行顺序（实现必须严格照此）：
 
@@ -407,7 +587,11 @@ flowchart LR
     B5 -- 是 --> B4
     B5 -- 否 --> B6[标记 bit0 = parity<br/>查表取委托直调 OnUpdate]
     B6 --> B7[类型内部: 查邻居 -> Swap/Set/Clear]
+    B7 --> C[② HeatMap.Step 全格四邻热传导 + 顶行向虚空散热]
+    C --> D[③ LightController.Step 向每列最上面的固体施热]
 ```
+
+一个 tick 分三段：**① 粒子扫描**（各 `OnUpdate` 可读写热图）→ **② 热传导 + 顶行散热**（四邻扩散，最上面一行向界外流失热量）→ **③ 光照**（注入热量）。②③ 在 ① 之后，因此本 tick 光照 / 传导注入的热量会在下一个 tick 被粒子读到、并参与下一轮扩散；某类型 `OnUpdate` 抛异常时整个 `Step` 的 ②③ 一并跳过（`_tick` 也不自增）。
 
 - **固定时间步长**，与渲染帧率解耦：`ParticleSimulationDriver`（MonoBehaviour）用累加器，每帧最多跑 `MaxStepsPerFrame` 次 `Step()`，防止死亡螺旋。
 - 扫描顺序：**行永远从上到下**；**水平方向逐 tick 交替**（偶 tick x 升序、奇 tick x 降序）以消除重力/流动的方向偏置。交替由扫描循环内部完成，类型代码不感知。
@@ -516,6 +700,8 @@ Assets/Scripts/
     ParticleIds.cs                            类型 id 静态字段（注册时回填）
     ParticleRegistration.cs                   唯一类型清单（新增类型只改这里）
     ParticleWorld.cs                          扁平数组、扫描、读写原语、RNG
+    HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每 tick 四邻热传导；T = Q / C
+    LightController.cs                        光照控制器：按时序通断，向每列最上面的固体注入热量
     ParticleRules.cs                          无状态共享移动规则
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射
     Particles/
@@ -529,6 +715,7 @@ Assets/Scripts/
     ParticleSimulationDriver.cs               MonoBehaviour：固定步长驱动 + 上屏调度
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
     ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型、鼠标旁显示当前类型
+    ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度接到 world.Light
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
     SystemProxyGuard.cs                       系统代理无法被 Mono 解析时把 WebRequest.DefaultWebProxy 钉为直连（保 Unity-MCP 连通）
@@ -537,25 +724,29 @@ Assets/Data/
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
   TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射 + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/干散材料安息角随摩擦度（1:1/2:1/10:1）/高粘性石头垛远陡于干石对照/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射（含调试热力叠加：越热越红、空气格也叠、满量程 <= 0 失效）/热力学（默认环境热量、逐格读改、越界语义、AddHeat 累加、T = Q / C 换算、按扁平下标读温度、Swap 搬运 Q、Set/Clear 重置 Q、四邻传导与界内热量守恒、顶行向虚空持续散热 / 内部行不散热 / 关闭即封闭 / 夹紧到稳定上限、光照下收敛到稳态温度、热源粒子在 OnUpdate 内查改）与光照（每列最上面的固体、亮暗占空比循环、关闭 / 零强度不施热） + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/干散材料安息角随摩擦度（1:1/2:1/10:1）/高粘性石头垛远陡于干石对照/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）
   SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签 + 摩擦度/粘性断言）+ 安息角剖面（三角堆）测试
 ```
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 
-**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂四个组件并已两两接线：
+**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂五个组件并已两两接线：
 
 ```
 Particle Sandbox
 ├─ ParticleRenderer            (无外部引用，材质运行期自建；_fitCameraOnInitialize=1)
 ├─ ParticleSimulationDriver    _renderer → 上面的 ParticleRenderer
 │                              _settings → Assets/Data/ParticleSimulationSettings.asset
-│                              _widthOverride / _heightOverride = 0（0 = 用 Settings 资产；非 0 时覆盖沙箱尺寸）
+│                              _widthOverride / _heightOverride = 100（0 = 用 Settings 资产；非 0 时覆盖沙箱尺寸）
+│                              _heatDebugOverlay / _heatDebugFullScale（调试热力叠加，见 §6）
 ├─ ParticleSandboxSeeder       _driver   → 上面的 ParticleSimulationDriver
 │                              （默认什么都不做；地板厚 3、挡墙厚 3、沙 50%x60% 仅在显式 Reseed 时使用）
-└─ ParticleEditor              _driver   → 上面的 ParticleSimulationDriver
-                               _renderer → 上面的 ParticleRenderer（屏幕→格子的换算基准）
-                               _drawHud=1
+├─ ParticleEditor              _driver   → 上面的 ParticleSimulationDriver
+│                              _renderer → 上面的 ParticleRenderer（屏幕→格子的换算基准）
+│                              _drawHud=1
+└─ ParticleLightDriver         _driver   → 上面的 ParticleSimulationDriver
+                                _enabled=1 / _litTicks=60 / _darkTicks=60 / _intensity=5
+                                （每帧写回 world.Light，重建世界后自动重新应用）
 ```
 
 - **沙箱初始是空世界**：`ParticleSimulationDriver.Awake` 建出的网格全是空气，没有任何粒子；`ParticleSandboxSeeder` 不再在 `Start` 自动搭建，内容只能由 `ParticleEditor` 画出来。
@@ -563,6 +754,8 @@ Particle Sandbox
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在已注册类型间循环切换；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
+- **热力学参数（`ParticleSimulationSettings` 资产）**：`_conductivity`（默认 0.15）与 `_voidHeatLoss`（默认 0.1），驱动每帧写回 `world.Heat`。改这两个值即可调「竖直温差的陡峭度」与「整体冷热」，无需改代码。
+- **光照（`ParticleLightDriver`）**：四个字段（是否光照 / 亮相位刻数 / 暗相位刻数 / 强度）每帧写回 `world.Light`。想在编辑器里看到热，把 `ParticleSimulationDriver` 的 `_heatDebugOverlay` 勾上（叠加是整场的、越热越红）；`_heatDebugFullScale` 决定满量程温度，量纲由玩法约定，默认 10。两个字段默认关闭，不影响正式观感。
 
 ---
 
@@ -583,6 +776,7 @@ Particle Sandbox
 - [ ] 没有把 per-cell 状态放进单例字段。
 - [ ] 越界坐标先经 `IsInBounds` 判断，而不是依赖写操作静默失败。
 - [ ] 调色板 1..256 项，`shade` 语义一致。
+- [ ] `Info.HeatCapacity` 是有限正数（热容，决定同一份热量下的温度）；`OnUpdate` 内读温度用 `world.Heat.GetTemperature`、改热量用 `AddHeat` / `SetHeat`，不要自己再做一遍四邻热传导（世界每 tick 已做）。
 - [ ] 固体类型：`Info.Friction` 与 `Info.Stickiness` 都在 `[0, 1]` 内，`OnUpdate` 走 `ParticleRules.StepSolid(world, x, y)`（自行实现则要在注释里说明为何不走共享规则）。
 - [ ] 静态类型的 `OnUpdate` 不会被调用——留空并注明原因，不要往里写逻辑。
 
@@ -611,3 +805,4 @@ Particle Sandbox
 4. **`ParticleRules` 共享帮助方法的边界**：已提供 `StepSolid`（固体的标准运动：正下 → 按 `Info.Friction` / `Info.Stickiness` 斜落）/ `TryCohesiveFall`（带粘性的斜落）/ `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，`<= 0` = 不斜滑）/ `TryFlowHorizontal` / `CanDisplace` / `SlideClearance`（Friction [+ Stickiness] → 净空档位）。当前三个固体都只写 `StepSolid` 一行：沙（摩擦 0 / 粘性 0，1:1）、土（摩擦 0.5 / 粘性 0.5，约 3:1）、石（摩擦 0.9 / 粘性 0.9，孤立时 10:1、粘住时 19:1）；两个参数都是**类型属性**（`ParticleTypeInfo`），同一类型所有粒子相同——若将来需要同一堆里混不同摩擦 / 粘性，再考虑把这两个值下沉到 `Cell`。「粘住」的判据目前只看**同一行**的反侧邻居；要不要把上一行（`y+1`）的对角邻居也算作可粘住的邻居，等实际玩法反馈。`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
 5. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
 6. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。
+7. **热力学（`HeatMap` + `LightController`）**：v1 采用「每格存 Q、T = Q / C、热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）+ 每 tick 一次全格四邻扩散 + 顶行向虚空散热」的简化模型。`Conductivity` / `VoidHeatLoss` 已暴露到 `ParticleSimulationSettings` 资产（默认 0.15 / 0.1）。待定：散热目前只看**网格顶行**，是否要改成「按列取最上面的非空格」从而支持堆顶 / 侧壁散热——这直接决定「越高空越冷」在「固体填满整列」时是否还成立（见 §6 实测反例）；是否按 `ParticleTags` / 材料区分导热率与辐射率（目前都是单一全局系数）；空气热容 `AirHeatCapacity` 是否也要可配；`LightController` 是否要方向性 / 遮挡衰减（目前垂直、无遮挡，光会穿过液体气体照到下层固体）；`float` 精度是否需要改成定点以利存档与回放比对。「Q 由物质携带」「温度是导出量 T = Q / C」「传导与散热由世界每 tick 自动做一次」「热量的出口是顶行向虚空散热」这四条已是契约，不随上述决策改变。

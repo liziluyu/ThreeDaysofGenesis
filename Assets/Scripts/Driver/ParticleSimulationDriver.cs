@@ -30,6 +30,13 @@ namespace TapTap2026.Game
         [Tooltip("网格高度。运行时在 Inspector 改这里（或改 Settings 资产）会重建一个空世界。")]
         [SerializeField, Min(0)] private int _heightOverride;
 
+        [Header("调试")]
+        [Tooltip("热力叠加：把每格温度按「越热越红」叠在上屏像素上（空气格也显示）。只影响显示，不影响模拟。")]
+        [SerializeField] private bool _heatDebugOverlay;
+
+        [Tooltip("热力叠加的满量程温度：温度达到它即为纯红。<= 0 时不叠色。")]
+        [SerializeField] private float _heatDebugFullScale = HeatMap.DefaultDebugFullScaleTemperature;
+
         private ParticleSimulationSettings _fallbackSettings;
         private ParticleWorld _world;
         private float _accumulator;
@@ -161,6 +168,14 @@ namespace TapTap2026.Game
                 CreateWorld();
                 Present();
             }
+
+            // 热力学参数与调试叠加：每帧写回，运行时改 Inspector / 资产即时生效，重建世界后也自动重新应用。
+            HeatMap heat = _world.Heat;
+            ParticleSimulationSettings current = Settings;
+            heat.Conductivity = current.Conductivity;
+            heat.VoidHeatLoss = current.VoidHeatLoss;
+            heat.DebugHeatOverlay = _heatDebugOverlay;
+            heat.DebugFullScaleTemperature = _heatDebugFullScale;
 
             if (_simulate)
             {
