@@ -15,8 +15,10 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 密度。同体积下越大越重。
-        /// **注意**：内置移动规则（<see cref="ParticleRules"/>）不读取本字段，谁能让开谁由
-        /// <see cref="Tags"/> 的类别次序决定；本字段保留给需要同一类别内部再排序的类型自行实现。
+        /// 跨类别「谁让开谁」由 <see cref="Tags"/> 的类别次序决定（<see cref="ParticleRules.CanDisplace"/>）；
+        /// **同一类别内部**由本字段再排序：气体互相换位时按 <see cref="ParticleRules.CanGasEnter"/> 比较，
+        /// 只有 <c>自己.Density &gt;= 目标.Density</c> 才推得动对方——重的气体沉穿轻的、轻的气体挤不动重的，
+        /// 同密度（同类）之间照常混合。固体 / 液体的内置规则目前不读本字段。
         /// </summary>
         public readonly float Density;
 
@@ -26,6 +28,14 @@ namespace TapTap2026.Simulation
         /// 空气没有类型条目，用 <see cref="HeatMap.AirHeatCapacity"/>。
         /// </summary>
         public readonly float HeatCapacity;
+
+        /// <summary>
+        /// 相对导热率 σ，范围 <c>[0, 1]</c>（1 = 最强，0 = 绝热）。相邻两格每 tick 交换的热量按
+        /// <c>Conductivity · (σ_本 + σ_邻) / 2 · (T_邻 − T_本)</c> 计算——界面导热率取两侧材料的**算术平均**，
+        /// 因此高导热材料能把热摊开、低导热材料把热憋住（见 <see cref="HeatMap"/>）。
+        /// 全部材料都取 1 时等价于旧的「单一全局导热系数」行为。空气没有类型条目，用 <see cref="HeatMap.AirThermalConductivity"/>。
+        /// </summary>
+        public readonly float ThermalConductivity;
 
         /// <summary>是否受重力。由该类型自己的 <c>OnUpdate</c> 决定如何使用。</summary>
         public readonly bool AffectedByGravity;
@@ -72,6 +82,7 @@ namespace TapTap2026.Simulation
             ParticleTags tags,
             float density,
             float heatCapacity,
+            float thermalConductivity,
             bool affectedByGravity,
             bool isStatic,
             byte maxFlowSpread,
@@ -83,6 +94,7 @@ namespace TapTap2026.Simulation
             Tags = tags;
             Density = density;
             HeatCapacity = heatCapacity;
+            ThermalConductivity = thermalConductivity;
             AffectedByGravity = affectedByGravity;
             IsStatic = isStatic;
             MaxFlowSpread = maxFlowSpread;

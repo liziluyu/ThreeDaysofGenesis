@@ -13,8 +13,8 @@ namespace TapTap2026.Simulation
     //       「气体」不等于「永远向上」：热蒸汽上升，冷蒸汽下沉，这是海陆风与对流的发动机。
     public sealed class SteamParticle : IParticleType
     {
-        /// <summary>露点：本格温度降到它就冷凝成云滴。与沸点 60 保持 15° 间距，循环路径短、节奏快。</summary>
-        public const float DewPoint = 45f;
+        /// <summary>露点：本格温度降到它就冷凝成云滴。随沸点/常温蒸发阈值同比下移（20×4.2/2 = 42 > 30，滞回仍在），保持循环路径短。</summary>
+        public const float DewPoint = 30f;
 
         /// <summary>浮力/热压流的温度死区：与邻居温差小于它就不动，避免在均匀温度场里抖动。</summary>
         public const float BuoyancyEpsilon = 1f;
@@ -31,6 +31,7 @@ namespace TapTap2026.Simulation
             tags: ParticleTags.Gas,
             density: 0.6f,
             heatCapacity: 2.0f,
+            thermalConductivity: 0.9f,   // 蒸汽：接近空气的强传导
             affectedByGravity: false,
             isStatic: false,
             maxFlowSpread: 0,

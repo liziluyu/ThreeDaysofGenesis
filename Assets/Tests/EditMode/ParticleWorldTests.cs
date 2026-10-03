@@ -241,6 +241,29 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void Heat_ConductionUsesTheAverageOfBothMaterialsConductivity()
+        {
+            // 界面导热率 = Conductivity * (σ_本 + σ_邻) / 2：低导热材料与空气相邻时，
+            // 每 tick 交换的热量被两侧 σ 的平均值削弱（σ 全为 1 时退化成旧的单一系数，见上一个测试）。
+            ParticleWorld world = new ParticleWorld(1, 2, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0.1f;
+            world.Heat.VoidHeatLoss = 0f;   // 只看传导
+            world.Heat.RadiativeLoss = 0f;
+            world.Set(0, 0, TestTypes.InsulatingId);   // σ = 0.2，热容 1
+            world.Heat.SetHeat(0, 0, 100f);            // T = 100；上邻是空气（σ = 1，T = 0）
+
+            Assert.AreEqual(0.2f, world.Heat.GetConductivity(0, 0), 1e-4f, "材料导热率从类型属性读");
+            Assert.AreEqual(1f, world.Heat.GetConductivity(0, 1), 1e-4f, "空气（typeId 0）用 AirThermalConductivity");
+
+            world.Step();
+
+            // 界面导热率 = 0.1 * (0.2 + 1) / 2 = 0.06 ⇒ 下格 -6（→ 94），上格 +6（→ 6）。
+            Assert.AreEqual(94f, world.Heat.GetHeat(0, 0), 1e-4f, "隔热材料散失得更少");
+            Assert.AreEqual(6f, world.Heat.GetHeat(0, 1), 1e-4f);
+            Assert.AreEqual(100f, SumHeat(world), 1e-3f, "界面导热率对称 ⇒ 界内总量守恒");
+        }
+
+        [Test]
         public void Heat_ConductionIsOffWhenConductivityIsZero()
         {
             ParticleWorld world = NewWorld();
@@ -269,19 +292,45 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void Heat_RadiativeLossCoolsEveryCell_NotJustTheTopRow()
+        public void Heat_RadiationCoolsEveryAirCell_NotJustTheTopRow()
         {
+            // 空气柱：每格正上方都是空气（气体）⇒ 每格都是「暴露面」，因此照常全柱辐射。
             ParticleWorld world = new ParticleWorld(1, 3, 1u, TestTypes.Table);
             world.Heat.Conductivity = 0f;   // 只看辐射这一条
             world.Heat.VoidHeatLoss = 0f;   // 关掉顶行虚空，把两个散热口分开
             world.Heat.RadiativeLoss = 0.05f;
             world.Heat.SetHeat(0, 2, 100f); // 顶行
-            world.Heat.SetHeat(0, 1, 100f); // 内部行：虚空散热够不着，辐射必须够得着
+            world.Heat.SetHeat(0, 1, 100f); // 内部行：上方是空气，照样暴露、照样辐射
 
             world.Step();
 
-            Assert.AreEqual(95f, world.Heat.GetHeat(0, 1), 1e-4f, "内部行按 0.05 * T 辐射散热");
-            Assert.AreEqual(95f, world.Heat.GetHeat(0, 2), 1e-4f, "顶行同样辐射（与虚空散热叠加而非替代）");
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 1), 1e-4f, "空气内部行按 0.05 * T 辐射散热");
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 2), 1e-4f, "空气顶行同样辐射（与虚空散热叠加而非替代）");
+        }
+
+        [Test]
+        public void Heat_RadiationOnlyAffectsSkyExposedCells()
+        {
+            // 辐射只作用于「暴露于天空」的格（顶行，或正上方是气体/空）。埋在地下的格四周都是物质、
+            // 净辐射≈0，不参与辐射——否则刚传进地下几格的热量会被逐格抽干，热就只停在地表。
+            ParticleWorld world = new ParticleWorld(1, 4, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;   // 只看辐射
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0.05f;
+            world.Set(0, 3, TestTypes.StaticId);   // 顶行固体：暴露
+            world.Set(0, 2, TestTypes.StaticId);   // 埋在固体之下：遮蔽
+            // (0,1) 是空气，但上方是固体 → 被遮蔽；(0,0) 上方是空气 → 暴露。
+            world.Heat.SetHeat(0, 3, 100f);
+            world.Heat.SetHeat(0, 2, 100f);
+            world.Heat.SetHeat(0, 1, 100f);
+            world.Heat.SetHeat(0, 0, 100f);
+
+            world.Step();
+
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 3), 1e-4f, "顶行暴露面辐射");
+            Assert.AreEqual(100f, world.Heat.GetHeat(0, 2), 1e-4f, "埋在固体之下的格不辐射");
+            Assert.AreEqual(100f, world.Heat.GetHeat(0, 1), 1e-4f, "被固体遮蔽的空气也不辐射");
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 0), 1e-4f, "上方是空气（气体）的格暴露、照常辐射");
         }
 
         [Test]
@@ -993,7 +1042,7 @@ namespace TapTap2026.Tests
         [Test]
         public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
         {
-            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
+            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
             var bad = new ParticleType(1, badInfo, null, null, null);
 
             Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));

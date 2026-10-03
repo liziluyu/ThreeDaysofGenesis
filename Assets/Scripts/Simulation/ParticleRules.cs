@@ -367,7 +367,7 @@ namespace TapTap2026.Simulation
         // ==================== 气体：浮力与上升（镜像下落系） ====================
 
         /// <summary>(x,y) 是否是气体可以换入的格子：空（typeId 0）或任何带 <see cref="ParticleTags.Gas"/> 标签的格。
-        /// 同 rank 气体互相换位 = 混合，不走 <see cref="CanDisplace"/> 的 rank 规则。</summary>
+        /// 这是**纯目标判据**（不看发起者），用于视线 / 通用查询；气体运动原语请用 <see cref="CanGasEnter"/> 落实密度次序。</summary>
         public static bool IsGasOrEmpty(ParticleWorld world, int x, int y)
         {
             ushort id = world.GetCell(x, y).typeId;
@@ -386,11 +386,62 @@ namespace TapTap2026.Simulation
             return type != null && (type.Info.Tags & ParticleTags.Gas) != 0;
         }
 
-        /// <summary>上一格是气体/空则交换，上升一格。</summary>
+        /// <summary>
+        /// (toX,toY) 能否被 (fromX,fromY) 上的粒子换入，供气体运动原语（上升 / 下沉 / 漂移 / 混合）使用。
+        /// 空（typeId 0）恒可进入；目标是气体时按 <see cref="ParticleTypeInfo.Density"/> 比较：
+        /// 只有 <c>自己.Density &gt;= 目标.Density</c> 才可换入——**重的气体能沉穿轻的，轻的挤不动重的**。
+        /// 于是密度最低的环境大气（0.5）推不动云（0.8）与蒸汽（0.6）；同密度气体（同类之间）照常混合。
+        /// 目标不是气体（固体 / 液体）或越界一律 false。
+        /// </summary>
+        /// <remarks>
+        /// 用 <c>&gt;=</c> 而非 <c>&gt;</c>：同密度必须能互穿，否则同类气体（大气↔大气）连随机漂移都做不了。
+        /// 这是「同 rank 气体互相换位 = 混合」的细化——rank 决定**类别**能否换位，密度决定**同类内**谁推得动谁。
+        /// </remarks>
+        public static bool CanGasEnter(ParticleWorld world, int fromX, int fromY, int toX, int toY)
+        {
+            if (!world.IsInBounds(toX, toY))
+            {
+                return false;
+            }
+
+            ushort otherId = world.GetCell(toX, toY).typeId;
+            if (otherId == ParticleRegistry.AirTypeId)
+            {
+                return true;
+            }
+
+            ParticleType[] types = world.Types;
+            if (otherId >= types.Length)
+            {
+                return false;
+            }
+
+            ParticleType other = types[otherId];
+            if (other == null || (other.Info.Tags & ParticleTags.Gas) == 0)
+            {
+                return false;
+            }
+
+            ushort selfId = world.GetCell(fromX, fromY).typeId;
+            if (selfId >= types.Length)
+            {
+                return false;
+            }
+
+            ParticleType self = types[selfId];
+            if (self == null || (self.Info.Tags & ParticleTags.Gas) == 0)
+            {
+                return false;
+            }
+
+            return self.Info.Density >= other.Info.Density;
+        }
+
+        /// <summary>上一格能被换入（<see cref="CanGasEnter"/>：气体按密度次序）则交换，上升一格。</summary>
         public static bool TryRise(ParticleWorld world, int x, int y)
         {
             int targetY = y + 1;
-            if (!world.IsInBounds(x, targetY) || !IsGasOrEmpty(world, x, targetY))
+            if (!CanGasEnter(world, x, y, x, targetY))
             {
                 return false;
             }
@@ -408,11 +459,11 @@ namespace TapTap2026.Simulation
                 : TryRiseSide(world, x, y, 1) || TryRiseSide(world, x, y, -1);
         }
 
-        /// <summary>下一格是气体/空则交换，下沉一格（气体版的「下落」：同 rank 气体换位即混合）。</summary>
+        /// <summary>下一格能被换入（<see cref="CanGasEnter"/>：气体按密度次序）则交换，下沉一格（气体版的「下落」）。</summary>
         public static bool TrySink(ParticleWorld world, int x, int y)
         {
             int targetY = y - 1;
-            if (!world.IsInBounds(x, targetY) || !IsGasOrEmpty(world, x, targetY))
+            if (!CanGasEnter(world, x, y, x, targetY))
             {
                 return false;
             }
@@ -457,7 +508,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 水平热压流：仅当左右邻居恰有一侧更热（差值超过 <paramref name="epsilon"/>）时往暖侧换一格——
-        /// 冷空气流向暖区（低空海风）。两侧都更热或都不更热时不动。
+        /// 冷空气流向暖区（低空海风）。两侧都更热或都不更热时不动；换入受 <see cref="CanGasEnter"/> 的密度次序约束。
         /// </summary>
         public static bool TryThermalDrift(ParticleWorld world, int x, int y, float epsilon)
         {
@@ -472,7 +523,7 @@ namespace TapTap2026.Simulation
             }
 
             int direction = leftWarmer ? -1 : 1;
-            if (!IsGasOrEmpty(world, x + direction, y))
+            if (!CanGasEnter(world, x, y, x + direction, y))
             {
                 return false;
             }
@@ -481,7 +532,7 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        /// <summary>随机水平漂移：向左或右（随机序）换一格气体/空。云的漂移、气体的混合用它。</summary>
+        /// <summary>随机水平漂移：向左或右（随机序）换一格可换入的格（<see cref="CanGasEnter"/>，气体按密度次序）。云的漂移、气体的混合用它。</summary>
         public static bool TryRandomDrift(ParticleWorld world, int x, int y)
         {
             bool leftFirst = (world.NextUInt() & 1u) == 0u;
@@ -494,7 +545,7 @@ namespace TapTap2026.Simulation
         {
             int targetX = x + deltaX;
             int targetY = y + 1;
-            if (!world.IsInBounds(targetX, targetY) || !IsGasOrEmpty(world, targetX, targetY))
+            if (!CanGasEnter(world, x, y, targetX, targetY))
             {
                 return false;
             }
@@ -507,7 +558,7 @@ namespace TapTap2026.Simulation
         {
             int targetX = x + deltaX;
             int targetY = y - 1;
-            if (!world.IsInBounds(targetX, targetY) || !IsGasOrEmpty(world, targetX, targetY))
+            if (!CanGasEnter(world, x, y, targetX, targetY))
             {
                 return false;
             }
@@ -519,7 +570,7 @@ namespace TapTap2026.Simulation
         private static bool TryDriftSide(ParticleWorld world, int x, int y, int direction)
         {
             int targetX = x + direction;
-            if (!world.IsInBounds(targetX, y) || !IsGasOrEmpty(world, targetX, y))
+            if (!CanGasEnter(world, x, y, targetX, y))
             {
                 return false;
             }

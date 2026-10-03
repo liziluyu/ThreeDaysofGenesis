@@ -18,6 +18,7 @@ MonoBehaviour:
   _maxStepsPerFrame: 4
   _stepsPerPresent: 1
   _seed: 123456789
-  _conductivity: 0.05
+  _conductivity: 0.24
   _voidHeatLoss: 0.12
   _radiativeLoss: 0.05
+  _airThermalConductivity: 1

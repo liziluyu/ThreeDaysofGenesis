@@ -26,11 +26,11 @@ namespace TapTap2026.Simulation
             new Color32(88, 150, 232, 255),
         };
 
-        /// <summary>沸点：本格温度达到它就剧烈蒸发成蒸汽。初值按文档 §6 实测温度曲线取，为加快水循环收窄到 60。</summary>
-        public const float BoilingPoint = 60f;
+        /// <summary>沸点：本格温度达到它就剧烈蒸发成蒸汽。生产热力参数（传导 0.24）下水面峰值只有 ~56°，故从 60 下移到 40，保持水循环不停摆。</summary>
+        public const float BoilingPoint = 40f;
 
-        /// <summary>常温蒸发下限：达到它之后即使不到沸点也缓慢蒸发（现实里水在任何温度都蒸发）。</summary>
-        public const float SlowEvaporationTemperature = 30f;
+        /// <summary>常温蒸发下限：达到它之后即使不到沸点也缓慢蒸发（现实里水在任何温度都蒸发）。随沸点同比下移到 20。</summary>
+        public const float SlowEvaporationTemperature = 20f;
 
         /// <summary>常温蒸发概率分母（1/N 每 tick）。</summary>
         public const int SlowEvaporationDenominator = 300;
@@ -39,6 +39,7 @@ namespace TapTap2026.Simulation
             tags: ParticleTags.Liquid,
             density: 1.0f,
             heatCapacity: 4.2f,
+            thermalConductivity: 0.95f,   // 水：导热最好，水体内部接近等温
             affectedByGravity: true,
             isStatic: false,
             maxFlowSpread: 5,

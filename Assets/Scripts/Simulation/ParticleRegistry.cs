@@ -110,6 +110,13 @@ namespace TapTap2026.Simulation
                     $"[ParticleRegistry] {name} 的 HeatCapacity 必须是有限正数（温度 = 热量 / 热容），实际为 {info.HeatCapacity}。");
             }
 
+            if (float.IsNaN(info.ThermalConductivity) || float.IsInfinity(info.ThermalConductivity) ||
+                info.ThermalConductivity < 0f || info.ThermalConductivity > HeatMap.MaxThermalConductivity)
+            {
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 的 ThermalConductivity 必须在 [0, {HeatMap.MaxThermalConductivity}] 内，实际为 {info.ThermalConductivity}。");
+            }
+
             if (float.IsNaN(info.Friction) || float.IsInfinity(info.Friction) ||
                 info.Friction < 0f || info.Friction > 1f)
             {

@@ -33,6 +33,7 @@ namespace TapTap2026.Simulation
             tags: ParticleTags.Gas,
             density: 0.5f,
             heatCapacity: 1.0f,
+            thermalConductivity: 1.0f,   // 大气：与 HeatMap.DefaultAirThermalConductivity 一致（气体传导最强）
             affectedByGravity: false,
             isStatic: false,
             maxFlowSpread: 0,

@@ -19,6 +19,9 @@ namespace TapTap2026.Simulation
     //      （TryThermalDrift，与大气同一套风向）——同一片温度场里的云因此整体平移而不是各自乱走；
     //   5. 缓慢下沉：每 tick 1/SlowSinkDenominator 概率下沉一格（微小末速度）。
     //   云不做浮力判断：已冷凝的液滴不再「热气上升」，悬浮来自「几乎不沉」。
+    //   密度 0.8 是全部气体里最高的：按 ParticleRules.CanGasEnter，密度更低的大气（0.5）/蒸汽（0.6）
+    //   挤不进云格，因此填满世界的环境大气不会再把云逐格推走（否则整片云会被随机漂移推得剧烈左右摇摆）；
+    //   云的水平移动只来自自身规则（聚团 + 1/4 热压漂移），下沉仍可穿过更轻的气体。
     //   相变热量处理同水/蒸汽：手动携带 Q 跨越 Set。
     public sealed class CloudParticle : IParticleType
     {
@@ -49,6 +52,7 @@ namespace TapTap2026.Simulation
             tags: ParticleTags.Gas,
             density: 0.8f,
             heatCapacity: 2.0f,
+            thermalConductivity: 0.9f,   // 云滴：接近空气的强传导
             affectedByGravity: true,
             isStatic: false,
             maxFlowSpread: 0,
@@ -169,7 +173,7 @@ namespace TapTap2026.Simulation
                 || TrySwapWithGas(world, x, y, 0, moveY);
         }
 
-        /// <summary>目标格是气体/空则换位（云滴互相换位 = 混合）。</summary>
+        /// <summary>目标格可被换入（<see cref="ParticleRules.CanGasEnter"/>：气体按密度次序；云 0.8 是密度最高的气体）则换位。</summary>
         private static bool TrySwapWithGas(ParticleWorld world, int x, int y, int stepX, int stepY)
         {
             if (stepX == 0 && stepY == 0)
@@ -179,7 +183,7 @@ namespace TapTap2026.Simulation
 
             int targetX = x + stepX;
             int targetY = y + stepY;
-            if (!world.IsInBounds(targetX, targetY) || !ParticleRules.IsGasOrEmpty(world, targetX, targetY))
+            if (!ParticleRules.CanGasEnter(world, x, y, targetX, targetY))
             {
                 return false;
             }

@@ -188,6 +188,7 @@ namespace TapTap2026.Game
             heat.Conductivity = current.Conductivity;
             heat.VoidHeatLoss = current.VoidHeatLoss;
             heat.RadiativeLoss = current.RadiativeLoss;
+            heat.AirThermalConductivity = current.AirThermalConductivity;
             heat.DebugHeatOverlay = _heatDebugOverlay;
             heat.DebugFullScaleTemperature = _heatDebugFullScale;
 

@@ -39,6 +39,10 @@ namespace TapTap2026.Game
                  "0 = 关闭（热量只从顶行离开，地面温度会随网格高度疯涨）。")]
         [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _radiativeLoss = 0.05f;
 
+        [Header("材料导热率（相对值 0..1：1 = 最强，0 = 绝热）")]
+        [Tooltip("空气（typeId 0）的导热率。空气没有类型条目，只能在这里给；决定热从地表/水面漏进上方气柱的难易。")]
+        [SerializeField, Range(0f, HeatMap.MaxThermalConductivity)] private float _airThermalConductivity = HeatMap.DefaultAirThermalConductivity;
+
         public int Width
         {
             get { return Mathf.Clamp(_width, 1, ParticleWorld.MaxSide); }
@@ -87,6 +91,12 @@ namespace TapTap2026.Game
         public float RadiativeLoss
         {
             get { return Mathf.Clamp(_radiativeLoss, 0f, HeatMap.MaxConductivity); }
+        }
+
+        /// <summary>空气的相对导热率，夹在 <c>[0, HeatMap.MaxThermalConductivity]</c>。</summary>
+        public float AirThermalConductivity
+        {
+            get { return Mathf.Clamp(_airThermalConductivity, 0f, HeatMap.MaxThermalConductivity); }
         }
     }
 }
