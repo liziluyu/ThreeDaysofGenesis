@@ -456,8 +456,8 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 水平热压流：左右邻居哪侧更热（差值超过 <paramref name="epsilon"/>）就往哪侧换一格——
-        /// 冷空气流向暖区（低空海风）。两侧都更热或都更冷时随机选一侧。
+        /// 水平热压流：仅当左右邻居恰有一侧更热（差值超过 <paramref name="epsilon"/>）时往暖侧换一格——
+        /// 冷空气流向暖区（低空海风）。两侧都更热或都不更热时不动。
         /// </summary>
         public static bool TryThermalDrift(ParticleWorld world, int x, int y, float epsilon)
         {

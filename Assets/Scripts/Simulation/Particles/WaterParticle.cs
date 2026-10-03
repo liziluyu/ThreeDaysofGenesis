@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // WaterParticle —— 水（液体标签，摩擦度/粘性不读，填 0；热容 4.0，约为固体的 3~5 倍）
+    // WaterParticle —— 水（液体标签，摩擦度/粘性不读，填 0；热容 4.2，约为固体的 2~4 倍）
     //
     // flags 私有位：无（bit3-7 全部空闲）
     // 邻居查询范围：正下、左下/右下、同行左右各 MaxFlowSpread 格（横流扫描）
