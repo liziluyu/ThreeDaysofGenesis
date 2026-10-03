@@ -20,7 +20,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, 1f, true, false, 0, 0f, 0f, Palette, "TestGrainParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, 1f, 1f, true, false, 0, 0f, 0f, Palette, "TestGrainParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -53,7 +53,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, 1f, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, 1f, 1f, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -89,7 +89,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, 1f, 1f, false, true, 0, 0f, 0f, Palette, "TestStaticParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, 1f, 1f, 1f, false, true, 0, 0f, 0f, Palette, "TestStaticParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -115,7 +115,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestWalkerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestWalkerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -144,7 +144,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, 1f, 1f, false, false, 8, 0f, 0f, Palette, "TestSolidFlowParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, 1f, 1f, 1f, false, false, 8, 0f, 0f, Palette, "TestSolidFlowParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -169,7 +169,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestThrowerParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestThrowerParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -196,7 +196,53 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 0.2f, false, true, 0, 0f, 0f, Palette, "TestInsulatingParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 0.2f, 1f, false, true, 0, 0f, 0f, Palette, "TestInsulatingParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>测试用的低辐射率固体（ε = 0.2，静态、热容 1、σ = 1）：验证暴露面的辐射按材料 ε 缩放。</summary>
+    internal sealed class TestLowEmissivityParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(30, 30, 30, 255) };
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 0.2f, false, true, 0, 0f, 0f, Palette, "TestLowEmissivityParticle"); }
+        }
+
+        public void OnUpdate(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>辐射率越界的类型：注册校验必须拒绝它。</summary>
+    internal sealed class TestBadEmissivityParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(40, 40, 40, 255) };
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1.5f, false, false, 0, 0f, 0f, Palette, "TestBadEmissivityParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -219,7 +265,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestBadPaletteParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestBadPaletteParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -242,7 +288,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.None, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestNoTagParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.None, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestNoTagParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -265,7 +311,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 4f, 1f, 1f, true, false, 0, 1f, 0f, Palette, "TestFrictionOneSolidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 4f, 1f, 1f, 1f, true, false, 0, 1f, 0f, Palette, "TestFrictionOneSolidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -289,7 +335,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 3f, 1f, 1f, true, false, 0, 0f, 1f, Palette, "TestCohesionParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 3f, 1f, 1f, 1f, true, false, 0, 0f, 1f, Palette, "TestCohesionParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -322,7 +368,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, 1f, true, false, 0, _friction, _stickiness, Palette, "TestTunableSolidParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, 1f, 1f, true, false, 0, _friction, _stickiness, Palette, "TestTunableSolidParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -358,7 +404,7 @@ namespace TapTap2026.Tests
         /// <summary>热容刻意取 2（空气是 1），用于验证 <c>T = Q / C</c> 的换算。</summary>
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 2f, 1f, false, false, 0, 0f, 0f, Palette, "TestHeatParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 2f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestHeatParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -383,7 +429,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 0f, 1.5f, Palette, "TestBadStickinessParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 1.5f, Palette, "TestBadStickinessParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -406,7 +452,7 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 1.5f, 0f, Palette, "TestBadFrictionParticle"); }
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 1.5f, 0f, Palette, "TestBadFrictionParticle"); }
         }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
@@ -437,6 +483,7 @@ namespace TapTap2026.Tests
         internal const ushort CohesionId = 8;
         internal const ushort HeatId = 9;
         internal const ushort InsulatingId = 10;
+        internal const ushort LowEmissivityId = 11;
 
         internal static readonly TestGrainParticle Grain = new TestGrainParticle();
         internal static readonly TestLiquidParticle Liquid = new TestLiquidParticle();
@@ -465,6 +512,7 @@ namespace TapTap2026.Tests
                         Bind(CohesionId, new TestCohesionParticle()),
                         Bind(HeatId, new TestHeatParticle()),
                         Bind(InsulatingId, new TestInsulatingParticle()),
+                        Bind(LowEmissivityId, new TestLowEmissivityParticle()),
                     };
                 }
 

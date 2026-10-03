@@ -12,8 +12,13 @@ namespace TapTap2026.Simulation
         /// <summary>调试热力叠加的最热色（满量程时的纯红）。</summary>
         private static readonly Color32 HotColor = new Color32(255, 0, 0, 255);
 
+        /// <summary>云滴的染色（凝结物浓度 0..1 在背景色与该色之间插值）。</summary>
+        private static readonly Color32 CloudColor = new Color32(244, 248, 252, 255);
+
         /// <summary>
         /// 按 typeId 查调色板、按 shade 取色，一次性填满缓冲。
+        /// **湿度足够高的空气（云）**再按湿度在底色与 <see cref="CloudColor"/> 之间插值——
+        /// 云不是一种粒子，而是"很湿的空气"，因此它的显示由湿度场给出（见 <see cref="HumidityField"/>）。
         /// 若 <see cref="HeatMap.DebugHeatOverlay"/> 打开，再按温度叠一层热力色（越热越红）。
         /// </summary>
         /// <param name="world">源网格。</param>
@@ -50,6 +55,7 @@ namespace TapTap2026.Simulation
 
             ParticleType[] types = world.Types;
             HeatMap heat = world.Heat;
+            HumidityField humidity = world.Humidity;
 
             // 调试热力叠加：越热越红。关闭（或满量程非法）时只多一次判断，不改变任何像素。
             float inverseScale = heat.DebugFullScaleTemperature > 0f
@@ -63,9 +69,19 @@ namespace TapTap2026.Simulation
                 brightness = 0f;
             }
 
+            // 云：湿度从 VisibleThreshold 到 RainThreshold 之间淡入到纯白。
+            // 低于阈值完全不显示——否则近海面那种常年偏湿的空气会给整片天空蒙一层灰。
+            float visibleSpan = HumidityField.CloudFullHumidity - HumidityField.VisibleThreshold;
+
             for (int i = 0; i < cells.Length; i++)
             {
                 Color32 color = BaseColor(cells[i], types, background);
+
+                float cloud = (humidity.GetAt(i) - HumidityField.VisibleThreshold) / visibleSpan;
+                if (cloud > 0f)
+                {
+                    color = Color32.Lerp(color, CloudColor, cloud >= 1f ? 1f : cloud);
+                }
 
                 if (overlay)
                 {

@@ -21,10 +21,15 @@ namespace TapTap2026.Simulation
 
         private const uint DefaultSeed = 0x9E3779B9u;
 
+        /// <summary>四邻偏移（<see cref="EvacuateHumidity"/> 用；提成静态数组避免每次降雨都分配）。</summary>
+        private static readonly int[] NeighbourX = { -1, 1, 0, 0 };
+        private static readonly int[] NeighbourY = { 0, 0, -1, 1 };
+
         private readonly int _width;
         private readonly int _height;
         private readonly Cell[] _cells;
         private readonly HeatMap _heat;
+        private readonly HumidityField _humidity;
         private readonly LightController _light;
         private readonly ParticleType[] _types;
 
@@ -85,7 +90,8 @@ namespace TapTap2026.Simulation
             _height = height;
             _types = types;
             _cells = new Cell[width * height];
-            _heat = new HeatMap(width, height, _cells, types);
+            _humidity = new HumidityField(width, height);
+            _heat = new HeatMap(width, height, _cells, types, _humidity);
             _light = new LightController();
             _tick = 0;
             _rng = seed == 0u ? DefaultSeed : seed;
@@ -116,6 +122,18 @@ namespace TapTap2026.Simulation
         public HeatMap Heat
         {
             get { return _heat; }
+        }
+
+        /// <summary>
+        /// 与网格同形的**湿度**场（每格一个水汽质量），世界持有并随世界重建。
+        /// 只有非固非液的格持有湿度；水蒸发提升湿度，湿度像热量一样传播并带温度定向
+        /// （水平冷→热、竖直越热越向上），高值低温处凝结成雨。
+        /// 湿度随 <see cref="Swap"/> 被气流搬走（云随风平移），随 <see cref="Set"/> / <see cref="Clear"/> 清零。
+        /// 蒸发 / 凝结 / 降水都是 1:1 搬运，因此水总量守恒。见 <see cref="HumidityField"/>。
+        /// </summary>
+        public HumidityField Humidity
+        {
+            get { return _humidity; }
         }
 
         /// <summary>
@@ -237,6 +255,7 @@ namespace TapTap2026.Simulation
             _cells[a] = _cells[b];
             _cells[b] = swap;
             _heat.SwapHeat(a, b);
+            _humidity.Swap(a, b);
 
             byte stamp = _stamp;
             _cells[a].flags = CellFlags.WithProcessed(_cells[a].flags, stamp);
@@ -290,6 +309,9 @@ namespace TapTap2026.Simulation
             // 新物质替换掉旧物质：热由物质携带，旧热随旧物质离场，新物质从环境热量开始。
             _heat.ResetHeatAt(index);
 
+            // 同理，悬浮水滴属于旧物质；新物质不含凝结物（相变路径会先读出旧值再显式写回）。
+            _humidity.ResetAt(index);
+
             if (typeId == ParticleRegistry.AirTypeId)
             {
                 cell.shade = 0;
@@ -307,6 +329,238 @@ namespace TapTap2026.Simulation
         public bool Clear(int x, int y)
         {
             return Set(x, y, ParticleRegistry.AirTypeId);
+        }
+
+        /// <summary>
+        /// **相变专用**：把 (x,y) 换成 <paramref name="typeId"/>，并把旧格的**热量 Q 与凝结物**原样带过去，
+        /// 随后触发新类型的 <c>OnSpawn</c>（新类型因此可以在 OnSpawn 里接管凝结物、释放潜热等）。
+        /// </summary>
+        /// <remarks>
+        /// 与 <see cref="Set"/> 的区别正在于「携带」：<c>Set</c> 视为换上**全新物质**（Q 与凝结物清零），
+        /// 而相变是**同一份物质换了个形态**——水/蒸汽/云之间的质量与热量必须留在原格、逐格守恒。
+        /// 典型用法是蒸发：<c>SetPhase(x, y, Steam)</c> 保留 Q，新蒸汽因为热容骤降而变得更烫（浮力来源）。
+        /// 抛给新类型 <c>OnSpawn</c> 的理由是它可能还要改这一格（例如空气接管云滴、凝结物 +1）。
+        /// 它**不会**替相变双方做守恒记账，那由各自的类型代码负责（见 <c>WaterParticle</c> 与 <see cref="StepRain"/>）。
+        /// </remarks>
+        /// <returns>坐标越界或 typeId 未注册则 false（非法 typeId 只报错一次）。</returns>
+        public bool SetPhase(int x, int y, ushort typeId)
+        {
+            if (!IsInBounds(x, y))
+            {
+                return false;
+            }
+
+            if (typeId != ParticleRegistry.AirTypeId && (typeId >= _types.Length || _types[typeId] == null))
+            {
+                ReportUnknownType(typeId);
+                return false;
+            }
+
+            int index = y * _width + x;
+            ushort previousId = _cells[index].typeId;
+            if (previousId == typeId)
+            {
+                return true;
+            }
+
+            if (previousId != ParticleRegistry.AirTypeId && previousId < _types.Length)
+            {
+                ParticleType victim = _types[previousId];
+                if (victim != null)
+                {
+                    victim.OnKill(this, x, y, typeId);
+                }
+            }
+
+            float heat = _heat.GetHeat(x, y);
+            float humidity = _humidity.Get(x, y);
+
+            ref Cell cell = ref _cells[index];
+            cell.typeId = typeId;
+            cell.flags = _stamp;
+
+            // Q 与凝结物跟着物质走，不重置（这正是与 Set 的区别）。
+            _heat.SetHeat(x, y, heat);
+            _humidity.Set(x, y, humidity);
+
+            if (typeId == ParticleRegistry.AirTypeId)
+            {
+                cell.shade = 0;
+            }
+            else
+            {
+                Color32[] palette = _types[typeId].Info.Palette;
+                cell.shade = (byte)(NextUInt() % (uint)palette.Length);
+            }
+
+            if (typeId != ParticleRegistry.AirTypeId)
+            {
+                _types[typeId].OnSpawn(this, x, y);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 降水：温度低于露点的饱和空气（湿度 ≥ <see cref="HumidityField.RainThreshold"/>）
+        /// 按 <c>湿度 × RainRate</c> 的概率凝结成雨。由 <see cref="Step"/> 每 tick 调用一次。
+        /// </summary>
+        /// <remarks>
+        /// 湿度越高掉得越快，这是让云量收敛的负反馈（否则水汽会一路攒成满天薄雾）。
+        /// 凝结把一整个水格的质量从湿度场搬成一个 Water 粒子（1:1，水守恒）；格子变成液体后会**把它剩余的
+        /// 水汽推给周围的气体邻居**——固/液不持有湿度这条不变量因此得以保持，同时不丢质量。
+        /// </remarks>
+        private void StepRain()
+        {
+            Cell[] cells = _cells;
+            int width = _width;
+            int height = _height;
+
+            for (int y = 0; y < height; y++)
+            {
+                int row = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    int i = row + x;
+                    if (!ParticleRules.IsGasOrEmpty(this, x, y))
+                    {
+                        continue; // 只有气体 / 空持有湿度
+                    }
+
+                    float humidity = _humidity.GetAt(i);
+                    float temperature = _heat.GetTemperatureAt(i);
+                    if (temperature > HumidityField.DewPoint)
+                    {
+                        continue; // 暖处的饱和空气只是闷热，不会下雨
+                    }
+
+                    // 饱和湿度随温度下降而下降（饱和水汽压随温度陡降的线性近似）：
+                    // 越冷的地方越容易下雨。没有这一条，高位冷空气与海面用同一个阈值，
+                    // 要么海面先下雨（云散）、要么高空的云永远攒不到阈值（海洋被蒸干）。
+                    float coldFactor = temperature / HumidityField.DewPoint;
+                    if (coldFactor < 0.1f)
+                    {
+                        coldFactor = 0.1f;
+                    }
+
+                    if (humidity < HumidityField.RainThreshold * coldFactor)
+                    {
+                        continue;
+                    }
+
+                    // 碰并：雨滴由**本格 + 气体邻居**的水汽凑成（现实中雨滴靠碰并长大，不是凭空出现）。
+                    // 先看凑不凑得够一个整水滴——凑不够就这一 tick 不降，绝不能"取不足 1 却生成 1"（凭空造水）。
+                    if (GatherableHumidity(x, y) < HumidityField.Unit)
+                    {
+                        continue;
+                    }
+
+                    float roll = (NextUInt() >> 8) * (1f / 16777216f);
+                    if (roll >= humidity * HumidityField.RainRate)
+                    {
+                        continue;
+                    }
+
+                    // 本格优先，再从气体邻居补足。
+                    float need = HumidityField.Unit;
+                    float self = _humidity.GetAt(i);
+                    float takeSelf = self < need ? self : need;
+                    _humidity.AddAt(i, -takeSelf);
+                    need -= takeSelf;
+
+                    for (int dy = -1; dy <= 1 && need > 0f; dy++)
+                    {
+                        for (int dx = -1; dx <= 1 && need > 0f; dx++)
+                        {
+                            if (dx == 0 && dy == 0)
+                            {
+                                continue;
+                            }
+
+                            int nx = x + dx;
+                            int ny = y + dy;
+                            if (!IsInBounds(nx, ny) || !ParticleRules.IsGasOrEmpty(this, nx, ny))
+                            {
+                                continue;
+                            }
+
+                            float available = _humidity.Get(nx, ny);
+                            float take = available < need ? available : need;
+                            _humidity.Add(nx, ny, -take);
+                            need -= take;
+                        }
+                    }
+
+                    // 本格剩下的水汽（湿度高于一个水滴时）推给邻居：固/液不持有湿度。
+                    EvacuateHumidity(x, y, i);
+                    SetPhase(x, y, ParticleIds.Water);
+                }
+            }
+        }
+
+        /// <summary>
+        /// (x,y) 及其**八邻**的气体格上总共有多少湿度（降雨"碰并"的可用料）。
+        /// 用 3×3 而不是四邻：云层里每格湿度只有 ~0.15，四邻凑不满一个整水滴，
+        /// 于是只有湿度最高的顶行才下得了雨——雨就显得"从虚空里落下来"。八邻让整层云都能下雨。
+        /// </summary>
+        private float GatherableHumidity(int x, int y)
+        {
+            float total = 0f;
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(this, nx, ny))
+                    {
+                        total += _humidity.Get(nx, ny);
+                    }
+                }
+            }
+
+            return total;
+        }
+
+        /// <summary>把 (x,y) 残留的湿度**全部**推给周围的气体邻居（推不动的部分留在原地）。
+        /// 用于「气体 → 固/液」的相变：固/液不持有湿度——若留下残余，等它日后蒸发时会与新增的水汽
+        /// 叠加，凭空造水（实测：每 4000 tick 多出 0.3 个水格）。</summary>
+        private void EvacuateHumidity(int x, int y, int index)
+        {
+            float residual = _humidity.GetAt(index);
+            if (residual <= 0f)
+            {
+                return;
+            }
+
+            int receivers = 0;
+            for (int k = 0; k < 4; k++)
+            {
+                int nx = x + NeighbourX[k];
+                int ny = y + NeighbourY[k];
+                if (IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(this, nx, ny))
+                {
+                    receivers++;
+                }
+            }
+
+            if (receivers == 0)
+            {
+                return; // 四面都不是气体：无处可去，只能留在原地
+            }
+
+            float share = residual / receivers;
+            for (int k = 0; k < 4; k++)
+            {
+                int nx = x + NeighbourX[k];
+                int ny = y + NeighbourY[k];
+                if (IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(this, nx, ny))
+                {
+                    _humidity.Add(nx, ny, share);
+                }
+            }
+
+            _humidity.AddAt(index, -share * receivers);
         }
 
         /// <summary>确定性随机数（xorshift32）。类型代码一律用它，禁止 UnityEngine.Random。</summary>
@@ -337,9 +591,11 @@ namespace TapTap2026.Simulation
         /// 由上层决定跑完几次 Step 之后才上屏一次。
         /// </summary>
         /// <remarks>
-        /// 一个 tick 分三段：<b>①粒子扫描</b>（各 <c>OnUpdate</c> 可读写热图）→
+        /// 一个 tick 分四段：<b>①粒子扫描</b>（各 <c>OnUpdate</c> 可读写热图与凝结物场）→
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
-        /// <b>③光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
+        /// <b>③湿度输送</b>（<see cref="HumidityField.Step"/>：扩散 + 水平冷→热 + 竖直越热越向上）→
+        /// <b>③′降水</b>（温度低于露点的饱和空气凝结成雨）→
+        /// <b>④光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
         /// 因此光照 / 传导注入的热量会在下一个 tick 被粒子读到、并参与下一轮扩散。
         /// </remarks>
         public void Step()
@@ -380,6 +636,8 @@ namespace TapTap2026.Simulation
                 // 两步都在 try 内，异常（如某类型 OnUpdate 抛出）时本 tick 的 _tick 不自增，
                 // 传导 / 光照一并不生效，与「异常后 particle 仍会在下一次 Step 被处理」的约定一致。
                 _heat.Step();
+                _humidity.Step(this);
+                StepRain();
                 _light.Step(this);
             }
             finally

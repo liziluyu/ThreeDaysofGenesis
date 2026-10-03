@@ -117,6 +117,13 @@ namespace TapTap2026.Simulation
                     $"[ParticleRegistry] {name} 的 ThermalConductivity 必须在 [0, {HeatMap.MaxThermalConductivity}] 内，实际为 {info.ThermalConductivity}。");
             }
 
+            if (float.IsNaN(info.ThermalEmissivity) || float.IsInfinity(info.ThermalEmissivity) ||
+                info.ThermalEmissivity < 0f || info.ThermalEmissivity > HeatMap.MaxThermalEmissivity)
+            {
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 的 ThermalEmissivity 必须在 [0, {HeatMap.MaxThermalEmissivity}] 内，实际为 {info.ThermalEmissivity}。");
+            }
+
             if (float.IsNaN(info.Friction) || float.IsInfinity(info.Friction) ||
                 info.Friction < 0f || info.Friction > 1f)
             {

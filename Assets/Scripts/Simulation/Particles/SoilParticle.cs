@@ -29,6 +29,7 @@ namespace TapTap2026.Simulation
             density: 1.8f,
             heatCapacity: 1.5f,   // 湿土：热容大，升温慢、保温久（对齐现实比热容 ~1.5）
             thermalConductivity: 0.5f,   // 湿土：导热中等（保温 → 内部温差明显）
+            thermalEmissivity: 1.0f,     // 近黑体
             affectedByGravity: true,
             isStatic: false,
             maxFlowSpread: 0,

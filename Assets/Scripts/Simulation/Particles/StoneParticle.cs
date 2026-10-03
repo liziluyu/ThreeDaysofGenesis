@@ -29,6 +29,7 @@ namespace TapTap2026.Simulation
             density: 3.0f,
             heatCapacity: 0.9f,   // 石头：热容适中
             thermalConductivity: 0.7f,   // 石头：导热中等偏好
+            thermalEmissivity: 1.0f,     // 近黑体
             affectedByGravity: true,
             isStatic: false,
             maxFlowSpread: 0,

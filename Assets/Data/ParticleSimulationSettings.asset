@@ -22,3 +22,4 @@ MonoBehaviour:
   _voidHeatLoss: 0.12
   _radiativeLoss: 0.05
   _airThermalConductivity: 1
+  _airThermalEmissivity: 0.1

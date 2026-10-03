@@ -26,6 +26,7 @@ namespace TapTap2026.Simulation
             density: 1.5f,
             heatCapacity: 0.8f,   // 干沙：热容小，晒热得快、凉得也快
             thermalConductivity: 0.4f,   // 干沙：导热最差，热憋在表层（最保温）
+            thermalEmissivity: 1.0f,     // 沙/岩/土都是近黑体，辐射率取 1（与旧行为一致）
             affectedByGravity: true,
             isStatic: false,
             maxFlowSpread: 0,

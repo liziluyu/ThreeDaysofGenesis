@@ -34,14 +34,20 @@ namespace TapTap2026.Game
         [Tooltip("顶行向虚空散热的系数：温度越高散得越快。0 = 关闭顶行散热。")]
         [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _voidHeatLoss = HeatMap.DefaultVoidHeatLoss;
 
-        [Tooltip("全格辐射散热系数：任何非环境温度的格子每 tick 流失 RadiativeLoss×T 的热量。" +
-                 "有了它，地面温度封顶在 光照强度/λ（5/0.05 ≈ 100°），大气被地面传导加热后逐格平衡。" +
-                 "0 = 关闭（热量只从顶行离开，地面温度会随网格高度疯涨）。")]
+        [Tooltip("辐射散热系数（只作用于暴露面：顶行，或正上方是气体/空）：每 tick 流失 RadiativeLoss×T 的热量。" +
+                 "它同时决定地表的降温速度与热在空中的穿透深度（≈ √(g/λ)）：越大热越憋在低空、地表越热；" +
+                 "越小热铺得越高、整根气柱越暖。改它要连光照强度一起改。0 = 关闭（热量只从顶行离开）。")]
         [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _radiativeLoss = 0.05f;
 
         [Header("材料导热率（相对值 0..1：1 = 最强，0 = 绝热）")]
         [Tooltip("空气（typeId 0）的导热率。空气没有类型条目，只能在这里给；决定热从地表/水面漏进上方气柱的难易。")]
         [SerializeField, Range(0f, HeatMap.MaxThermalConductivity)] private float _airThermalConductivity = HeatMap.DefaultAirThermalConductivity;
+
+        [Tooltip("空气（typeId 0）的相对辐射率 ε。空气没有类型条目，只能在这里给；" +
+                 "它决定「热在竖直方向能铺多远」——气柱每格都是暴露面，ε 越大热越早被抽干、只停在地表附近。" +
+                 "0.1（生产值，N₂/O₂ 对红外透明）时整根气柱不再逐格漏热，地表的热能一路铺到网格顶。" +
+                 "1 = 与固/液同等的黑体行为（旧行为）。")]
+        [SerializeField, Range(0f, HeatMap.MaxThermalEmissivity)] private float _airThermalEmissivity = 0.1f;
 
         public int Width
         {
@@ -87,7 +93,7 @@ namespace TapTap2026.Game
             get { return Mathf.Clamp(_voidHeatLoss, 0f, HeatMap.MaxConductivity); }
         }
 
-        /// <summary>全格辐射散热系数，夹在 <c>[0, HeatMap.MaxConductivity]</c>。</summary>
+        /// <summary>辐射散热系数（只作用于暴露面），夹在 <c>[0, HeatMap.MaxConductivity]</c>。</summary>
         public float RadiativeLoss
         {
             get { return Mathf.Clamp(_radiativeLoss, 0f, HeatMap.MaxConductivity); }
@@ -97,6 +103,12 @@ namespace TapTap2026.Game
         public float AirThermalConductivity
         {
             get { return Mathf.Clamp(_airThermalConductivity, 0f, HeatMap.MaxThermalConductivity); }
+        }
+
+        /// <summary>空气的相对辐射率 ε，夹在 <c>[0, HeatMap.MaxThermalEmissivity]</c>。</summary>
+        public float AirThermalEmissivity
+        {
+            get { return Mathf.Clamp(_airThermalEmissivity, 0f, HeatMap.MaxThermalEmissivity); }
         }
     }
 }

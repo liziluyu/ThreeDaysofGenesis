@@ -5,13 +5,14 @@ using TapTap2026.Simulation;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 气象系统测试：气体浮力原语（隔离类型表）+ 水 ⇌ 蒸汽 ⇌ 云 ⇌ 雨的相变与守恒（生产注册路径）。
+    /// 气象系统测试：气体浮力/热压原语（隔离类型表）+ **湿度场**的水循环与守恒（生产注册路径）。
     /// </summary>
     /// <remarks>
-    /// 相变测试必须走 <see cref="ParticleRegistration.RegisterAll"/> 的全局表：跨类型转换靠
+    /// 水循环测试必须走 <see cref="ParticleRegistration.RegisterAll"/> 的全局表：蒸发/降雨靠
     /// <see cref="ParticleIds"/> 的回填字段找到对方 typeId，隔离表里这些字段是 0（契约允许的唯一例外路径，
     /// 与 <c>SandStoneParticleTests</c> 的取舍一致）。浮力原语测试直接调用 <see cref="ParticleRules"/>，
-    /// 不经过 OnUpdate，因此不受相变阈值干扰。
+    /// 不经过 OnUpdate，因此不受阈值干扰。
+    /// <para>云不再是粒子：湿度 = <see cref="HumidityField"/> 里的一个标量，云就是湿度足够高的空气。</para>
     /// </remarks>
     public sealed class WeatherParticleTests
     {
@@ -38,14 +39,19 @@ namespace TapTap2026.Tests
             return count;
         }
 
+        /// <summary>水总量 = 水格数 + 蒸发成的水汽（湿度场总量）；用于守恒断言。</summary>
+        private static float TotalWater(ParticleWorld world)
+        {
+            return CountType(world, ParticleIds.Water) + world.Humidity.Sum();
+        }
+
         // ==================== 浮力原语（隔离类型表，直调规则） ====================
 
         /// <summary>热气上升：比四邻热的气体 TryBuoyantStep 后上移一格。</summary>
         [Test]
         public void BuoyantStep_HotGasRises()
         {
-            ParticleWorld world = new ParticleWorld(
-                8, 8, 7u, TestTables.Build(new AtmosphereParticle(), new SteamParticle()));
+            ParticleWorld world = new ParticleWorld(8, 8, 7u, TestTables.Build(new AtmosphereParticle()));
             const ushort atmosphere = 1;
             world.Set(4, 4, atmosphere);
             world.Heat.SetHeat(4, 4, 200f); // 热容 1 → T=200，四邻 T=0
@@ -59,8 +65,7 @@ namespace TapTap2026.Tests
         [Test]
         public void BuoyantStep_ColdGasSinks()
         {
-            ParticleWorld world = new ParticleWorld(
-                8, 8, 7u, TestTables.Build(new AtmosphereParticle(), new SteamParticle()));
+            ParticleWorld world = new ParticleWorld(8, 8, 7u, TestTables.Build(new AtmosphereParticle()));
             const ushort atmosphere = 1;
             world.Set(4, 4, atmosphere);
             // 四邻烤热（各 Q=200，T=200），自己 T=0 → 冷气下沉。
@@ -77,8 +82,7 @@ namespace TapTap2026.Tests
         [Test]
         public void BuoyantStep_WithinEpsilon_Stays()
         {
-            ParticleWorld world = new ParticleWorld(
-                8, 8, 7u, TestTables.Build(new AtmosphereParticle(), new SteamParticle()));
+            ParticleWorld world = new ParticleWorld(8, 8, 7u, TestTables.Build(new AtmosphereParticle()));
             const ushort atmosphere = 1;
             world.Set(4, 4, atmosphere);
             world.Heat.SetHeat(4, 4, 0.5f); // T=0.5，四邻 0，差 0.5 < epsilon 1
@@ -91,8 +95,7 @@ namespace TapTap2026.Tests
         [Test]
         public void ThermalDrift_FlowsTowardWarmerSide()
         {
-            ParticleWorld world = new ParticleWorld(
-                8, 8, 7u, TestTables.Build(new AtmosphereParticle(), new SteamParticle()));
+            ParticleWorld world = new ParticleWorld(8, 8, 7u, TestTables.Build(new AtmosphereParticle()));
             const ushort atmosphere = 1;
             world.Set(4, 4, atmosphere);
             world.Set(5, 4, atmosphere);
@@ -102,25 +105,33 @@ namespace TapTap2026.Tests
             Assert.AreEqual(atmosphere, world.GetCell(5, 4).typeId);
         }
 
-        // ==================== 相变（生产注册路径） ====================
+        // ==================== 湿度场：蒸发、输送、降水、守恒 ====================
 
-        /// <summary>水到沸点蒸发成蒸汽，热量随相变携带（蒸汽热容小，同一份热更烫）。</summary>
+        /// <summary>
+        /// 水到沸点蒸发：本格变成大气，**附近的湿度被抬升**（本格 + 四邻，总量一个水格），热量随相变携带。
+        /// </summary>
         [Test]
-        public void Water_Evaporates_WhenAtBoilingPoint()
+        public void Water_Evaporates_WhenAtBoilingPoint_RaisingNearbyHumidity()
         {
             ParticleWorld world = new ParticleWorld(8, 8, 7u);
-            world.Heat.Conductivity = 0f; // 关掉传导：本测试只看相变，否则同一 tick 的扩散会把 Q 摊走
+            world.Heat.Conductivity = 0f;    // 本测试只看相变
+            world.Humidity.Diffusion = 0f;   // 关掉输送，只看"蒸发这一刻"播撒了多少
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f;
             world.Set(4, 4, ParticleIds.Water);
             float capacity = ParticleRegistry.Types[ParticleIds.Water].Info.HeatCapacity;
-            world.Heat.SetHeat(4, 4, WaterParticle.BoilingPoint * capacity); // T = Q / C = 沸点
+            world.Heat.SetHeat(4, 4, WaterParticle.BoilingPoint * capacity); // T = 沸点
 
             world.Step();
 
-            Assert.AreEqual(ParticleIds.Steam, world.GetCell(4, 4).typeId, "水到沸点应变蒸汽");
-            Assert.AreEqual(WaterParticle.BoilingPoint * capacity, world.Heat.GetHeat(4, 4), "相变携带热量");
+            Assert.AreEqual(ParticleIds.Atmosphere, world.GetCell(4, 4).typeId, "水到沸点应变成大气");
+            Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格应蒸发出一个水格的湿度");
+            Assert.Greater(world.Humidity.Get(4, 4), 0f, "本格湿度升高");
+            Assert.Greater(world.Humidity.Get(5, 4), 0f, "邻近格子也被提高（附近的湿度）");
+            Assert.AreEqual(WaterParticle.BoilingPoint * capacity, world.Heat.GetHeat(4, 4), 1e-3f, "相变携带热量");
         }
 
-        /// <summary>沸点以下的水不蒸发，照常下落。</summary>
+        /// <summary>沸点以下的水不蒸发，照常下落，也不产生湿度。</summary>
         [Test]
         public void Water_BelowBoiling_DoesNotEvaporate()
         {
@@ -131,129 +142,189 @@ namespace TapTap2026.Tests
             world.Step();
 
             Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 3).typeId, "水正常下落");
-            Assert.AreEqual(0, CountType(world, ParticleIds.Steam), "不产生蒸汽");
+            Assert.AreEqual(0f, world.Humidity.Sum(), 1e-3f, "不产生湿度");
         }
 
-        /// <summary>蒸汽降到露点冷凝成云，热量携带。</summary>
+        /// <summary>
+        /// 水平方向：湿度**由冷处迁往热处**（同一高度）。这是需求里"同高度倾向于从冷的地方迁移至热的地方"。
+        /// </summary>
         [Test]
-        public void Steam_Condenses_WhenAtOrBelowDewPoint()
+        public void Humidity_MigratesFromColdToHot_Horizontally()
+        {
+            ParticleWorld world = new ParticleWorld(8, 8, 7u, TestTables.Build(new AtmosphereParticle()));
+            const ushort atmosphere = 1;
+            world.Set(4, 4, atmosphere);
+            world.Set(5, 4, atmosphere);
+            world.Humidity.Diffusion = 0f;      // 关掉扩散，只留温度定向
+            world.Humidity.RiseBias = 0f;
+            world.Humidity.HorizontalBias = 0.1f;
+            world.Humidity.Set(4, 4, 1f);       // 左边湿
+            world.Heat.SetHeat(5, 4, 100f);     // 右边热
+
+            world.Humidity.Step(world);         // 直接把湿度输送跑一 tick
+
+            Assert.Greater(world.Humidity.Get(5, 4), 0f, "湿度应向更热的一侧迁移");
+            Assert.Less(world.Humidity.Get(4, 4), 1f, "冷侧湿度下降");
+        }
+
+        /// <summary>
+        /// 竖直方向：**温度越高的格子，湿度越倾向于向上传播**。这是水汽被抬升、云能出现在高空的动力。
+        /// </summary>
+        [Test]
+        public void Humidity_RisesFromHotterCells_Upward()
+        {
+            ParticleWorld world = new ParticleWorld(1, 3, 7u, TestTables.Build(new AtmosphereParticle()));
+            const ushort atmosphere = 1;
+            world.Set(0, 0, atmosphere);
+            world.Set(0, 1, atmosphere);
+            world.Set(0, 2, atmosphere);
+            world.Humidity.Diffusion = 0f;
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0.5f;
+            world.Humidity.Set(0, 1, 0.15f);    // 中层湿（低于 RiseStopHumidity，故仍能上升）
+            world.Heat.SetHeat(0, 1, 100f);     // 且中层热 → 湿度应向上走（归一化尺度 100）
+            world.Heat.SetHeat(0, 2, 0f);       // 上层冷
+            world.Heat.SetHeat(0, 0, 0f);       // 下层也冷：证明"下面冷"不会把湿度吸下来
+
+            world.Humidity.Step(world);
+
+            Assert.Greater(world.Humidity.Get(0, 2), 0f, "更热的格子应把湿度往上送");
+            Assert.AreEqual(0f, world.Humidity.Get(0, 0), 1e-4f, "下层的冷格子不该把湿度吸下来（竖直是向上平流，不是向热迁移）");
+            Assert.Less(world.Humidity.Get(0, 1), 0.15f, "原格湿度下降");
+        }
+
+        /// <summary>
+        /// 只有非固非液的格持有湿度：低温饱和空气降雨后本格变成水（液体），
+        /// 剩余的湿度被推给周围的气体邻居（不丢质量，也不让液体持有湿度）。
+        /// </summary>
+        [Test]
+        public void Rain_CondensesSaturatedColdAir_IntoWater_AndLiquidHoldsNoHumidity()
         {
             ParticleWorld world = new ParticleWorld(8, 8, 7u);
-            world.Heat.Conductivity = 0f; // 同上：只看相变
-            world.Set(4, 6, ParticleIds.Steam);
-            world.Heat.SetHeat(4, 6, 10f); // T=10 ≤ 露点 45
-            world.Step();
-
-            Assert.AreEqual(ParticleIds.Cloud, world.GetCell(4, 6).typeId, "蒸汽到露点应变云");
-            Assert.AreEqual(10f, world.Heat.GetHeat(4, 6), "相变携带热量");
-        }
-
-        /// <summary>散滴聚团：同排相隔 5 格（搜索半径内）的云滴会互相靠拢，收敛成相邻的一团。</summary>
-        [Test]
-        public void Cloud_Strays_GatherIntoACluster()
-        {
-            ParticleWorld world = new ParticleWorld(16, 8, 7u);
             world.Heat.Conductivity = 0f;
-            world.Set(3, 4, ParticleIds.Cloud);
-            world.Set(8, 4, ParticleIds.Cloud);
-            world.Heat.SetHeat(3, 4, 20f); // 冷区（T=10 ≤ 露点），不会被温度规则蒸散
-            world.Heat.SetHeat(8, 4, 20f);
+            world.Humidity.Diffusion = 0f;
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f;
+            world.Set(4, 4, ParticleIds.Atmosphere);
+            world.Set(3, 4, ParticleIds.Atmosphere);   // 留给残余湿度的气体邻居
+            world.Humidity.Set(4, 4, 3f);              // 很湿
+            world.Heat.SetHeat(4, 4, 5f);              // 冷：T = 5/(1+3) = 1.25 ≤ 露点
 
-            for (int i = 0; i < 60; i++)
+            float before = TotalWater(world);
+            for (int i = 0; i < 200 && CountType(world, ParticleIds.Water) == 0; i++)
             {
                 world.Step();
             }
 
-            int cloudX1 = -1;
-            int cloudY1 = -1;
-            int cloudX2 = -1;
-            int cloudY2 = -1;
-            for (int y = 0; y < world.Height; y++)
-            {
-                for (int x = 0; x < world.Width; x++)
-                {
-                    if (world.GetCell(x, y).typeId != ParticleIds.Cloud)
-                    {
-                        continue;
-                    }
+            Assert.Greater(CountType(world, ParticleIds.Water), 0, "饱和的冷空气应凝结成雨");
+            Assert.AreEqual(before, TotalWater(world), 1e-2f, "水总量守恒（降雨把湿度 1:1 搬成水）");
 
-                    if (cloudX1 < 0)
-                    {
-                        cloudX1 = x;
-                        cloudY1 = y;
-                    }
-                    else
-                    {
-                        cloudX2 = x;
-                        cloudY2 = y;
-                    }
+            // 不变量：固/液格永远不持有湿度（降雨时残余水汽被推给气体邻居）。
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                ushort id = world.Cells[i].typeId;
+                bool nonGas = id != ParticleRegistry.AirTypeId
+                    && (id >= world.Types.Length || world.Types[id] == null
+                        || (world.Types[id].Info.Tags & ParticleTags.Gas) == 0);
+                if (nonGas)
+                {
+                    Assert.AreEqual(0f, world.Humidity.GetAt(i), 1e-4f, "固/液格不得持有湿度（下标 " + i + "）");
+                }
+            }
+        }
+
+        /// <summary>湿度随风平移：湿度**由空气携带**，空气被 Swap 搬走时湿度跟着走（云飘在天上）。</summary>
+        [Test]
+        public void Humidity_IsAdvectedByTheAir_WhenTheAirMoves()
+        {
+            ParticleWorld world = new ParticleWorld(8, 1, 7u);
+            world.Set(3, 0, ParticleIds.Atmosphere);
+            world.Humidity.Set(3, 0, 1f);
+
+            world.Swap(3, 0, 5, 0);
+
+            Assert.AreEqual(1f, world.Humidity.Get(5, 0), 1e-4f, "湿度应随空气一起搬到新格");
+            Assert.AreEqual(0f, world.Humidity.Get(3, 0), 1e-4f, "原格不该留下湿度");
+        }
+
+        /// <summary>
+        /// 水循环端到端守恒：蒸发/输送/降水全程 1:1，
+        /// 「水格数 + 湿度总量」在整段模拟里不变（湿度场内部只是搬运，不产不灭）。
+        /// </summary>
+        [Test]
+        public void WaterCycle_ConservesTotalWater()
+        {
+            ParticleWorld world = new ParticleWorld(24, 32, 20261004u);
+            for (int y = 0; y < 32; y++)
+            {
+                for (int x = 0; x < 24; x++)
+                {
+                    world.Set(x, y, y <= 1 ? ParticleIds.Stone : ParticleIds.Atmosphere);
                 }
             }
 
-            Assert.AreEqual(2, CountType(world, ParticleIds.Cloud), "云量守恒");
-            Assert.GreaterOrEqual(cloudX2, 0, "两滴云都应还在世界里");
-            int dx = cloudX2 > cloudX1 ? cloudX2 - cloudX1 : cloudX1 - cloudX2;
-            int dy = cloudY2 > cloudY1 ? cloudY2 - cloudY1 : cloudY1 - cloudY2;
-            int distance = dx > dy ? dx : dy;
-            Assert.LessOrEqual(distance, 2, "散滴应聚拢成相邻的一团（云会缓沉，所以按全网格的切比雪夫距离断言）");
-            Assert.AreEqual(0, CountType(world, ParticleIds.Steam), "冷区不应蒸成蒸汽（会闪变回去）");
-        }
-
-        /// <summary>云漂回暖区蒸回蒸汽（云边消散）。</summary>
-        [Test]
-        public void Cloud_ReEvaporates_WhenWarm()
-        {
-            ParticleWorld world = new ParticleWorld(8, 8, 7u);
-            world.Set(4, 4, ParticleIds.Cloud);
-            world.Heat.SetHeat(4, 4, (SteamParticle.DewPoint + 30f) * 2f); // 云热容 2 → T = 露点 + 30
-
-            world.Step();
-
-            Assert.AreEqual(ParticleIds.Steam, world.GetCell(4, 4).typeId, "暖区云应蒸回蒸汽");
-        }
-
-        /// <summary>碰并：足够密集的云群长时间后产雨；水+蒸汽+云总量严格守恒（1:1 相变，无源无汇）。</summary>
-        [Test]
-        public void Cloud_Cluster_Coalesces_IntoRain_ConservingMass()
-        {
-            ParticleWorld world = new ParticleWorld(16, 16, 7u);
-            // 3x3 冷云团悬在半空。
-            for (int y = 8; y <= 10; y++)
+            for (int y = 2; y <= 5; y++)
             {
-                for (int x = 6; x <= 8; x++)
+                for (int x = 2; x < 22; x++)
                 {
-                    world.Set(x, y, ParticleIds.Cloud);
-                    world.Heat.SetHeat(x, y, 20f); // 云热容 2 → T=10，冷区
+                    world.Set(x, y, ParticleIds.Water);
                 }
             }
 
-            int before = CountType(world, ParticleIds.Cloud);
-            for (int i = 0; i < 200; i++)
+            world.Heat.Conductivity = 0.24f;
+            world.Heat.VoidHeatLoss = 0.12f;
+            world.Heat.RadiativeLoss = 0.05f;
+            world.Heat.AirThermalEmissivity = 0.1f;
+            world.Light.Enabled = true;
+            world.Light.Intensity = 10f;
+            world.Light.LitTicks = int.MaxValue;
+            world.Light.DarkTicks = 0;
+
+            float before = TotalWater(world);
+            for (int t = 0; t < 4000; t++)
             {
                 world.Step();
             }
 
-            int wet = CountType(world, ParticleIds.Water) + CountType(world, ParticleIds.Cloud)
-                      + CountType(world, ParticleIds.Steam);
-            Assert.AreEqual(before, wet, "水+云+蒸汽总量守恒");
-            Assert.Greater(CountType(world, ParticleIds.Water), 0, "200 tick 内应碰并出雨");
+            Assert.AreEqual(before, TotalWater(world), 1e-2f, "水总量在水循环里必须守恒（1:1 相变，无源无汇）");
         }
 
-        /// <summary>生产注册路径：蒸汽/云/大气回填出互不相同的非 0 id，都带 Gas 标签、非静态。</summary>
+        /// <summary>湿度场内部的输送（扩散 + 温度定向）也严格守恒——只搬运，不产不灭。</summary>
         [Test]
-        public void ProductionRegistration_BackfillsGasTaggedIds()
+        public void HumidityTransport_ConservesTotal()
         {
-            Assert.AreNotEqual(ParticleRegistry.AirTypeId, ParticleIds.Steam);
-            Assert.AreNotEqual(ParticleRegistry.AirTypeId, ParticleIds.Cloud);
+            ParticleWorld world = new ParticleWorld(16, 16, 5u);
+            for (int y = 0; y < 16; y++)
+            {
+                for (int x = 0; x < 16; x++)
+                {
+                    world.Set(x, y, ParticleIds.Atmosphere);
+                    world.Heat.SetHeat(x, y, (x * 7 + y * 13) % 90); // 造一个温度场，把两条定向项都激活
+                }
+            }
+
+            world.Humidity.Set(8, 8, 5f);
+            world.Humidity.Set(3, 12, 2f);
+            float before = TotalWater(world);   // 水总量 = 水格 + 湿度（降雨会把湿度搬成水，故必须一起算）
+
+            for (int t = 0; t < 300; t++)
+            {
+                world.Step();
+            }
+
+            Assert.AreEqual(before, TotalWater(world), 1e-2f, "湿度输送必须守恒（只搬运，不产不灭）");
+        }
+
+        /// <summary>生产注册路径：大气回填出非 0 id、带 Gas 标签、非静态。</summary>
+        [Test]
+        public void ProductionRegistration_BackfillsGasTaggedId()
+        {
             Assert.AreNotEqual(ParticleRegistry.AirTypeId, ParticleIds.Atmosphere);
-            Assert.AreNotEqual(ParticleIds.Steam, ParticleIds.Cloud);
-            Assert.AreNotEqual(ParticleIds.Steam, ParticleIds.Atmosphere);
-            Assert.AreNotEqual(ParticleIds.Cloud, ParticleIds.Atmosphere);
 
-            AssertGas(ParticleRegistry.Types[ParticleIds.Steam], "蒸汽");
-            AssertGas(ParticleRegistry.Types[ParticleIds.Cloud], "云");
-            AssertGas(ParticleRegistry.Types[ParticleIds.Atmosphere], "大气");
-            Assert.AreEqual(1f, ParticleRegistry.Types[ParticleIds.Atmosphere].Info.HeatCapacity,
+            ParticleType atmosphere = ParticleRegistry.Types[ParticleIds.Atmosphere];
+            Assert.IsTrue((atmosphere.Info.Tags & ParticleTags.Gas) != 0, "大气必须带 Gas 标签");
+            Assert.IsFalse(atmosphere.Info.IsStatic, "大气不是静态类型");
+            Assert.AreEqual(1f, atmosphere.Info.HeatCapacity,
                 "大气热容必须等于 HeatMap.AirHeatCapacity，空气格与大气粒子温度口径才一致");
         }
 
@@ -272,10 +343,25 @@ namespace TapTap2026.Tests
             Assert.AreEqual(background, pixels[world.Index(2, 2)], "空气格本来就是背景色（对照）");
         }
 
-        private static void AssertGas(ParticleType type, string name)
+        /// <summary>云就是"很湿的空气"：湿度足够高时像素被染白，湿度的深浅给出云的浓淡。</summary>
+        [Test]
+        public void Cloud_HumidityTintsThePixelWhiteer()
         {
-            Assert.IsTrue((type.Info.Tags & ParticleTags.Gas) != 0, name + "必须带 Gas 标签");
-            Assert.IsFalse(type.Info.IsStatic, name + "不是静态类型");
+            ParticleWorld world = new ParticleWorld(4, 1, 7u);
+            world.Set(0, 0, ParticleIds.Atmosphere);
+            world.Set(1, 0, ParticleIds.Atmosphere);
+            world.Set(2, 0, ParticleIds.Atmosphere);
+            world.Humidity.Set(1, 0, HumidityField.RainThreshold);              // 满湿 → 纯白
+            world.Humidity.Set(2, 0, HumidityField.VisibleThreshold * 1.5f);    // 淡云
+
+            var background = new Color32(9, 8, 7, 255);
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, background);
+
+            Assert.AreEqual(background, pixels[0], "干燥空气仍是背景色");
+            Assert.Greater(pixels[1].r, background.r, "满湿的格子被染白");
+            Assert.Greater(pixels[1].r, pixels[2].r, "越湿越白");
+            Assert.Greater(pixels[2].r, background.r, "淡云也比背景亮");
         }
     }
 }

@@ -21,11 +21,16 @@ namespace TapTap2026.Simulation
     /// 扩散用的是本 tick 开始时的温度场（先算差、再整体写回），与扫描顺序无关、结果确定。</para>
     /// <para>散热：同一次 <see cref="Step"/> 里有两条并存的散热路——
     /// ① 最上面一行向**界外上方的虚空**流失热量（<c>ΔQ = -VoidHeatLoss * T</c>，虚空恒为 <see cref="AmbientHeat"/>）；
-    /// ② <b>辐射</b>（<c>ΔQ = -RadiativeLoss * T</c>，默认关闭，生产由 Settings 资产给 0.05）——
-    /// 但<b>只作用于暴露于天空的格</b>（顶行，或正上方是气体/空）；埋在地下的格四周都是物质、净辐射≈0，不参与辐射。
-    /// 于是持续受热的**暴露面**就近收敛到 <c>T ≈ 输入功率 / RadiativeLoss</c>（光照 5、λ 0.05 ⇒ 地表约 100°），
-    /// 而地表以下的热量只能靠传导往上散——热因此能真正传进地下（若埋着的格也照漏，热会在 1~2 格内被抽干，只停在地表）。</para>
-    /// <para>简化 / 不完美：无对流、无相变潜热；辐射是线性近似（真实是 T⁴）、单一全局系数；
+    /// ② <b>辐射</b>（<c>ΔQ = -RadiativeLoss * ε * T</c>，ε 为该格材料的<see cref="ParticleTypeInfo.ThermalEmissivity"/>；
+    /// 默认关闭，生产由 Settings 资产给 0.05）——
+    /// 但<b>只作用于暴露于天空的格</b>（顶行，或正上方是气体/空）；埋在地下的格四周都是物质、净辐射≈0，不参与辐射，
+    /// 其热量只能靠传导往上散——热因此能真正传进地下（若埋着的格也照漏，热会在 1~2 格内被抽干，只停在地表）。</para>
+    /// <para><b>ε 是「热在竖直方向能铺多远」的旋钮</b>：空气柱每一格都是暴露面、都在散热，整柱的漏热总量正比于空气的 ε。
+    /// ε=1 时（旧行为）空气的热 20 格内就耗尽，地表之上像有一道断崖；大气取 ε=0.1 后
+    /// （N₂/O₂ 对红外透明）气柱几乎不逐格漏热，温度从地表到网格顶是单调、平滑的衰减。
+    /// 用 ε 而不是全局 <see cref="RadiativeLoss"/> 来调这件事，好处是只动空气——固/液/蒸汽/云都留 ε=1，
+    /// 它们的表面温度与光照强度都不必跟着改。</para>
+    /// <para>简化 / 不完美：无对流、无相变潜热；辐射是线性近似（真实是 T⁴）；ε 只有固/液/气这一个维度；
     /// 虚空散热只发生在网格顶行；<c>Q</c> 不钳制（负值表示冷）。这些留给具体粒子类型自行实现。</para>
     /// <para>稳定性：显式扩散要求 <c>(Conductivity * 邻居数 + VoidHeatLoss + RadiativeLoss) / 热容 &lt; 2</c>。
     /// 各系数上限都是 <see cref="MaxConductivity"/> = 0.24，配合热容 ≳ 0.5 的取值即可稳定；
@@ -58,18 +63,37 @@ namespace TapTap2026.Simulation
         /// <summary>每材料相对导热率 σ 的上限（见 <see cref="ParticleTypeInfo.ThermalConductivity"/>）。</summary>
         public const float MaxThermalConductivity = 1f;
 
+        /// <summary>每材料相对辐射率 ε 的上限（见 <see cref="ParticleTypeInfo.ThermalEmissivity"/>）。</summary>
+        public const float MaxThermalEmissivity = 1f;
+
+        /// <summary>
+        /// 每单位凝结物给所在格增加的热容。取 1 是为了让「蒸汽 ⇌ 云」的相变**恰好保持温度**：
+        /// 蒸汽热容 2，凝结后是空气（1）+ 1 单位凝结物（1）= 2，于是同一份热量换来的温度不变。
+        /// 这是潜热的等效处理——凝结放出的热表现为「悬浮水滴让空气的热惯性变大」，
+        /// 而不是直接给出一段升温，因此 <c>Q</c> 在界内仍然守恒（见 <see cref="ParticleWorld.SetPhase"/>）。
+        /// </summary>
+        public const float HumidityHeatCapacity = 1f;
+
         /// <summary>
         /// 空气相对导热率 σ 的默认值。空气没有类型条目（typeId 0），其导热率不在注册表里，
         /// 由本常量（及可写属性 <see cref="AirThermalConductivity"/>）给出。默认 1（与旧行为一致：空气不额外削弱传导）。
         /// </summary>
         public const float DefaultAirThermalConductivity = 1f;
 
+        /// <summary>
+        /// 空气相对辐射率 ε 的默认值。默认 1（不改既有单测契约：暴露的空气格仍按 <c>RadiativeLoss · T</c> 辐射）。
+        /// 生产值由 <c>ParticleSimulationSettings</c> 资产注入（当前 0.1：N₂/O₂ 对红外透明，
+        /// 气柱因此不再逐格漏热，地表的热能一路铺到网格顶）。</summary>
+        public const float DefaultAirThermalEmissivity = 1f;
+
         private readonly int _width;
         private readonly int _height;
         private readonly Cell[] _cells;
         private readonly ParticleType[] _types;
+        private readonly HumidityField _humidity;
         private readonly float[] _inverseCapacity;
         private readonly float[] _conductivityOf;
+        private readonly float[] _emissivityOf;
 
         private float[] _heat;
         private float[] _scratch;
@@ -77,13 +101,15 @@ namespace TapTap2026.Simulation
         private float _voidHeatLoss = DefaultVoidHeatLoss;
         private float _radiativeLoss = DefaultRadiativeLoss;
         private float _airThermalConductivity = DefaultAirThermalConductivity;
+        private float _airThermalEmissivity = DefaultAirThermalEmissivity;
 
         /// <param name="width">宽度（格），范围 <c>1..ParticleWorld.MaxSide</c>。</param>
         /// <param name="height">高度（格），范围 <c>1..ParticleWorld.MaxSide</c>。</param>
         /// <param name="cells">世界的格子数组（同宽高）。热图只读它来查每格物质的热容。</param>
         /// <param name="types">类型表（同 <see cref="ParticleWorld.Types"/>），用于查 <see cref="ParticleTypeInfo.HeatCapacity"/>。</param>
+        /// <param name="humidity">同形的湿度场（用于把水汽的热容计入）；<c>null</c> 表示不含湿度场（既有单测与孤立用法）。</param>
         /// <exception cref="ArgumentOutOfRangeException">任一边超出 <c>1..ParticleWorld.MaxSide</c>。</exception>
-        public HeatMap(int width, int height, Cell[] cells, ParticleType[] types)
+        public HeatMap(int width, int height, Cell[] cells, ParticleType[] types, HumidityField humidity = null)
         {
             if (width < 1 || width > ParticleWorld.MaxSide)
             {
@@ -109,10 +135,12 @@ namespace TapTap2026.Simulation
             _height = height;
             _cells = cells;
             _types = types;
+            _humidity = humidity;
             _heat = new float[width * height];
             _scratch = new float[width * height];
             _inverseCapacity = new float[width * height];
             _conductivityOf = new float[width * height];
+            _emissivityOf = new float[width * height];
         }
 
         /// <summary>热图宽（格数），与世界网格一致。</summary>
@@ -169,12 +197,11 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 辐射散热系数（无量纲），范围 <c>[0, <see cref="MaxConductivity"/>]</c>；0 = 关闭。
-        /// <b>只作用于暴露于天空的格</b>（顶行，或正上方是气体/空）：
-        /// <c>ΔQ = -RadiativeLoss × T</c>。埋在地下的格四周都是物质、净辐射≈0，不辐射——
-        /// 否则刚传进地下几格的热量会被逐格抽干，热就只停在地表。
-        /// 与顶行虚空散热并存的第二个热量出口：被持续加热的暴露面就近收敛到
-        /// <c>T ≈ 输入功率 / RadiativeLoss</c>（例如光照 5、λ 0.05 ⇒ 地表约 100°），
-        /// 空气柱每格上方都是空气，因此空气照常全柱辐射。
+        /// <b>只作用于暴露于天空的格</b>（顶行，或正上方是气体/空），且按该格材料的
+        /// <see cref="ParticleTypeInfo.ThermalEmissivity"/> ε 缩放：<c>ΔQ = -RadiativeLoss × ε × T</c>。
+        /// 埋在地下的格四周都是物质、净辐射≈0，不辐射——否则刚传进地下几格的热量会被逐格抽干，热就只停在地表。
+        /// 它是**所有**暴露面的散热尺度；想只调「热在空气里能铺多高」而不动固/液，请改
+        /// <see cref="AirThermalEmissivity"/>（生产 0.1）而不是这个全局值。
         /// </summary>
         public float RadiativeLoss
         {
@@ -190,6 +217,17 @@ namespace TapTap2026.Simulation
         {
             get { return _airThermalConductivity; }
             set { _airThermalConductivity = value < 0f ? 0f : (value > MaxThermalConductivity ? MaxThermalConductivity : value); }
+        }
+
+        /// <summary>
+        /// 空气（typeId 0）的相对辐射率 ε，范围 <c>[0, <see cref="MaxThermalEmissivity"/>]</c>；超出夹紧。默认 1。
+        /// 空气没有类型条目，其辐射率只能在这里给；它决定热能不能穿过整根气柱散出去。
+        /// 取小值（生产 0.1）后气柱几乎不逐格漏热，竖直方向的温度衰减变平缓、能一路铺到网格顶。
+        /// </summary>
+        public float AirThermalEmissivity
+        {
+            get { return _airThermalEmissivity; }
+            set { _airThermalEmissivity = value < 0f ? 0f : (value > MaxThermalEmissivity ? MaxThermalEmissivity : value); }
         }
 
         /// <summary>
@@ -236,7 +274,28 @@ namespace TapTap2026.Simulation
                 return AirHeatCapacity;
             }
 
-            return CapacityOf(_cells[y * _width + x].typeId);
+            return GetCapacityAt(y * _width + x);
+        }
+
+        /// <summary>
+        /// 读取扁平下标处的热容：**物质热容 + 悬浮水滴热容**
+        /// （<c>CapacityOf(typeId) + humidity * HumidityHeatCapacity</c>）。
+        /// 凝结物让云所在空气的热惯性变大，这是「蒸汽 ⇌ 云」相变能保持温度的原因（潜热的等效处理）。
+        /// 下标越界返回 <see cref="AirHeatCapacity"/>。
+        /// </summary>
+        public float GetCapacityAt(int index)
+        {
+            if ((uint)index >= (uint)_heat.Length)
+            {
+                return AirHeatCapacity;
+            }
+
+            return CapacityOf(_cells[index].typeId) + HumidityOf(index) * HumidityHeatCapacity;
+        }
+
+        private float HumidityOf(int index)
+        {
+            return _humidity == null ? 0f : _humidity.GetAt(index);
         }
 
         /// <summary>读取 (x,y) 的温度 <c>T = Q / C</c>。越界返回 <see cref="AmbientHeat"/>。</summary>
@@ -248,7 +307,7 @@ namespace TapTap2026.Simulation
             }
 
             int index = y * _width + x;
-            return _heat[index] / CapacityOf(_cells[index].typeId);
+            return _heat[index] / GetCapacityAt(index);
         }
 
         /// <summary>
@@ -262,7 +321,7 @@ namespace TapTap2026.Simulation
                 return AmbientHeat;
             }
 
-            return _heat[index] / CapacityOf(_cells[index].typeId);
+            return _heat[index] / GetCapacityAt(index);
         }
 
         /// <summary>把 (x,y) 的热量无条件写成 <paramref name="heat"/>（Q，不是温度）。</summary>
@@ -292,7 +351,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 一次全格四邻热传导 + 顶行向虚空散热 + 全格辐射散热。由 <see cref="ParticleWorld.Step"/> 每 tick 调用一次，
+        /// 一次全格四邻热传导 + 顶行向虚空散热 + 暴露面辐射散热（按材料 ε 缩放）。由 <see cref="ParticleWorld.Step"/> 每 tick 调用一次，
         /// 粒子类型不需要、也不应该自己调用（否则重复扩散）。
         /// <see cref="Conductivity"/>、<see cref="VoidHeatLoss"/> 与 <see cref="RadiativeLoss"/> 都为 0 时是空操作。
         /// </summary>
@@ -310,6 +369,7 @@ namespace TapTap2026.Simulation
             float[] next = _scratch;
             float[] inverseCapacity = _inverseCapacity;
             float[] conductivityOf = _conductivityOf;
+            float[] emissivityOf = _emissivityOf;
             Cell[] cells = _cells;
             ParticleType[] types = _types;
             int width = _width;
@@ -318,8 +378,9 @@ namespace TapTap2026.Simulation
             for (int i = 0; i < cells.Length; i++)
             {
                 ushort id = cells[i].typeId;
-                inverseCapacity[i] = 1f / CapacityOf(id, types);
+                inverseCapacity[i] = 1f / (CapacityOf(id, types) + HumidityOf(i) * HumidityHeatCapacity);
                 conductivityOf[i] = ConductivityOf(id, types);
+                emissivityOf[i] = EmissivityOf(id, types);
             }
 
             float halfScale = conductivity * 0.5f;
@@ -365,11 +426,14 @@ namespace TapTap2026.Simulation
                             * (heat[j] * inverseCapacity[j] - selfTemperature);
                     }
 
-                    // 辐射：只有**暴露于天空**的格才向 0K 虚空漏热。埋在地下的格四周都是物质、
-                    // 净辐射≈0，若也照漏就会把刚传进地下几格的热量抽干——这正是「热只停在地表」的根因。
-                    // 暴露 = 顶行，或正上方是气体/空。空气柱每格上方都是空气，因此空气照常全柱辐射。
+                    // 辐射：只有**暴露于天空**的格才向 0K 虚空漏热，且按本格材料的辐射率 ε 缩放
+                    // （ΔQ = -RadiativeLoss · ε · T）。埋在地下的格四周都是物质、净辐射≈0，若也照漏就会
+                    // 把刚传进地下几格的热量抽干——这正是「热只停在地表」的根因。
+                    // 暴露 = 顶行，或正上方是气体/空。
+                    // ε 小的材料（大气：N₂/O₂ 对红外透明）不逐格漏热，整根气柱因此不再把热抽干，
+                    // 地表的热能一路铺到网格顶（这是 λ 之外、真正与「地表温度」解耦的那个旋钮）。
                     bool exposed = topRowExposed || IsSkyExposed(cells, types, i + width);
-                    float updated = heat[i] + delta - (exposed ? radiativeLoss * selfTemperature : 0f);
+                    float updated = heat[i] + delta - (exposed ? radiativeLoss * emissivityOf[i] * selfTemperature : 0f);
 
                     // 顶行向虚空散热：界外上方是恒温 AmbientHeat 的无限热库，热量只出不进。
                     // 与传导独立（不乘 conductivity），否则就失去「独立于导热率」的意义。
@@ -437,6 +501,28 @@ namespace TapTap2026.Simulation
 
             ParticleType type = types[typeId];
             return type == null ? _airThermalConductivity : type.Info.ThermalConductivity;
+        }
+
+        /// <summary>读取 (x,y) 上材料的相对辐射率 ε。越界 / 空气返回 <see cref="AirThermalEmissivity"/>。</summary>
+        public float GetEmissivity(int x, int y)
+        {
+            if (!IsInBounds(x, y))
+            {
+                return _airThermalEmissivity;
+            }
+
+            return EmissivityOf(_cells[y * _width + x].typeId, _types);
+        }
+
+        private float EmissivityOf(ushort typeId, ParticleType[] types)
+        {
+            if (typeId == ParticleRegistry.AirTypeId || typeId >= types.Length)
+            {
+                return _airThermalEmissivity;
+            }
+
+            ParticleType type = types[typeId];
+            return type == null ? _airThermalEmissivity : type.Info.ThermalEmissivity;
         }
 
         /// <summary>

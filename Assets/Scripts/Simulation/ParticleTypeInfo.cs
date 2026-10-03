@@ -37,6 +37,19 @@ namespace TapTap2026.Simulation
         /// </summary>
         public readonly float ThermalConductivity;
 
+        /// <summary>
+        /// 相对辐射率 ε，范围 <c>[0, 1]</c>（1 = 黑体，0 = 对红外完全透明）。
+        /// 只被 <see cref="HeatMap.Step"/> 读取：暴露于天空的格按
+        /// <c>ΔQ = -RadiativeLoss · ε · T</c> 向外辐射。取 1 等价于旧的「所有材料同一个辐射系数」行为。
+        /// </summary>
+        /// <remarks>
+        /// 与导热率 σ 是**两个独立的旋钮**：σ 决定热在格与格之间传得多快，ε 决定热从暴露面漏掉多少。
+        /// 因此 ε 是「热在竖直方向能铺多远」的主要杠杆——空气（N₂/O₂）对红外透明，ε 取小值后
+        /// 整根气柱不再逐格漏热，地表的热才能一路铺到网格顶（见 <see cref="HeatMap"/>）。
+        /// 空气没有类型条目，用 <see cref="HeatMap.AirThermalEmissivity"/>。
+        /// </remarks>
+        public readonly float ThermalEmissivity;
+
         /// <summary>是否受重力。由该类型自己的 <c>OnUpdate</c> 决定如何使用。</summary>
         public readonly bool AffectedByGravity;
 
@@ -83,6 +96,7 @@ namespace TapTap2026.Simulation
             float density,
             float heatCapacity,
             float thermalConductivity,
+            float thermalEmissivity,
             bool affectedByGravity,
             bool isStatic,
             byte maxFlowSpread,
@@ -95,6 +109,7 @@ namespace TapTap2026.Simulation
             Density = density;
             HeatCapacity = heatCapacity;
             ThermalConductivity = thermalConductivity;
+            ThermalEmissivity = thermalEmissivity;
             AffectedByGravity = affectedByGravity;
             IsStatic = isStatic;
             MaxFlowSpread = maxFlowSpread;

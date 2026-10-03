@@ -334,6 +334,58 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void Heat_RadiationIsScaledByTheMaterialsEmissivity()
+        {
+            // 暴露面辐射 ΔQ = -RadiativeLoss · ε · T：同一温度下，ε 小的材料漏得更少。
+            // 这是「热能不能穿过整根气柱散出去」的旋钮——空气（N₂/O₂）对红外透明，ε 取小值后
+            // 气柱不再逐格漏热，地表的热才能一路铺到网格顶。
+            ParticleWorld world = new ParticleWorld(2, 1, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;   // 只看辐射
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0.05f;
+            world.Set(0, 0, TestTypes.StaticId);        // ε = 1
+            world.Set(1, 0, TestTypes.LowEmissivityId); // ε = 0.2
+            world.Heat.SetHeat(0, 0, 100f);
+            world.Heat.SetHeat(1, 0, 100f);
+
+            world.Step();
+
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 0), 1e-4f, "ε = 1：按 0.05 * T 辐射");
+            Assert.AreEqual(99f, world.Heat.GetHeat(1, 0), 1e-4f, "ε = 0.2：只按 0.05 * 0.2 * T 辐射");
+        }
+
+        [Test]
+        public void Heat_AirEmissivityScalesRadiationOfAirCells()
+        {
+            // 空气没有类型条目（typeId 0），它的辐射率只能由 HeatMap.AirThermalEmissivity 给；默认为 1。
+            ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0.05f;
+            world.Heat.SetHeat(0, 0, 100f);
+
+            Assert.AreEqual(1f, world.Heat.AirThermalEmissivity, "默认 1（不改既有单测契约）");
+
+            world.Step();
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 0), 1e-4f, "默认 ε = 1：按 0.05 * T 辐射");
+
+            world.Heat.SetHeat(0, 0, 100f);
+            world.Heat.AirThermalEmissivity = 0.2f;
+            world.Step();
+            Assert.AreEqual(99f, world.Heat.GetHeat(0, 0), 1e-4f, "ε = 0.2：只按 0.05 * 0.2 * T 辐射");
+        }
+
+        [Test]
+        public void Registry_RejectsEmissivityOutsideUnitRange()
+        {
+            int before = ParticleRegistry.Count;
+
+            Assert.Throws<InvalidOperationException>(() => ParticleRegistry.Register(new TestBadEmissivityParticle()));
+
+            Assert.AreEqual(before, ParticleRegistry.Count);
+        }
+
+        [Test]
         public void Heat_RadiativeLossCapsHeatedCellTemperature()
         {
             // 持续注入功率 P 的格子应收敛到 T = P / λ，而不是无限升温：
@@ -577,58 +629,6 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void CanDisplace_RejectsOutOfBoundsTarget()
-        {
-            ParticleWorld world = NewWorld();
-            world.Set(0, 0, TestTypes.GrainId);
-
-            // 越界目标必须为 false：GetCell 把越界当空气，若不显式拒绝会误判为「可以移动」，而 Swap 会静默失败。
-            Assert.IsFalse(ParticleRules.CanDisplace(world, 0, 0, -1, 0));
-            Assert.IsFalse(ParticleRules.CanDisplace(world, 0, 0, 0, -1));
-            Assert.IsTrue(ParticleRules.CanDisplace(world, 0, 0, 1, 0));
-        }
-
-        [Test]
-        public void TryDiagonalFall_ClearanceIsTheStackHeightThatMakesASlopeStick()
-        {
-            // 局面：可动粒子在 (2,2)，两条斜下 (1,1)/(3,1) 都空，但它们正下方 (1,0)/(3,0) 被静态格顶着。
-            // 落点只有 1 格净空 —— 沙（clearance 1）会滑，土（clearance 2）视为稳定。
-            ParticleWorld sandLike = NewWorld();
-            sandLike.Set(2, 2, TestTypes.SolidFlowId);
-            sandLike.Set(1, 0, TestTypes.StaticId);
-            sandLike.Set(3, 0, TestTypes.StaticId);
-
-            Assert.IsTrue(ParticleRules.TryDiagonalFall(sandLike, 2, 2, 1), "落点可进入就该滑（45° 安息角）");
-            Assert.IsTrue(sandLike.IsAir(2, 2));
-
-            ParticleWorld stoneLike = NewWorld();
-            stoneLike.Set(2, 2, TestTypes.SolidFlowId);
-            stoneLike.Set(1, 0, TestTypes.StaticId);
-            stoneLike.Set(3, 0, TestTypes.StaticId);
-
-            Assert.IsFalse(ParticleRules.TryDiagonalFall(stoneLike, 2, 2, 2), "落点下方被顶住时不该滑（更陡的安息角）");
-            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)stoneLike.GetCell(2, 2).typeId);
-
-            // 清掉一侧的顶托：那一侧净空 2 格，石头也该滑下去。
-            stoneLike.Clear(1, 0);
-
-            Assert.IsTrue(ParticleRules.TryDiagonalFall(stoneLike, 2, 2, 2));
-            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)stoneLike.GetCell(1, 1).typeId);
-            Assert.IsTrue(stoneLike.IsAir(2, 2));
-        }
-
-        [Test]
-        public void SlideClearance_MapsFrictionToIntegerReposeSlope()
-        {
-            Assert.AreEqual(1, ParticleRules.SlideClearance(0f), "摩擦度 0 = 1:1（45°，像沙）");
-            Assert.AreEqual(2, ParticleRules.SlideClearance(0.5f), "摩擦度 0.5 = 2:1（63°）");
-            Assert.AreEqual(10, ParticleRules.SlideClearance(0.9f), "摩擦度 0.9 = 10:1（84°，像石头）");
-            Assert.AreEqual(0, ParticleRules.SlideClearance(1f), "摩擦度 1 = 永不斜滑");
-            Assert.AreEqual(0, ParticleRules.SlideClearance(2f), "越界摩擦度按「永不斜滑」处理，不静默退化成 45°");
-
-            // 摩擦度越高，安息角越陡（净空非递减）——不会出现「摩擦更大反而更滑」的反转。
-            int previous = 1;
-        [Test]
         public void Light_DaylightHoldsAtTheLimitsOutsideTheTransitions()
         {
             // 亮 10 刻 / 暗 4 刻、过渡 2 刻（周期 14）。除白天首尾各 2 刻的坡道外，白天恒 1、夜里恒 0。
@@ -712,6 +712,58 @@ namespace TapTap2026.Tests
             Assert.AreEqual(255, (int)pixels[world.Index(2, 1)].a);
         }
 
+        [Test]
+        public void CanDisplace_RejectsOutOfBoundsTarget()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(0, 0, TestTypes.GrainId);
+
+            // 越界目标必须为 false：GetCell 把越界当空气，若不显式拒绝会误判为「可以移动」，而 Swap 会静默失败。
+            Assert.IsFalse(ParticleRules.CanDisplace(world, 0, 0, -1, 0));
+            Assert.IsFalse(ParticleRules.CanDisplace(world, 0, 0, 0, -1));
+            Assert.IsTrue(ParticleRules.CanDisplace(world, 0, 0, 1, 0));
+        }
+
+        [Test]
+        public void TryDiagonalFall_ClearanceIsTheStackHeightThatMakesASlopeStick()
+        {
+            // 局面：可动粒子在 (2,2)，两条斜下 (1,1)/(3,1) 都空，但它们正下方 (1,0)/(3,0) 被静态格顶着。
+            // 落点只有 1 格净空 —— 沙（clearance 1）会滑，土（clearance 2）视为稳定。
+            ParticleWorld sandLike = NewWorld();
+            sandLike.Set(2, 2, TestTypes.SolidFlowId);
+            sandLike.Set(1, 0, TestTypes.StaticId);
+            sandLike.Set(3, 0, TestTypes.StaticId);
+
+            Assert.IsTrue(ParticleRules.TryDiagonalFall(sandLike, 2, 2, 1), "落点可进入就该滑（45° 安息角）");
+            Assert.IsTrue(sandLike.IsAir(2, 2));
+
+            ParticleWorld stoneLike = NewWorld();
+            stoneLike.Set(2, 2, TestTypes.SolidFlowId);
+            stoneLike.Set(1, 0, TestTypes.StaticId);
+            stoneLike.Set(3, 0, TestTypes.StaticId);
+
+            Assert.IsFalse(ParticleRules.TryDiagonalFall(stoneLike, 2, 2, 2), "落点下方被顶住时不该滑（更陡的安息角）");
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)stoneLike.GetCell(2, 2).typeId);
+
+            // 清掉一侧的顶托：那一侧净空 2 格，石头也该滑下去。
+            stoneLike.Clear(1, 0);
+
+            Assert.IsTrue(ParticleRules.TryDiagonalFall(stoneLike, 2, 2, 2));
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)stoneLike.GetCell(1, 1).typeId);
+            Assert.IsTrue(stoneLike.IsAir(2, 2));
+        }
+
+        [Test]
+        public void SlideClearance_MapsFrictionToIntegerReposeSlope()
+        {
+            Assert.AreEqual(1, ParticleRules.SlideClearance(0f), "摩擦度 0 = 1:1（45°，像沙）");
+            Assert.AreEqual(2, ParticleRules.SlideClearance(0.5f), "摩擦度 0.5 = 2:1（63°）");
+            Assert.AreEqual(10, ParticleRules.SlideClearance(0.9f), "摩擦度 0.9 = 10:1（84°，像石头）");
+            Assert.AreEqual(0, ParticleRules.SlideClearance(1f), "摩擦度 1 = 永不斜滑");
+            Assert.AreEqual(0, ParticleRules.SlideClearance(2f), "越界摩擦度按「永不斜滑」处理，不静默退化成 45°");
+
+            // 摩擦度越高，安息角越陡（净空非递减）——不会出现「摩擦更大反而更滑」的反转。
+            int previous = 1;
             for (int step = 0; step < 10; step++)
             {
                 int clearance = ParticleRules.SlideClearance(step / 10f);
@@ -1126,7 +1178,7 @@ namespace TapTap2026.Tests
         [Test]
         public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
         {
-            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
+            var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
             var bad = new ParticleType(1, badInfo, null, null, null);
 
             Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));
