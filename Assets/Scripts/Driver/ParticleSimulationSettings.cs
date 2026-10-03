@@ -31,9 +31,13 @@ namespace TapTap2026.Game
                  "越小热越憋在源头，竖直温差越大。")]
         [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _conductivity = HeatMap.DefaultConductivity;
 
-        [Tooltip("顶行向虚空散热的系数：温度越高散得越快，是热量离开世界的唯一出口。" +
-                 "0 = 封闭系统（光照下会无限升温）。")]
+        [Tooltip("顶行向虚空散热的系数：温度越高散得越快。0 = 关闭顶行散热。")]
         [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _voidHeatLoss = HeatMap.DefaultVoidHeatLoss;
+
+        [Tooltip("全格辐射散热系数：任何非环境温度的格子每 tick 流失 RadiativeLoss×T 的热量。" +
+                 "有了它，地面温度封顶在 光照强度/λ（5/0.05 ≈ 100°），大气被地面传导加热后逐格平衡。" +
+                 "0 = 关闭（热量只从顶行离开，地面温度会随网格高度疯涨）。")]
+        [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _radiativeLoss = 0.05f;
 
         public int Width
         {
@@ -77,6 +81,12 @@ namespace TapTap2026.Game
         public float VoidHeatLoss
         {
             get { return Mathf.Clamp(_voidHeatLoss, 0f, HeatMap.MaxConductivity); }
+        }
+
+        /// <summary>全格辐射散热系数，夹在 <c>[0, HeatMap.MaxConductivity]</c>。</summary>
+        public float RadiativeLoss
+        {
+            get { return Mathf.Clamp(_radiativeLoss, 0f, HeatMap.MaxConductivity); }
         }
     }
 }

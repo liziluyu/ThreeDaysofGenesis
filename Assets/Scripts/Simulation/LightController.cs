@@ -3,7 +3,7 @@ using System;
 namespace TapTap2026.Simulation
 {
     /// <summary>
-    /// 光照控制器：一个按时序通断的光源，照亮时向**每一列最上面的固体粒子**注入热量。
+    /// 光照控制器：一个按时序通断的光源，照亮时向**每一列最上面的非气体粒子**（固体或液体——光打到水面就停）注入热量。
     /// 纯 C#、无 Unity 依赖，由 <see cref="ParticleWorld.Step"/> 每 tick 驱动一次（与模拟同频、确定性）。
     /// </summary>
     /// <remarks>
@@ -14,10 +14,11 @@ namespace TapTap2026.Simulation
     /// <item><see cref="DarkTicks"/> = 0：一直照亮（只有白天）。</item>
     /// <item><see cref="Enabled"/> = false：总开关关闭，不注入热量、相位也不推进。</item>
     /// </list>
-    /// <para>照亮时对每个 x 从 (x, Height-1) 向下扫，遇到第一个带 <see cref="ParticleTags.Solid"/> 标签的格，
-    /// 就往那格加 <see cref="Intensity"/> 的热量 Q（不是温度——升温多少还取决于该物质的热容）。</para>
-    /// <para>简化：一次性均匀照到整个网格，没有方向、没有遮挡衰减（光会穿过上层的液体 / 气体照到下面的固体），
-    /// 也不按距离或角度衰减。需要阴影 / 衰减再另行扩展。</para>
+    /// <para>照亮时对每个 x 从 (x, Height-1) 向下扫，遇到第一个带 <see cref="ParticleTags.Solid"/> 或
+    /// <see cref="ParticleTags.Liquid"/> 标签的格，就往那格加 <see cref="Intensity"/> 的热量 Q
+    /// （不是温度——升温多少还取决于该物质的热容）。光只穿过气体：海洋是表面被晒热、表面蒸发，
+    /// 而不是被穿透过热海底。</para>
+    /// <para>简化：一次性均匀照到整个网格，没有方向、也不按距离或角度衰减。需要阴影 / 衰减再另行扩展。</para>
     /// </remarks>
     public sealed class LightController
     {
@@ -48,7 +49,7 @@ namespace TapTap2026.Simulation
             set { _darkTicks = value < 0 ? 0 : value; }
         }
 
-        /// <summary>光照强度：亮相位每刻向每列最上面的固体粒子注入的热量 Q。NaN / 无穷被归零。</summary>
+        /// <summary>光照强度：亮相位每刻向每列最上面的非气体粒子注入的热量 Q。NaN / 无穷被归零。</summary>
         public float Intensity
         {
             get { return _intensity; }
@@ -87,7 +88,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 推进一 tick：照亮时向每列最上面的固体粒子注入 <see cref="Intensity"/> 热量。
+        /// 推进一 tick：照亮时向每列最上面的非气体粒子（固体或液体）注入 <see cref="Intensity"/> 热量。
         /// 由 <see cref="ParticleWorld.Step"/> 调用；正常玩法不要手动调用，否则会额外施热、破坏确定性。
         /// </summary>
         public void Step(ParticleWorld world)
@@ -120,7 +121,7 @@ namespace TapTap2026.Simulation
             {
                 for (int y = height - 1; y >= 0; y--)
                 {
-                    if (ParticleRules.IsSolid(world, x, y))
+                    if (ParticleRules.BlocksLight(world, x, y))
                     {
                         heat.AddHeat(x, y, amount);
                         break;
