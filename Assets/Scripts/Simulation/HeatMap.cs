@@ -80,7 +80,7 @@ namespace TapTap2026.Simulation
                 throw new ArgumentException("cells 长度必须等于 width * height。", nameof(cells));
             }
 
-            if (types == null || types.Length == 0)
+            if (types == null || types.Length == 0 || types[0] != null)
             {
                 throw new ArgumentException("types 不能为空，且下标 0（空气）必须为 null。", nameof(types));
             }
