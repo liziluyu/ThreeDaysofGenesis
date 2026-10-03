@@ -9,7 +9,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 ## Architecture & Data Flow
 
 - **分层**（程序集边界即架构边界）：
-  - `TapTap2026.Simulation`（`Assets/Scripts/Simulation/`）：纯模拟，**不引用任何渲染对象**。扁平 `Cell[]`（4 字节/格）+ `(x,y)` 直接寻址；类型行为经全局静态注册表（`ParticleRegistry`）以 `typeId → 委托` 直调，热路径零分配、零虚分派。世界另持一张与网格同形的热图 `HeatMap`（每格存热量 Q，`float`，同样 `y*Width+x` 寻址）与一个光照控制器 `LightController`。温度是导出量 `T = Q / 类型热容`；热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）；`Step` 每 tick 在粒子扫描后自动做一次全格四邻热传导（界内守恒），并让**网格顶行向界外虚空散热**（`HeatMap.VoidHeatLoss`，热量的唯一出口），再由光照向「每列最上面的固体」施热——因此持续受热会收敛到稳态 `T ≈ 输入功率 / VoidHeatLoss`，而非无限升温。粒子经 `world.Heat.GetTemperature/GetHeat/AddHeat` 查改温度。
+  - `TapTap2026.Simulation`（`Assets/Scripts/Simulation/`）：纯模拟，**不引用任何渲染对象**。扁平 `Cell[]`（4 字节/格）+ `(x,y)` 直接寻址；类型行为经全局静态注册表（`ParticleRegistry`）以 `typeId → 委托` 直调，热路径零分配、零虚分派。世界另持一张与网格同形的热图 `HeatMap`（每格存热量 Q，`float`，同样 `y*Width+x` 寻址）与一个光照控制器 `LightController`。温度是导出量 `T = Q / 类型热容`；热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）；`Step` 每 tick 在粒子扫描后自动做一次全格四邻热传导（传导界内守恒）+ 两条散热路（顶行向虚空 `VoidHeatLoss`、全格辐射 `RadiativeLoss`），再由光照向「每列最上面的非气体粒子（固体或液体——光打到水面就停）」施热——持续受热的格子就近收敛到 `T ≈ 输入功率 / RadiativeLoss`。粒子经 `world.Heat.GetTemperature/GetHeat/AddHeat` 查改温度。
   - `TapTap2026.Game`（`Assets/Scripts/Driver/` + `Assets/Scripts/Rendering/`）：引用 Simulation。`ParticleSimulationDriver`（MonoBehaviour）用固定步长累加器推进 `Step()`，并唯一决定上屏时机；`ParticleRenderer` 把 `Cell[]` 经 `ParticlePixelBuffer.Fill` 映射成一张 `Texture2D`，整个网格只有 1 个渲染对象。
   - `TapTap2026.Editor`（`Assets/Scripts/Editor/`，仅 Editor 平台）：编辑器工具，当前只有 `SystemProxyGuard`——系统代理 Mono 解析失败时把 `WebRequest.DefaultWebProxy` 钉为直连（见 MCP 一节）。
 - **跨类型规则只看标签不看 typeId**：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。新增粒子类型 = 一个文件 + `ParticleRegistration.RegisterAll()` 追加一行 + `ParticleIds` 加一个字段（只能追加，顺序是存档兼容性的一部分）。流程与评审清单见文档 §11。
@@ -25,8 +25,8 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 显式 `Reseed()` 搭演示容器、`ParticleEditor` 左键刷当前粒子、滚轮调半径 1..10、右键切换类型、鼠标旁显示当前类型与半径、`ParticleLightDriver` 把光照的开关/亮暗刻数/强度接到 `world.Light`）。|
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
 |`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
-|`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用；含网格尺寸、tick 频率、`_conductivity`/`_voidHeatLoss` 热力学参数）。|
-|`Assets/Tests/EditMode/`|EditMode 测试（64 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）。|
+|`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用；含网格尺寸、tick 频率、`_conductivity`/`_voidHeatLoss`/`_radiativeLoss` 热力学参数）。|
+|`Assets/Tests/EditMode/`|EditMode 测试（76 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）+ `WaterParticleTests` / `WeatherParticleTests`（水与气象）。|
 |`docs/`|设计文档（`ParticleTypeInterface.md`）。在 `Assets/` 之外，Unity 不导入，无需 `.meta`。|
 |`Assets/Settings/`|URP 配置：`UniversalRP.asset`、`Renderer2D.asset` 等。|
 |`Assets/Plugins/NuGet/`|MCP 插件的 NuGet 依赖 DLL（LFS 跟踪），由插件安装器生成，**不要手改**。|
@@ -64,7 +64,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 - **异步**：无 UniTask，2022.3 无 `Awaitable`；用协程。`Task`/`async` 仅限主线程延续、禁止阻塞。
 - **粒子类型作者约束**（详见 `docs/ParticleTypeInterface.md`，违者拒收）：一个类型一个文件、放 `Simulation/Particles/`、`public sealed`、非 MonoBehaviour；`OnUpdate` 内无分配/LINQ/字符串/`Time.*`；先判断后写、写后立即 return；跨类型判断只走 `ParticleTags`，不特判 typeId/DebugName；必须给有限正数的 `HeatCapacity`（热容），读温度用 `world.Heat.GetTemperature`、改热量用 `AddHeat`/`SetHeat`，不要自己重复做热传导。
 - **错误处理**：不静默吞异常；`Debug.LogError`/`LogException` 报运行期失败，`LogWarning` 报可恢复降级。
-- **配置**：全局模拟参数走 `ParticleSimulationSettings` 资产（`Assets/Data/` 下创建），不在 MonoBehaviour 里硬编码。热力学两个系数（`_conductivity` 竖直温差陡峭度、`_voidHeatLoss` 整体冷热）也在这里；`ParticleSimulationDriver` 每帧写回 `world.Heat`。
+- **配置**：全局模拟参数走 `ParticleSimulationSettings` 资产（`Assets/Data/` 下创建），不在 MonoBehaviour 里硬编码。热力学三个系数（`_conductivity` 传导、`_voidHeatLoss` 顶行虚空散热、`_radiativeLoss` 全格辐射）也在这里；`ParticleSimulationDriver` 每帧写回 `world.Heat`。
 
 ## Important Files
 
@@ -90,8 +90,8 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 
 ## Testing & QA
 
-- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **64 个测试**全绿。
-- 约定：测试用**隔离类型表**（`new ParticleWorld(w, h, seed, types)` 四参构造 + 测试专用 `ParticleType[]`），不污染全局注册表；生产注册路径的测试（`RegisterAll` 回填）集中在 `SandStoneParticleTests`。
+- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **84 个测试**（`ParticleWorldTests` 64 + `SandStoneParticleTests` 2 + `WaterParticleTests` 6 + `WeatherParticleTests` 12）。
+- 约定：测试用**隔离类型表**（`new ParticleWorld(w, h, seed, types)` 四参构造 + 测试专用 `ParticleType[]`），不污染全局注册表；生产注册路径的测试（`RegisterAll` 回填）集中在 `SandStoneParticleTests` 与 `WeatherParticleTests`（跨类型相变依赖 `ParticleIds` 回填，必须走生产表）。
 - **运行方式**（按可用性排序）：MCP `tests-run`（编辑器在线）→ Test Runner 窗口 → 批处理命令（编辑器离线）。
 - PlayMode：`testables` 未配置、`playModeTestRunnerEnabled: 0`，暂不支持。
 - 覆盖率：未安装未配置。

@@ -462,9 +462,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _driver: {fileID: 1926363750}
   _enabled: 1
-  _litTicks: 60
-  _darkTicks: 60
-  _intensity: 5
+  _litTicks: 600
+  _darkTicks: 600
+  _intensity: 10
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

@@ -119,7 +119,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 光照控制器：按时序通断，照亮时向每列最上面的固体粒子注入热量。
+        /// 光照控制器：按时序通断，照亮时向每列最上面的非气体粒子（固体或液体——光打到水面就停）注入热量。
         /// 每 tick 由 <see cref="Step"/> 驱动；游戏侧通过 <c>world.Light.Enabled</c> 等属性配置。
         /// </summary>
         public LightController Light
@@ -339,7 +339,7 @@ namespace TapTap2026.Simulation
         /// <remarks>
         /// 一个 tick 分三段：<b>①粒子扫描</b>（各 <c>OnUpdate</c> 可读写热图）→
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
-        /// <b>③光照</b>（<see cref="LightController.Step"/>，向每列最上面的固体施热）。
+        /// <b>③光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
         /// 因此光照 / 传导注入的热量会在下一个 tick 被粒子读到、并参与下一轮扩散。
         /// </remarks>
         public void Step()
@@ -376,7 +376,7 @@ namespace TapTap2026.Simulation
 
                 _tick++;
 
-                // 网格扫描之后：先做一次全格四邻热传导，再让光照向每列最上面的固体施热。
+                // 网格扫描之后：先做一次全格四邻热传导（含辐射/虚空散热），再让光照向每列最上面的非气体粒子施热。
                 // 两步都在 try 内，异常（如某类型 OnUpdate 抛出）时本 tick 的 _tick 不自增，
                 // 传导 / 光照一并不生效，与「异常后 particle 仍会在下一次 Step 被处理」的约定一致。
                 _heat.Step();

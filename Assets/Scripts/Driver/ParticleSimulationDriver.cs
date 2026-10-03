@@ -131,13 +131,26 @@ namespace TapTap2026.Game
             CreateWorld();
         }
 
-        /// <summary>按 <see cref="RequestedWidth"/>/<see cref="RequestedHeight"/> 建一个空世界，并清空累加器。</summary>
+        /// <summary>按 <see cref="RequestedWidth"/>/<see cref="RequestedHeight"/> 建世界并清空累加器，
+        /// 然后把所有空格填成大气粒子——风与对流需要空气本身是会动、携带热量的物质。
+        /// typeId 0 此后只作为「被抹除留下的真空」短暂出现，行为规则同样允许气体换入。</summary>
         private void CreateWorld()
         {
             ParticleSimulationSettings settings = Settings;
             _world = new ParticleWorld(RequestedWidth, RequestedHeight, settings.Seed);
             _accumulator = 0f;
             _stepsSincePresent = 0;
+
+            if (ParticleIds.Atmosphere != ParticleRegistry.AirTypeId)
+            {
+                for (int y = 0; y < _world.Height; y++)
+                {
+                    for (int x = 0; x < _world.Width; x++)
+                    {
+                        _world.Set(x, y, ParticleIds.Atmosphere);
+                    }
+                }
+            }
         }
 
         private void Start()
@@ -174,6 +187,7 @@ namespace TapTap2026.Game
             ParticleSimulationSettings current = Settings;
             heat.Conductivity = current.Conductivity;
             heat.VoidHeatLoss = current.VoidHeatLoss;
+            heat.RadiativeLoss = current.RadiativeLoss;
             heat.DebugHeatOverlay = _heatDebugOverlay;
             heat.DebugFullScaleTemperature = _heatDebugFullScale;
 

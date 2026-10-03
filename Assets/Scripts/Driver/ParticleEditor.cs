@@ -7,7 +7,7 @@ namespace TapTap2026.Game
     /// <summary>
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
-    /// **右键**在已注册的粒子类型间循环切换；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大。
+    /// **右键**在可投放类型间循环切换（只含材料类：固/液；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
@@ -193,7 +193,8 @@ namespace TapTap2026.Game
             GUI.Label(new Rect(x + 16f, y - 3f, 200f, 20f), _hudText);
         }
 
-        /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）与注册表尾部的空槽。</summary>
+        /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、以及所有 Gas 类型——
+        /// 蒸汽/云/大气是水循环的中间态，只能由相变产生，不该能用手刷出来。</summary>
         private static ushort[] CollectPlaceableTypes()
         {
             ParticleType[] types = ParticleRegistry.Types;
@@ -201,7 +202,7 @@ namespace TapTap2026.Game
             int count = 0;
             for (int i = 1; i < types.Length; i++)
             {
-                if (types[i] != null)
+                if (IsPlaceable(types[i]))
                 {
                     count++;
                 }
@@ -211,13 +212,18 @@ namespace TapTap2026.Game
             int index = 0;
             for (int i = 1; i < types.Length; i++)
             {
-                if (types[i] != null)
+                if (IsPlaceable(types[i]))
                 {
                     placeable[index++] = (ushort)i;
                 }
             }
 
             return placeable;
+        }
+
+        private static bool IsPlaceable(ParticleType type)
+        {
+            return type != null && (type.Info.Tags & ParticleTags.Gas) == 0;
         }
 
         /// <summary>选中第 <paramref name="index"/> 个可投放类型，并重建 HUD 文本。</summary>

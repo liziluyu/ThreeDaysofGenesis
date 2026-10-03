@@ -22,5 +22,17 @@ namespace TapTap2026.Simulation
 
         /// <summary>土壤。受重力的粉末，摩擦度 0.5 + 粘性 0.5（旁边有固体时约 3:1 的安息角）。</summary>
         public static ushort Soil;
+
+        /// <summary>水。受重力的液体（Liquid 标签）：下落 → 斜滑 → 横流摊平，无安息角；被固体沉穿。</summary>
+        public static ushort Water;
+
+        /// <summary>蒸汽。气体：浮力驱动（热升冷沉）；温度 ≤ 露点冷凝成云。</summary>
+        public static ushort Steam;
+
+        /// <summary>云滴。气体：悬浮漂移、缓慢下沉；碰并成雨（水），漂回暖区蒸回蒸汽。</summary>
+        public static ushort Cloud;
+
+        /// <summary>大气。气体：空气粒子化，浮力 + 热压流的载体（海陆风）。字段不叫 Air——Air 已被 typeId 0（空）占用。</summary>
+        public static ushort Atmosphere;
     }
 }

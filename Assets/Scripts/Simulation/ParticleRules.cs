@@ -62,6 +62,26 @@ namespace TapTap2026.Simulation
             return type != null && (type.Info.Tags & ParticleTags.Solid) != 0;
         }
 
+        /// <summary>(x,y) 是否挡住光（带 Solid 或 Liquid 标签）：光照只穿过气体与空，打到水面/地面即停。
+        /// 越界与空气均为 false。</summary>
+        public static bool BlocksLight(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            if (id == ParticleRegistry.AirTypeId)
+            {
+                return false;
+            }
+
+            ParticleType[] types = world.Types;
+            if (id >= types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = types[id];
+            return type != null && (type.Info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0;
+        }
+
         /// <summary>
         /// <paramref name="toX"/>,<paramref name="toY"/> 能否被 <paramref name="fromX"/>,<paramref name="fromY"/> 上的粒子占据。
         /// 空气可进入；静态格不可；否则比较类别标签，高 rank 可以置换低 rank（固体沉穿液体与气体，同类互不置换）。
@@ -288,7 +308,10 @@ namespace TapTap2026.Simulation
                     return false;
                 }
 
-                if (!world.IsAir(targetX, y))
+                // 落点判据是「能置换进去」而不是 IsAir：世界被大气粒子填满后没有 typeId 0 的格子，
+                // 用 IsAir 会让液体永远找不到落点而不再横流。水换进大气格 = 两者互换位置，
+                // 大气被挤到水原来的格子，之后靠浮力上浮。
+                if (!CanDisplace(world, x, y, targetX, y))
                 {
                     continue;
                 }
@@ -339,6 +362,170 @@ namespace TapTap2026.Simulation
             // 同 rank 的「穿行」只对流体（液/气）开放：固体不得横向钻过同类固体，
             // 否则会绕过「同类互不置换」，让固体穿过本该挡住它的同伴。
             return otherRank == selfRank && (selfTags & ParticleTags.Solid) == 0;
+        }
+
+        // ==================== 气体：浮力与上升（镜像下落系） ====================
+
+        /// <summary>(x,y) 是否是气体可以换入的格子：空（typeId 0）或任何带 <see cref="ParticleTags.Gas"/> 标签的格。
+        /// 同 rank 气体互相换位 = 混合，不走 <see cref="CanDisplace"/> 的 rank 规则。</summary>
+        public static bool IsGasOrEmpty(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            if (id == ParticleRegistry.AirTypeId)
+            {
+                return true;
+            }
+
+            ParticleType[] types = world.Types;
+            if (id >= types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = types[id];
+            return type != null && (type.Info.Tags & ParticleTags.Gas) != 0;
+        }
+
+        /// <summary>上一格是气体/空则交换，上升一格。</summary>
+        public static bool TryRise(ParticleWorld world, int x, int y)
+        {
+            int targetY = y + 1;
+            if (!world.IsInBounds(x, targetY) || !IsGasOrEmpty(world, x, targetY))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, x, targetY);
+            return true;
+        }
+
+        /// <summary>上方被挡住时尝试斜上方，左右顺序随机以消除方向偏置。</summary>
+        public static bool TryDiagonalRise(ParticleWorld world, int x, int y)
+        {
+            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            return leftFirst
+                ? TryRiseSide(world, x, y, -1) || TryRiseSide(world, x, y, 1)
+                : TryRiseSide(world, x, y, 1) || TryRiseSide(world, x, y, -1);
+        }
+
+        /// <summary>下一格是气体/空则交换，下沉一格（气体版的「下落」：同 rank 气体换位即混合）。</summary>
+        public static bool TrySink(ParticleWorld world, int x, int y)
+        {
+            int targetY = y - 1;
+            if (!world.IsInBounds(x, targetY) || !IsGasOrEmpty(world, x, targetY))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, x, targetY);
+            return true;
+        }
+
+        /// <summary>下方被挡住时尝试斜下方（气体版），左右顺序随机。</summary>
+        public static bool TryDiagonalSink(ParticleWorld world, int x, int y)
+        {
+            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            return leftFirst
+                ? TrySinkSide(world, x, y, -1) || TrySinkSide(world, x, y, 1)
+                : TrySinkSide(world, x, y, 1) || TrySinkSide(world, x, y, -1);
+        }
+
+        /// <summary>
+        /// 浮力运动：本格温度与四邻均温比较，热（> 均值 + <paramref name="epsilon"/>）则上升，
+        /// 冷（&lt; 均值 - epsilon）则下沉，否则不动。竖直被挡时走斜向。
+        /// 「热气上升、冷气下沉」——海陆风环流与对流的发动机。
+        /// </summary>
+        public static bool TryBuoyantStep(ParticleWorld world, int x, int y, float epsilon)
+        {
+            HeatMap heat = world.Heat;
+            float mean = (heat.GetTemperature(x - 1, y) + heat.GetTemperature(x + 1, y)
+                        + heat.GetTemperature(x, y - 1) + heat.GetTemperature(x, y + 1)) * 0.25f;
+            float self = heat.GetTemperature(x, y);
+
+            if (self > mean + epsilon)
+            {
+                return TryRise(world, x, y) || TryDiagonalRise(world, x, y);
+            }
+
+            if (self < mean - epsilon)
+            {
+                return TrySink(world, x, y) || TryDiagonalSink(world, x, y);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 水平热压流：左右邻居哪侧更热（差值超过 <paramref name="epsilon"/>）就往哪侧换一格——
+        /// 冷空气流向暖区（低空海风）。两侧都更热或都更冷时随机选一侧。
+        /// </summary>
+        public static bool TryThermalDrift(ParticleWorld world, int x, int y, float epsilon)
+        {
+            HeatMap heat = world.Heat;
+            float self = heat.GetTemperature(x, y);
+            bool leftWarmer = heat.GetTemperature(x - 1, y) > self + epsilon;
+            bool rightWarmer = heat.GetTemperature(x + 1, y) > self + epsilon;
+
+            if (leftWarmer == rightWarmer)
+            {
+                return false;
+            }
+
+            int direction = leftWarmer ? -1 : 1;
+            if (!IsGasOrEmpty(world, x + direction, y))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, x + direction, y);
+            return true;
+        }
+
+        /// <summary>随机水平漂移：向左或右（随机序）换一格气体/空。云的漂移、气体的混合用它。</summary>
+        public static bool TryRandomDrift(ParticleWorld world, int x, int y)
+        {
+            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            return leftFirst
+                ? TryDriftSide(world, x, y, -1) || TryDriftSide(world, x, y, 1)
+                : TryDriftSide(world, x, y, 1) || TryDriftSide(world, x, y, -1);
+        }
+
+        private static bool TryRiseSide(ParticleWorld world, int x, int y, int deltaX)
+        {
+            int targetX = x + deltaX;
+            int targetY = y + 1;
+            if (!world.IsInBounds(targetX, targetY) || !IsGasOrEmpty(world, targetX, targetY))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, targetX, targetY);
+            return true;
+        }
+
+        private static bool TrySinkSide(ParticleWorld world, int x, int y, int deltaX)
+        {
+            int targetX = x + deltaX;
+            int targetY = y - 1;
+            if (!world.IsInBounds(targetX, targetY) || !IsGasOrEmpty(world, targetX, targetY))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, targetX, targetY);
+            return true;
+        }
+
+        private static bool TryDriftSide(ParticleWorld world, int x, int y, int direction)
+        {
+            int targetX = x + direction;
+            if (!world.IsInBounds(targetX, y) || !IsGasOrEmpty(world, targetX, y))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, targetX, y);
+            return true;
         }
     }
 }

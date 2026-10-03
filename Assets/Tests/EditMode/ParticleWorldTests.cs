@@ -18,6 +18,14 @@ namespace TapTap2026.Tests
             TestTypes.ResetCounters();
         }
 
+        [TearDown]
+        public void TearDown()
+        {
+            // 长模拟测试会临时打开「忽略失败日志」（见 Stickiness_RaisesTheReposeSlopeOfAPile），
+            // 这里保证无论断言是否抛出都恢复默认，不泄漏到后续测试。
+            LogAssert.ignoreFailingMessages = false;
+        }
+
         private static ParticleWorld NewWorld(uint seed = 12345u)
         {
             return new ParticleWorld(W, H, seed, TestTypes.Table);
@@ -261,6 +269,42 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void Heat_RadiativeLossCoolsEveryCell_NotJustTheTopRow()
+        {
+            ParticleWorld world = new ParticleWorld(1, 3, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;   // 只看辐射这一条
+            world.Heat.VoidHeatLoss = 0f;   // 关掉顶行虚空，把两个散热口分开
+            world.Heat.RadiativeLoss = 0.05f;
+            world.Heat.SetHeat(0, 2, 100f); // 顶行
+            world.Heat.SetHeat(0, 1, 100f); // 内部行：虚空散热够不着，辐射必须够得着
+
+            world.Step();
+
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 1), 1e-4f, "内部行按 0.05 * T 辐射散热");
+            Assert.AreEqual(95f, world.Heat.GetHeat(0, 2), 1e-4f, "顶行同样辐射（与虚空散热叠加而非替代）");
+        }
+
+        [Test]
+        public void Heat_RadiativeLossCapsHeatedCellTemperature()
+        {
+            // 持续注入功率 P 的格子应收敛到 T = P / λ，而不是无限升温：
+            // 这是「地面被阳光晒到约 100° 就停」的微观机制。
+            ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0.05f;
+
+            for (int i = 0; i < 2000; i++)
+            {
+                // 先辐射、后注入：刚注入的热本 tick 不打折，平衡点才是精确的 P / λ。
+                world.Heat.Step();
+                world.Heat.AddHeat(0, 0, 5f);
+            }
+
+            Assert.AreEqual(100f, world.Heat.GetTemperature(0, 0), 1f, "稳态温度 ≈ 注入功率 / 辐射系数");
+        }
+
+        [Test]
         public void Heat_VoidHeatLossKeepsDrainingTheTopRowEveryTick()
         {
             ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
@@ -385,15 +429,20 @@ namespace TapTap2026.Tests
         // ============================== 光照 ==============================
 
         [Test]
-        public void Light_HeatsTheTopmostSolidOfEachColumn()
+        public void Light_HeatsTheTopmostNonGasOfEachColumn()
         {
             ParticleWorld world = NewWorld();
             world.Heat.Conductivity = 0f;
-            world.Set(0, 0, TestTypes.StaticId);  // 第 0 列：最上面的固体就是 (0,0)
+            world.Set(0, 0, TestTypes.StaticId);  // 第 0 列：最上面的非气体就是 (0,0)
             world.Set(1, 0, TestTypes.StaticId);  // 第 1 列：只有上面的 (1,3) 该被照到
             world.Set(1, 3, TestTypes.StaticId);
-            world.Set(2, 0, TestTypes.StaticId);  // 第 2 列：液体在 (2,2)，不是固体，不遮挡
-            world.Set(2, 2, TestTypes.LiquidId);
+            world.Set(2, 0, TestTypes.StaticId);  // 第 2 列：液体挡光——水面 (2,1) 被加热，下面的固体照不到
+            world.Set(2, 1, TestTypes.LiquidId);  // 贴着固体放：Step 先扫描后光照，悬空的液体会先下落
+            // 关笼子：TestLiquid 会斜滑 + 横流（maxFlowSpread 4），两侧不围死会在扫描阶段跑出第 2 列。
+            // (1,1) 不影响第 1 列（最上面的仍是 (1,3)）；第 3 列没有断言。
+            world.Set(1, 1, TestTypes.StaticId);
+            world.Set(3, 0, TestTypes.StaticId);
+            world.Set(3, 1, TestTypes.StaticId);
 
             world.Light.Enabled = true;
             world.Light.LitTicks = 100;
@@ -404,9 +453,10 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(world.Light.IsLit);
             Assert.AreEqual(7f, world.Heat.GetHeat(0, 0), 1e-4f);
-            Assert.AreEqual(7f, world.Heat.GetHeat(1, 3), 1e-4f, "取每列最上面的固体");
+            Assert.AreEqual(7f, world.Heat.GetHeat(1, 3), 1e-4f, "取每列最上面的非气体");
             Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(1, 0), 1e-4f, "下方的固体不会被照到");
-            Assert.AreEqual(7f, world.Heat.GetHeat(2, 0), 1e-4f, "液体 / 气体不遮挡，照到下面的固体");
+            Assert.AreEqual(7f, world.Heat.GetHeat(2, 1), 1e-4f, "液体挡光：水面被加热（海洋表面蒸发的前提）");
+            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(2, 0), 1e-4f, "水下的固体照不到");
         }
 
         [Test]
@@ -1149,6 +1199,12 @@ namespace TapTap2026.Tests
         [Test]
         public void Stickiness_RaisesTheReposeSlopeOfAPile()
         {
+            // 本测试跑 ~27 s 的真实模拟，期间 Unity-MCP 插件掉线会打一条 Error 日志，
+            // 测试框架会把它当成「未处理的失败日志」而误判本测试失败（断言其实全过）。
+            // 该日志与模拟无关，因此在测试窗口内忽略失败日志；[TearDown] 会恢复默认。
+            // 彻底消除应修 MCP 令牌（见 AGENTS.md 的 MCP 一节）。
+            LogAssert.ignoreFailingMessages = true;
+
             const int width = 81;
             const int height = 90;
             const int grains = 600;

@@ -12,7 +12,7 @@ namespace TapTap2026.Game
     /// <para>每帧把字段写回 <c>world.Light</c>：运行时在 Inspector 改参数即时生效；
     /// 世界因改尺寸被重建（<see cref="ParticleSimulationDriver.Resize"/>）后也会自动重新应用。</para>
     /// <para>通断是占空比循环：亮 <see cref="LitTicks"/> 刻 → 暗 <see cref="DarkTicks"/> 刻 → 循环。
-    /// 亮的每一刻向每一列最上面的固体注入 <see cref="Intensity"/> 的热量。</para>
+    /// 亮的每一刻向每一列最上面的非气体粒子（固体或液体——光打到水面就停）注入 <see cref="Intensity"/> 的热量。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleLightDriver : MonoBehaviour
@@ -28,7 +28,7 @@ namespace TapTap2026.Game
         [Tooltip("暗相位持续刻数。0 = 一直照亮（只有白天）。")]
         [SerializeField, Min(0)] private int _darkTicks = 60;
 
-        [Tooltip("亮度：亮相位每刻向「每一列最上面的固体」注入的热量 Q。升温多少取决于该物质的热容。")]
+        [Tooltip("亮度：亮相位每刻向「每一列最上面的非气体粒子（固体或液体）」注入的热量 Q。升温多少取决于该物质的热容。")]
         [SerializeField] private float _intensity = 5f;
 
         /// <summary>当前生效的光照开关（Inspector 值）。</summary>

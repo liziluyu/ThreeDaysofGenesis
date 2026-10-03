@@ -17,14 +17,16 @@ namespace TapTap2026.Simulation
     /// 每对相邻格按 <c>ΔQ = Conductivity * (T_邻 - T_本)</c> 交换热量，两格大小相等方向相反——
     /// 所以**界内是守恒的**，热量只是在格与格之间搬家。
     /// 扩散用的是本 tick 开始时的温度场（先算差、再整体写回），与扫描顺序无关、结果确定。</para>
-    /// <para>散热：同一次 <see cref="Step"/> 里，最上面一行还向**界外上方的虚空**流失热量
-    /// （<c>ΔQ = -VoidHeatLoss * T</c>，虚空恒为 <see cref="AmbientHeat"/>）。
-    /// 这是热量离开世界的唯一出口——没有它，光照注入的热只增不减；
-    /// 有它之后，持续受热的世界会收敛到稳态温度 <c>T ≈ 输入功率 / VoidHeatLoss</c>。</para>
-    /// <para>简化 / 不完美：单一全局导热系数，不区分材料导热率；无对流、无相变潜热；
-    /// 散热只发生在网格顶行（不是任意暴露表面）；<c>Q</c> 不钳制（负值表示冷）。这些留给具体粒子类型自行实现。</para>
-    /// <para>稳定性：显式扩散要求 <c>(Conductivity * 邻居数 + VoidHeatLoss) / 热容 &lt; 2</c>。
-    /// 两者上限都是 <see cref="MaxConductivity"/> = 0.24，配合热容 ≳ 0.5 的取值即可稳定；
+    /// <para>散热：同一次 <see cref="Step"/> 里有两条并存的散热路——
+    /// ① 最上面一行向**界外上方的虚空**流失热量（<c>ΔQ = -VoidHeatLoss * T</c>，虚空恒为 <see cref="AmbientHeat"/>）；
+    /// ② <b>全格辐射</b>（<c>ΔQ = -RadiativeLoss * T</c>，默认关闭，生产由 Settings 资产给 0.05）——
+    /// 任何非环境温度的格子都在向外散热。有辐射后，持续受热的格子就近收敛到
+    /// <c>T ≈ 输入功率 / RadiativeLoss</c>（光照 5、λ 0.05 ⇒ 地面约 100°），
+    /// 地面温度不再随网格高度疯涨，大气被地面传导加热、自身辐射冷却而逐格平衡。</para>
+    /// <para>简化 / 不完美：单一全局导热系数，不区分材料导热率；无对流、无相变潜热；辐射是线性近似（真实是 T⁴）；
+    /// 虚空散热只发生在网格顶行（不是任意暴露表面）；<c>Q</c> 不钳制（负值表示冷）。这些留给具体粒子类型自行实现。</para>
+    /// <para>稳定性：显式扩散要求 <c>(Conductivity * 邻居数 + VoidHeatLoss + RadiativeLoss) / 热容 &lt; 2</c>。
+    /// 各系数上限都是 <see cref="MaxConductivity"/> = 0.24，配合热容 ≳ 0.5 的取值即可稳定；
     /// 若把热容设得极小又拉满导热，会看到温度来回振荡。</para>
     /// </remarks>
     public sealed class HeatMap
@@ -44,6 +46,10 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="VoidHeatLoss"/> 的默认值。</summary>
         public const float DefaultVoidHeatLoss = 0.1f;
 
+        /// <summary><see cref="RadiativeLoss"/> 的默认值。代码默认 0（关闭，保持旧行为与既有热测试契约）；
+        /// 生产值由 <c>ParticleSimulationSettings</c> 资产注入（当前 0.05）。</summary>
+        public const float DefaultRadiativeLoss = 0f;
+
         /// <summary><see cref="DebugFullScaleTemperature"/> 的默认值。</summary>
         public const float DefaultDebugFullScaleTemperature = 10f;
 
@@ -57,6 +63,7 @@ namespace TapTap2026.Simulation
         private float[] _scratch;
         private float _conductivity = DefaultConductivity;
         private float _voidHeatLoss = DefaultVoidHeatLoss;
+        private float _radiativeLoss = DefaultRadiativeLoss;
 
         /// <param name="width">宽度（格），范围 <c>1..ParticleWorld.MaxSide</c>。</param>
         /// <param name="height">高度（格），范围 <c>1..ParticleWorld.MaxSide</c>。</param>
@@ -144,6 +151,19 @@ namespace TapTap2026.Simulation
         {
             get { return _voidHeatLoss; }
             set { _voidHeatLoss = value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value); }
+        }
+
+        /// <summary>
+        /// 全格辐射散热系数（无量纲），范围 <c>[0, <see cref="MaxConductivity"/>]</c>；0 = 关闭。
+        /// 任何温度不为环境值的格子都在向外辐射：<c>ΔQ = -RadiativeLoss × T</c>，每格每 tick 都漏。
+        /// 这是与顶行虚空散热并存的第二个热量出口：有了它，被持续加热的格子就近收敛到
+        /// <c>T ≈ 输入功率 / RadiativeLoss</c>（例如光照 5、λ 0.05 ⇒ 地面约 100°），
+        /// 地面温度不再随网格高度疯涨；大气被地面传导加热、自身辐射冷却，逐格收敛到平衡。
+        /// </summary>
+        public float RadiativeLoss
+        {
+            get { return _radiativeLoss; }
+            set { _radiativeLoss = value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value); }
         }
 
         /// <summary>
@@ -246,15 +266,16 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 一次全格四邻热传导 + 顶行向虚空散热。由 <see cref="ParticleWorld.Step"/> 每 tick 调用一次，
+        /// 一次全格四邻热传导 + 顶行向虚空散热 + 全格辐射散热。由 <see cref="ParticleWorld.Step"/> 每 tick 调用一次，
         /// 粒子类型不需要、也不应该自己调用（否则重复扩散）。
-        /// <see cref="Conductivity"/> 与 <see cref="VoidHeatLoss"/> 都为 0 时是空操作。
+        /// <see cref="Conductivity"/>、<see cref="VoidHeatLoss"/> 与 <see cref="RadiativeLoss"/> 都为 0 时是空操作。
         /// </summary>
         public void Step()
         {
             float conductivity = _conductivity;
             float voidLoss = _voidHeatLoss;
-            if (conductivity <= 0f && voidLoss <= 0f)
+            float radiativeLoss = _radiativeLoss;
+            if (conductivity <= 0f && voidLoss <= 0f && radiativeLoss <= 0f)
             {
                 return;
             }
@@ -303,7 +324,9 @@ namespace TapTap2026.Simulation
                         delta += heat[i + width] * inverseCapacity[i + width] - selfTemperature;
                     }
 
-                    float updated = heat[i] + conductivity * delta;
+                    // 全格辐射：任何非环境温度的格子都在向外散热（斯特藩定律的线性近似），
+                    // 让被加热的格子就近收敛到 输入/λ，而不是只能靠顶行把热「推」出世界。
+                    float updated = heat[i] + conductivity * delta - radiativeLoss * selfTemperature;
 
                     // 顶行向虚空散热：界外上方是恒温 AmbientHeat 的无限热库，热量只出不进。
                     // 与传导独立（不乘 conductivity），否则就失去「独立于导热率」的意义。

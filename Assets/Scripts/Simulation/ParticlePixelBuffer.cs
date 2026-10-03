@@ -64,7 +64,9 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>单格的静态颜色：空气 / 未注册 id / 空槽位 → 背景色，否则查该类型调色板。</summary>
+        /// <summary>单格的静态颜色：空气 / 未注册 id / 空槽位 → 背景色，否则查该类型调色板。
+        /// 调色板颜色 alpha == 0 视为「透明粒子」→ 也显示背景色（运行期材质不做 alpha 混合，
+        /// 透明只能在映射层表达；热力叠加仍会在此基础上把热格染红——隐形大气因此能当风的可视化层）。</summary>
         private static Color32 BaseColor(Cell cell, ParticleType[] types, Color32 background)
         {
             ushort id = cell.typeId;
@@ -81,7 +83,8 @@ namespace TapTap2026.Simulation
 
             Color32[] palette = type.Info.Palette;
             int shade = cell.shade;
-            return shade < palette.Length ? palette[shade] : palette[0];
+            Color32 color = shade < palette.Length ? palette[shade] : palette[0];
+            return color.a == 0 ? background : color;
         }
     }
 }
