@@ -124,7 +124,7 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// 与网格同形的热图（每格一个热量 Q），世界持有并随世界重建。
         /// 热量**由物质携带**：<see cref="Swap"/> 会把 Q 一起搬走；<see cref="Set"/> / <see cref="Clear"/>
-        /// 换上的是新物质，其热量重置为环境值。温度是导出量（<c>T = Q / C</c>）。
+        /// 换上的新物质继承该格原有热量（旧物质离场，热就地留给新物质）。温度是导出量（<c>T = Q / C</c>）。
         /// 每逻辑帧由 <see cref="StepLogic"/> 做一次全格四邻热传导；粒子类型通过它查询 / 修改任意位置的温度与热量。
         /// </summary>
         public HeatMap Heat
@@ -332,7 +332,7 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// <see cref="Swap"/> 之后的绝热直减结算：<paramref name="index"/> 上的物质刚从 (x, y - Δy) 搬到 (x, y)，
         /// 若它是气体则按 <c>ΔQ = -AdiabaticLapse × Δy × C</c> 调整热量（上升冷却、下沉增温）。
-        /// C 取该类型的热容；空气（typeId 0）用 <see cref="HeatMap.AirHeatCapacity"/>。水平位移 Δy = 0 时直接返回。
+        /// C 取**该格**热容（类型热容 + 湿度附加，见 <see cref="HeatMap.GetCapacityAt(int)"/>）。水平位移 Δy = 0 时直接返回。
         /// </summary>
         /// <remarks>
         /// 热量按**位温**守恒的近似兑现：气块在界内竖直移动时 Q 增减，而不是把 Q 原样搬走。
@@ -352,9 +352,7 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            float capacity = typeId == ParticleRegistry.AirTypeId
-                ? HeatMap.AirHeatCapacity
-                : _types[typeId].Info.HeatCapacity;
+            float capacity = _heat.GetCapacityAt(index);
             _heat.AddHeat(x, y, -_heat.AdiabaticLapse * deltaY * capacity);
         }
 
@@ -365,7 +363,7 @@ namespace TapTap2026.Simulation
         /// 执行顺序严格为：读受害者 → 受害者 <c>OnKill(world, x, y, typeId)</c>（此刻网格上仍是受害者本体）
         /// → 写入新格（typeId / flags = 当前标记 / shade 重新抽样）→ 新类型 <c>OnSpawn</c>。
         /// 因此 <c>OnKill</c> 内对本格的写会被随后写入的新格覆盖，残留物必须写到邻居格。
-        /// 换上的是**全新物质**：旧热随旧物质离场，新物质从环境热量开始；目标换成非气体（固/液）时，
+        /// 换上的是**全新物质**：旧物质离场，但它的热就地留给新物质（继承该格原有热量）；目标换成非气体（固/液）时，
         /// 旧格的水汽先由 <see cref="EvacuateHumidity"/> 推给四邻气体格再清零（推不掉则留下，守恒优先于不变量）。
         /// 同类型重复 Set 是空操作，不触发任何钩子、不消耗随机数。
         /// </remarks>
@@ -403,8 +401,8 @@ namespace TapTap2026.Simulation
             cell.typeId = typeId;
             cell.flags = _stamp;
 
-            // 新物质替换掉旧物质：热由物质携带，旧热随旧物质离场，新物质从环境热量开始。
-            _heat.ResetHeatAt(index);
+            // 新物质继承该格原有热量：旧物质离场，但它的热视作就地留给了新物质（新生成的有机物
+            // 不会被拍成 0°——例如夜里发芽的草继承暖空气的 Q，不会当帧冻死）。相变要带走自己的热时用 SetPhase。
 
             // 水汽也是旧物质的一部分：目标是非气体（固/液）时，固/液不持有湿度，先把本格水汽推给四邻
             // 气体格再清零（推不掉则留在原地，守恒优先，见 EvacuateHumidity）。目标仍是气体则按
@@ -463,7 +461,7 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // 走 SetPhase：腐殖质是新物质从环境热量开始，且再触发不了本规则（新类型非有机）。
+            // 走 SetPhase：腐殖质继承本格热量，且再触发不了本规则（新类型非有机）。
             SetPhase(x, y, ParticleIds.Humus);
         }
 
@@ -490,7 +488,7 @@ namespace TapTap2026.Simulation
         /// 随后触发新类型的 <c>OnSpawn</c>（新类型因此可以在 OnSpawn 里结算潜热、消费湿度等）。
         /// </summary>
         /// <remarks>
-        /// 与 <see cref="Set"/> 的区别正在于「携带」：<c>Set</c> 视为换上**全新物质**（Q 清零、湿度驱逐），
+        /// 与 <see cref="Set"/> 的区别正在于「携带」：<c>Set</c> 视为换上**全新物质**（继承该格热量、湿度驱逐），
         /// 而相变是**同一份物质换了个形态**——水 / 大气之间的质量与热量必须留在原格、逐格守恒。
         /// 典型用法是蒸发：<c>SetPhase(x, y, ParticleIds.Atmosphere)</c> 保留 Q，新大气因为热容骤降而变得更烫（浮力来源）。
         /// **湿度只对气体形态原样携带**：换成非气体（固/液）时固/液不持有湿度，该格水汽改由
@@ -592,8 +590,12 @@ namespace TapTap2026.Simulation
                     }
 
                     float humidity = _humidity.GetAt(i);
-                    float temperature = _heat.GetTemperatureAt(i);
+                    if (humidity <= 0f)
+                    {
+                        continue; // 绝大多数格没有水汽：跳过温度读取与饱和曲线计算
+                    }
 
+                    float temperature = _heat.GetTemperatureAt(i);
                     // 饱和判据：湿度低于该温度下的饱和湿度就不凝结。SaturationHumidity 用
                     // RainThreshold · 2^((T − DewPoint)/10) 表达「越冷越容易饱和」，替代旧的线性 coldFactor；
                     // 高湿高温的空气因此不再降雨（热地表不会积累成永久白斑），低温柔量空气反而能凝结。

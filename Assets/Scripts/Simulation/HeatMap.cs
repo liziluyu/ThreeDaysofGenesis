@@ -6,8 +6,8 @@ namespace TapTap2026.Simulation
     /// 与 <see cref="ParticleWorld"/> 网格同形的一张热图：每格存**热量 Q**（<see cref="float"/>），
     /// 温度由热量与该格物质的热容换算：<c>T = Q / C</c>。
     /// <b>热量由物质携带</b>：粒子移动（<see cref="ParticleWorld.Swap"/>）时 Q 随粒子搬家；
-    /// 生成 / 抹除（<see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.Clear"/>）换上的是新物质，
-    /// 其 Q 为 <see cref="AmbientHeat"/>（0）——旧物质连带它的热一起离场。
+    /// 生成 / 抹除（<see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.Clear"/>）换上的新物质
+    /// **继承该格原有热量**——旧物质离场，它的热视作就地留给了新物质；同一份物质换形态（<c>SetPhase</c>）则 Q 原样保留。
     /// </summary>
     /// <remarks>
     /// <para>存储：扁平 <c>float[]</c>（Q），下标 = <c>y * Width + x</c>，与 <see cref="ParticleWorld.Cells"/> 一致。</para>
@@ -476,11 +476,6 @@ namespace TapTap2026.Simulation
             _scratch = heat;
         }
 
-        /// <summary><see cref="ParticleWorld"/> 在 <c>Set</c>/<c>Clear</c> 换上全新物质时把该格热量重置为环境值。</summary>
-        internal void ResetHeatAt(int index)
-        {
-            _heat[index] = AmbientHeat;
-        }
 
         /// <summary><see cref="ParticleWorld.Swap"/> 交换两格时同步搬运热量（热由物质携带）。</summary>
         internal void SwapHeat(int a, int b)

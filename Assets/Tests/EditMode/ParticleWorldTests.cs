@@ -209,20 +209,19 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void Heat_ReplacingTheMaterialResetsItsHeatToAmbient()
+        public void Heat_NewMaterialInheritsTheCellsHeat()
         {
             ParticleWorld world = NewWorld();
 
             world.Heat.SetHeat(4, 4, 55f);
             world.Set(4, 4, TestTypes.GrainId);
-            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 4), "生成新物质：从环境热量开始");
+            Assert.AreEqual(55f, world.Heat.GetHeat(4, 4), "生成新物质：继承该格原有热量（不被拍成环境值）");
 
-            world.Heat.SetHeat(4, 4, 55f);
             world.Set(4, 4, TestTypes.GrainId); // 同类型重复 Set 是空操作
             Assert.AreEqual(55f, world.Heat.GetHeat(4, 4), "同类型重复 Set 不替换物质，热量保留");
 
             world.Clear(4, 4);
-            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 4), "抹除：旧物质连同它的热一起离场");
+            Assert.AreEqual(55f, world.Heat.GetHeat(4, 4), "抹除：旧物质离场，热就地留给空气（可被传导带走）");
         }
 
         [Test]
