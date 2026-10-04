@@ -18,19 +18,21 @@ namespace TapTap2026.Simulation
     /// <see cref="ParticleTypeInfo.ThermalConductivity"/>，两侧取算术平均），交换的热量为
     /// <c>ΔQ = 界面导热率 · (T_邻 - T_本)</c>，两格大小相等方向相反——所以**界内是守恒的**，热量只是在格与格之间搬家。
     /// 因为界面导热率 ≤ <c>Conductivity</c>，旧的「单一全局导热系数」行为就是 σ 全为 1 的特例。
-    /// 扩散用的是本 tick 开始时的温度场（先算差、再整体写回），与扫描顺序无关、结果确定。</para>
+    /// 扩散用的是本逻辑帧开始时的温度场（先算差、再整体写回），与扫描顺序无关、结果确定。</para>
     /// <para>散热：同一次 <see cref="Step"/> 里有两条并存的散热路——
     /// ① 最上面一行向**界外上方的虚空**流失热量（<c>ΔQ = -VoidHeatLoss * T</c>，虚空恒为 <see cref="AmbientHeat"/>）；
     /// ② <b>辐射</b>（<c>ΔQ = -RadiativeLoss * ε * T</c>，ε 为该格材料的<see cref="ParticleTypeInfo.ThermalEmissivity"/>；
     /// 默认关闭，生产由 Settings 资产给 0.05）——
     /// 但<b>只作用于暴露于天空的格</b>（顶行，或正上方是气体/空）；埋在地下的格四周都是物质、净辐射≈0，不参与辐射，
-    /// 其热量只能靠传导往上散——热因此能真正传进地下（若埋着的格也照漏，热会在 1~2 格内被抽干，只停在地表）。</para>
+    /// 其热量只能靠传导往上散——热因此能真正传进地下（若埋着的格也照漏，热会在 1~2 格内被抽干，只停在地表）。
+    /// 已知简化：暴露面只查正上方一格，洞穴内的空气因此也按暴露面处理；且 <c>T &lt; 0</c> 时辐射项
+    /// <c>-λ·ε·T</c> 符号反转成加热（等价向 0 环境松弛）——无害，但「只散热」仅对 <c>T &gt; 0</c> 成立。</para>
     /// <para><b>ε 是「热在竖直方向能铺多远」的旋钮</b>：空气柱每一格都是暴露面、都在散热，整柱的漏热总量正比于空气的 ε。
     /// ε=1 时（旧行为）空气的热 20 格内就耗尽，地表之上像有一道断崖；大气取 ε=0.1 后
     /// （N₂/O₂ 对红外透明）气柱几乎不逐格漏热，温度从地表到网格顶是单调、平滑的衰减。
     /// 用 ε 而不是全局 <see cref="RadiativeLoss"/> 来调这件事，好处是只动空气——固/液/蒸汽/云都留 ε=1，
     /// 它们的表面温度与光照强度都不必跟着改。</para>
-    /// <para>简化 / 不完美：无对流、无相变潜热；辐射是线性近似（真实是 T⁴）；ε 只有固/液/气这一个维度；
+    /// <para>简化 / 不完美：无显式对流（上升 / 下沉的绝热降温由 <see cref="AdiabaticLapse"/> 近似）；辐射是线性近似（真实是 T⁴）；ε 只有固/液/气这一个维度；
     /// 虚空散热只发生在网格顶行；<c>Q</c> 不钳制（负值表示冷）。这些留给具体粒子类型自行实现。</para>
     /// <para>稳定性：显式扩散要求 <c>(Conductivity * 邻居数 + VoidHeatLoss + RadiativeLoss) / 热容 &lt; 2</c>。
     /// 各系数上限都是 <see cref="MaxConductivity"/> = 0.24，配合热容 ≳ 0.5 的取值即可稳定；
@@ -57,6 +59,12 @@ namespace TapTap2026.Simulation
         /// 生产值由 <c>ParticleSimulationSettings</c> 资产注入（当前 0.05）。</summary>
         public const float DefaultRadiativeLoss = 0f;
 
+        /// <summary>
+        /// <see cref="AdiabaticLapse"/> 的默认值（°/格）：气体每竖直移动一格，温度的等效变化量
+        /// （上升变冷、下沉变暖）。它是真实干绝热直减率（≈10 °C/km）在「格」尺度上的等效。
+        /// </summary>
+        public const float DefaultAdiabaticLapse = 0.1f;
+
         /// <summary><see cref="DebugFullScaleTemperature"/> 的默认值。</summary>
         public const float DefaultDebugFullScaleTemperature = 10f;
 
@@ -67,10 +75,11 @@ namespace TapTap2026.Simulation
         public const float MaxThermalEmissivity = 1f;
 
         /// <summary>
-        /// 每单位凝结物给所在格增加的热容。取 1 是为了让「蒸汽 ⇌ 云」的相变**恰好保持温度**：
-        /// 蒸汽热容 2，凝结后是空气（1）+ 1 单位凝结物（1）= 2，于是同一份热量换来的温度不变。
-        /// 这是潜热的等效处理——凝结放出的热表现为「悬浮水滴让空气的热惯性变大」，
-        /// 而不是直接给出一段升温，因此 <c>Q</c> 在界内仍然守恒（见 <see cref="ParticleWorld.SetPhase"/>）。
+        /// 每单位湿度（= 1 水格）给所在格增加的附加热容（悬浮水汽的热惯性）：承载湿度的空气因此比干空气
+        /// 更难升 / 降温（<c>C = CapacityOf(typeId) + humidity × 本常量</c>）。
+        /// 相变本身的放热 / 吸热由各相变路径在相变完成后对本格 <c>AddHeat(±潜热)</c> 结算
+        /// （见 <see cref="HumidityField.LatentHeatPerUnit"/>）；本常量只负责让湿度改变格子的热容，
+        /// 不改变界内热量总量（<c>Q</c> 仍然守恒）。
         /// </summary>
         public const float HumidityHeatCapacity = 1f;
 
@@ -100,6 +109,7 @@ namespace TapTap2026.Simulation
         private float _conductivity = DefaultConductivity;
         private float _voidHeatLoss = DefaultVoidHeatLoss;
         private float _radiativeLoss = DefaultRadiativeLoss;
+        private float _adiabaticLapse = DefaultAdiabaticLapse;
         private float _airThermalConductivity = DefaultAirThermalConductivity;
         private float _airThermalEmissivity = DefaultAirThermalEmissivity;
 
@@ -172,7 +182,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 热传导系数（无量纲），范围 <c>[0, <see cref="MaxConductivity"/>]</c>。
-        /// 每对相邻格每 tick 交换的热量占比；0 = 关闭传导。超出范围会被夹紧。
+        /// 每对相邻格每逻辑帧交换的热量占比；0 = 关闭传导。超出范围会被夹紧。
         /// </summary>
         public float Conductivity
         {
@@ -184,7 +194,7 @@ namespace TapTap2026.Simulation
         /// 顶行向「虚空」散热的系数（无量纲），范围 <c>[0, <see cref="MaxConductivity"/>]</c>；0 = 关闭（封闭系统）。
         /// </summary>
         /// <remarks>
-        /// 每一 tick，网格最上面一行（<c>y = Height - 1</c>）都会向界外上方的虚空流失热量，
+        /// 每一逻辑帧，网格最上面一行（<c>y = Height - 1</c>）都会向界外上方的虚空流失热量，
         /// 流失量正比于该格温度（虚空恒为 <see cref="AmbientHeat"/>，即一个无限大的冷库）。
         /// 这是热量离开世界的唯一出口：没有它，光照注入的热只增不减；有了它，世界会收敛到一个稳态温度。
         /// 与 <see cref="Conductivity"/> 独立——不会被它缩放，也不影响界内的守恒。
@@ -207,6 +217,19 @@ namespace TapTap2026.Simulation
         {
             get { return _radiativeLoss; }
             set { _radiativeLoss = value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value); }
+        }
+
+        /// <summary>
+        /// 绝热直减率（°/格），非负。气体每竖直移动一格，其温度按竖直位移调整：
+        /// <c>ΔT = -AdiabaticLapse × Δy</c>（Δy = 新 y − 旧 y；上升 Δy &gt; 0 → 变冷，下沉 Δy &lt; 0 → 变暖）。
+        /// 结算成热量即 <c>ΔQ = -AdiabaticLapse × Δy × C</c>（C 为该格热容，空气用 <see cref="AirHeatCapacity"/>），
+        /// 由 <see cref="ParticleWorld.Swap"/> 在交换后对带 <see cref="ParticleTags.Gas"/> 标签的格子执行。
+        /// 这是真实干绝热直减率（≈10 °C/km）的等效，给大气补上一层随高度变化的竖直温度梯度。0 = 关闭。
+        /// </summary>
+        public float AdiabaticLapse
+        {
+            get { return _adiabaticLapse; }
+            set { _adiabaticLapse = value < 0f ? 0f : value; }
         }
 
         /// <summary>
@@ -278,9 +301,10 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 读取扁平下标处的热容：**物质热容 + 悬浮水滴热容**
+        /// 读取扁平下标处的热容：**物质热容 + 湿度携带的附加热容（悬浮水汽）**
         /// （<c>CapacityOf(typeId) + humidity * HumidityHeatCapacity</c>）。
-        /// 凝结物让云所在空气的热惯性变大，这是「蒸汽 ⇌ 云」相变能保持温度的原因（潜热的等效处理）。
+        /// 湿度让承载它的空气热惯性变大——水汽比干空气更难升 / 降温（相变的潜热另由
+        /// <see cref="HumidityField.LatentHeatPerUnit"/> 在相变路径显式结算，见 <see cref="HumidityHeatCapacity"/>）。
         /// 下标越界返回 <see cref="AirHeatCapacity"/>。
         /// </summary>
         public float GetCapacityAt(int index)
@@ -351,7 +375,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 一次全格四邻热传导 + 顶行向虚空散热 + 暴露面辐射散热（按材料 ε 缩放）。由 <see cref="ParticleWorld.Step"/> 每 tick 调用一次，
+        /// 一次全格四邻热传导 + 顶行向虚空散热 + 暴露面辐射散热（按材料 ε 缩放）。由 <see cref="ParticleWorld.StepLogic"/> 每逻辑帧调用一次，
         /// 粒子类型不需要、也不应该自己调用（否则重复扩散）。
         /// <see cref="Conductivity"/>、<see cref="VoidHeatLoss"/> 与 <see cref="RadiativeLoss"/> 都为 0 时是空操作。
         /// </summary>
@@ -429,7 +453,8 @@ namespace TapTap2026.Simulation
                     // 辐射：只有**暴露于天空**的格才向 0K 虚空漏热，且按本格材料的辐射率 ε 缩放
                     // （ΔQ = -RadiativeLoss · ε · T）。埋在地下的格四周都是物质、净辐射≈0，若也照漏就会
                     // 把刚传进地下几格的热量抽干——这正是「热只停在地表」的根因。
-                    // 暴露 = 顶行，或正上方是气体/空。
+                    // 暴露 = 顶行，或正上方是气体/空。已知简化：只查正上方一格，洞穴内空气也按暴露面处理。
+                    // T < 0 时 -λ·ε·T 变成加热（符号反转）——等价于向 0 环境松弛，无害，但「只散热」仅对 T > 0 成立。
                     // ε 小的材料（大气：N₂/O₂ 对红外透明）不逐格漏热，整根气柱因此不再把热抽干，
                     // 地表的热能一路铺到网格顶（这是 λ 之外、真正与「地表温度」解耦的那个旋钮）。
                     bool exposed = topRowExposed || IsSkyExposed(cells, types, i + width);
@@ -446,7 +471,7 @@ namespace TapTap2026.Simulation
                 }
             }
 
-            // 双缓冲交换：本 tick 的读全部来自旧场，写全部落到新场，因此与扫描顺序无关。
+            // 双缓冲交换：本逻辑帧的读全部来自旧场，写全部落到新场，因此与扫描顺序无关。
             _heat = next;
             _scratch = heat;
         }
@@ -529,6 +554,7 @@ namespace TapTap2026.Simulation
         /// 正上方那格（<paramref name="aboveIndex"/>）是否是气体/空——即本格是否「暴露于天空」。
         /// 辐射只作用于暴露面：埋着的格四周都是同温物质、净辐射≈0，不该向虚空漏热。
         /// 越界 / 未注册 / 空槽一律当作空气（暴露）。
+        /// 已知简化：只看正上方一格——洞穴内的空气也算暴露、会被辐射抽热（接受现状，不重构）。
         /// </summary>
         private static bool IsSkyExposed(Cell[] cells, ParticleType[] types, int aboveIndex)
         {

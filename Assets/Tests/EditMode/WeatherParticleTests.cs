@@ -47,7 +47,7 @@ namespace TapTap2026.Tests
 
         // ==================== 浮力原语（隔离类型表，直调规则） ====================
 
-        /// <summary>热气上升：比四邻热的气体 TryBuoyantStep 后上移一格。</summary>
+        /// <summary>热气上升：比四邻热的气体 TryBuoyantStep 后上移一格，热量随气体搬家并按绝热直减率降温（C6）。</summary>
         [Test]
         public void BuoyantStep_HotGasRises()
         {
@@ -58,7 +58,9 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(ParticleRules.TryBuoyantStep(world, 4, 4, 1f), "热气应能上升");
             Assert.AreEqual(atmosphere, world.GetCell(4, 5).typeId, "热气上移一格");
-            Assert.AreEqual(200f, world.Heat.GetHeat(4, 5), "热量随气体搬家");
+            // 上升 Δy=+1、大气热容 1 → ΔQ = −AdiabaticLapse × 1 × 1（绝热上升冷却）。
+            Assert.AreEqual(200f - world.Heat.AdiabaticLapse, world.Heat.GetHeat(4, 5), 1e-4f,
+                "热量随气体搬家，并按绝热直减率降温");
         }
 
         /// <summary>冷气下沉：比四邻冷的气体 TryBuoyantStep 后下移一格。</summary>
@@ -108,7 +110,8 @@ namespace TapTap2026.Tests
         // ==================== 湿度场：蒸发、输送、降水、守恒 ====================
 
         /// <summary>
-        /// 水到沸点蒸发：本格变成大气，**附近的湿度被抬升**（本格 + 四邻，总量一个水格），热量随相变携带。
+        /// 水到沸点蒸发：本格变成大气，**附近（3×3 邻域）的湿度被抬升**（总量一个水格），
+        /// 且蒸发**带走潜热**（<see cref="HumidityField.LatentHeatPerUnit"/>）使本格变冷。
         /// </summary>
         [Test]
         public void Water_Evaporates_WhenAtBoilingPoint_RaisingNearbyHumidity()
@@ -126,11 +129,11 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(ParticleIds.Atmosphere, world.GetCell(4, 4).typeId, "水到沸点应变成大气");
             Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格应蒸发出一个水格的湿度");
-            Assert.Greater(world.Humidity.Get(4, 4), 0f, "本格湿度升高");
-            Assert.Greater(world.Humidity.Get(5, 4), 0f, "邻近格子也被提高（附近的湿度）");
-            Assert.GreaterOrEqual(world.Humidity.Get(4, 4), HumidityField.VisibleThreshold,
+            Assert.Greater(world.Humidity.Get(5, 4), 0f, "邻近格子被提高（附近的湿度）");
+            Assert.GreaterOrEqual(world.Humidity.Get(5, 4), HumidityField.VisibleThreshold,
                 "沸腾的水汽集中在原地，必须**看得见**（这正是「水蒸气只在沸腾时出现」里「出现」的那一半）");
-            Assert.AreEqual(WaterParticle.BoilingPoint * capacity, world.Heat.GetHeat(4, 4), 1e-3f, "相变携带热量");
+            Assert.AreEqual(WaterParticle.BoilingPoint * capacity - HumidityField.LatentHeatPerUnit,
+                world.Heat.GetHeat(4, 4), 1e-3f, "相变带走潜热（蒸发冷却）");
         }
 
         /// <summary>沸点以下的水不蒸发，照常下落，也不产生湿度。</summary>
@@ -485,6 +488,156 @@ namespace TapTap2026.Tests
             Assert.Less(world.Heat.GetHeat(1, 0), ColumnLightIntensity, "有云的那一列地表被削弱");
             Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-3f, "左列无云");
             Assert.AreEqual(0.5f, world.Light.GetCloudThickness(1), 1e-3f, "右列云层厚度 = 0.25 + 0.25");
+        }
+
+        // ==================== 审计回归：饱和曲线（C2）、份额门控（B2）、RiseStop 门控（F1） ====================
+
+        /// <summary>饱和湿度曲线：露点处恰为 <see cref="HumidityField.RainThreshold"/>，且随温度按每 10° 倍增/减半。</summary>
+        [Test]
+        public void SaturationHumidity_AnchorsAtDewPoint_AndHalvesEveryTenDegrees()
+        {
+            Assert.AreEqual(HumidityField.RainThreshold,
+                HumidityField.SaturationHumidity(HumidityField.DewPoint), 1e-4f, "露点处饱和湿度 = RainThreshold");
+            Assert.Less(HumidityField.SaturationHumidity(HumidityField.DewPoint - 10f), HumidityField.RainThreshold,
+                "更冷 → 门槛更低（更易凝结）");
+            Assert.Greater(HumidityField.SaturationHumidity(HumidityField.DewPoint + 10f), HumidityField.RainThreshold,
+                "更热 → 门槛更高（更难凝结）");
+            Assert.AreEqual(HumidityField.SaturationHumidity(0f) * 2f, HumidityField.SaturationHumidity(10f), 1e-4f,
+                "每升高 10° 饱和湿度翻倍");
+        }
+
+        /// <summary>
+        /// 审计 B2：份额门控。9×9 石墙口袋只剩 2 个气体格时，半径 4 的单格份额 = 1/2 = 0.5，
+        /// 远超 <see cref="HumidityField.InvisibleSpreadMaxShare"/>（0.04）→ 返回 0 且**一格都不播撒**；
+        /// 传 maxShare = 0（沸腾的可见路径）时不受限、正常播撒。
+        /// </summary>
+        [Test]
+        public void SpreadUnitIntoAir_RejectsWhenShareExceedsMax()
+        {
+            ParticleWorld world = new ParticleWorld(9, 9, 7u);
+            for (int y = 0; y < 9; y++)
+            {
+                for (int x = 0; x < 9; x++)
+                {
+                    world.Set(x, y, ParticleIds.Stone);
+                }
+            }
+
+            world.Set(4, 2, ParticleIds.Atmosphere);
+            world.Set(3, 2, ParticleIds.Atmosphere);
+
+            int gated = world.Humidity.SpreadUnitIntoAir(
+                world, 4, 1, HumidityField.InvisibleSpreadRadius, HumidityField.InvisibleSpreadMaxShare);
+
+            Assert.AreEqual(0, gated, "接收格仅 2、份额 0.5 超限：必须返回 0");
+            Assert.AreEqual(0f, world.Humidity.Sum(), 1e-4f, "返回 0 时不得有任何一格接到水汽");
+
+            int unlimited = world.Humidity.SpreadUnitIntoAir(
+                world, 4, 1, HumidityField.InvisibleSpreadRadius, 0f);
+
+            Assert.AreEqual(2, unlimited, "maxShare = 0 表示不限（可见路径）");
+            Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "放行时总量仍是一个水格");
+        }
+
+        /// <summary>
+        /// 审计 B2 行为回归：同样的石墙口袋里的水长期处于慢蒸发温区，份额超限使每次慢蒸发都失败——
+        /// 水必须**原样保留**，口袋里也不得出现可见水汽（旧实现会把 0.5 直接摊出可见白汽并当帧可降雨）。
+        /// </summary>
+        [Test]
+        public void SlowEvaporation_InStonePocket_RetainsWater()
+        {
+            ParticleWorld world = new ParticleWorld(9, 9, 7u);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0f;
+            world.Light.Enabled = false;
+            world.Humidity.Diffusion = 0f;
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f;
+            for (int y = 0; y < 9; y++)
+            {
+                for (int x = 0; x < 9; x++)
+                {
+                    world.Set(x, y, ParticleIds.Stone);
+                }
+            }
+
+            world.Set(4, 1, ParticleIds.Water);
+            world.Set(4, 2, ParticleIds.Atmosphere); // 唯一的两个气体格（正上方及其左侧）
+            world.Set(3, 2, ParticleIds.Atmosphere);
+            float capacity = ParticleRegistry.Types[ParticleIds.Water].Info.HeatCapacity;
+            world.Heat.SetHeat(4, 1, 30f * capacity); // T = 30，慢蒸发温区且恒定（导热已关）
+
+            for (int t = 0; t < 4000; t++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(1, CountType(world, ParticleIds.Water), "份额超限 → 不蒸发，水必须保留");
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                if (world.Cells[i].typeId == ParticleIds.Atmosphere)
+                {
+                    Assert.Less(world.Humidity.GetAt(i), HumidityField.VisibleThreshold,
+                        "半封闭口袋里不得凭空出现可见水汽（下标 " + i + "）");
+                }
+            }
+        }
+
+        /// <summary>
+        /// 审计 F1：<see cref="HumidityField.RiseStopHumidity"/> 只门控竖直**平流**项。
+        /// 一格宽水井里湿度恰好达到门槛时，对称**扩散**项必须照常结算——
+        /// 旧实现把整对竖直交换冻死，湿度会永远卡在原地（并渲染成常驻白列）。
+        /// </summary>
+        [Test]
+        public void RiseStop_DoesNotFreezeVerticalDiffusion()
+        {
+            ParticleWorld world = new ParticleWorld(1, 2, 7u, TestTables.Build(new AtmosphereParticle()));
+            const ushort atmosphere = 1;
+            world.Set(0, 0, atmosphere);
+            world.Set(0, 1, atmosphere);
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f;      // 关掉平流，只留扩散
+            world.Humidity.Diffusion = 0.1f;
+            world.Humidity.Set(0, 0, HumidityField.RiseStopHumidity); // 恰好达到抬升门槛
+            world.Heat.SetHeat(0, 0, 0f);
+            world.Heat.SetHeat(0, 1, 0f);
+
+            world.Humidity.Step(world);
+
+            Assert.Greater(world.Humidity.Get(0, 1), 0f, "扩散项必须越过 RiseStop 门控（否则整对交换永冻）");
+            Assert.AreEqual(HumidityField.RiseStopHumidity, world.Humidity.Sum(), 1e-4f, "越过门控后仍严格守恒");
+        }
+
+        /// <summary>
+        /// 审计 F1 的另一半：同一门槛下，**平流**项必须被门控——已达抬升浓度的空气不再被温度顶上去
+        /// （否则水汽会一路顶到天花板堆成贴顶薄盖）。
+        /// </summary>
+        [Test]
+        public void RiseStop_GatesVerticalAdvection()
+        {
+            ParticleWorld world = new ParticleWorld(1, 2, 7u, TestTables.Build(new AtmosphereParticle()));
+            const ushort atmosphere = 1;
+            world.Set(0, 0, atmosphere);
+            world.Set(0, 1, atmosphere);
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.Diffusion = 0f;     // 关掉扩散，只留平流
+            world.Humidity.RiseBias = 0.5f;
+            world.Humidity.Set(0, 0, HumidityField.RiseStopHumidity);
+            world.Heat.SetHeat(0, 0, 200f);    // 归一化温度 2.0：不门控时向上流 0.2，会被看见
+
+            world.Humidity.Step(world);
+
+            Assert.AreEqual(0f, world.Humidity.Get(0, 1), 1e-4f, "已达抬升门槛 → 平流被门控，不再上升");
+            Assert.AreEqual(HumidityField.RiseStopHumidity, world.Humidity.Get(0, 0), 1e-4f, "湿度原地不动");
+        }
+
+        /// <summary><see cref="HumidityField.Step"/> 与类内其它公开方法一致：world 为 null 抛 <see cref="System.ArgumentNullException"/>。</summary>
+        [Test]
+        public void Step_NullWorld_Throws()
+        {
+            var field = new HumidityField(2, 2);
+            Assert.Throws<System.ArgumentNullException>(() => field.Step(null));
         }
 
         private const float ColumnLightIntensity = 5f;

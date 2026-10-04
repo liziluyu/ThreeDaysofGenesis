@@ -182,8 +182,10 @@ namespace TapTap2026.Tests
 
             world.Swap(5, 12, 5, 9);
 
-            Assert.AreEqual(300f, world.Heat.GetHeat(5, 9), "热由物质携带：Swap 把 Q 一起搬走");
-            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(5, 12), "旧位置不留下热量");
+            Assert.AreEqual(300f, world.Heat.GetHeat(5, 9), "热由物质携带：Swap 把 Q 一起搬走（固体不受绝热直减）");
+            Assert.AreEqual(-world.Heat.AdiabaticLapse * 3f * HeatMap.AirHeatCapacity,
+                world.Heat.GetHeat(5, 12), 1e-4f,
+                "被置换上升 3 格的空气按 C6 绝热直减冷却（不再原样留 0）");
         }
 
         [Test]
@@ -201,7 +203,9 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual((int)TestTypes.GrainId, (int)world.GetCell(5, 9).typeId, "颗粒应已落到 (5,9)");
             Assert.AreEqual(300f, world.Heat.GetHeat(5, 9), "颗粒带着热一起下落");
-            Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(5, 12), "离开的位置不留热");
+            Assert.AreEqual(-world.Heat.AdiabaticLapse * HeatMap.AirHeatCapacity,
+                world.Heat.GetHeat(5, 12), 1e-4f,
+                "被顶上来的空气按 C6 绝热直减冷却（它从 (5,11) 上升了一格）");
         }
 
         [Test]
@@ -1018,6 +1022,216 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, TestTypes.Grain.KillCount);
         }
 
+        // ================= 湿度驱逐（C5）、绝热直减（C6）、凝结放热（C1 / C2） =================
+
+        /// <summary>
+        /// Set 换上**非气体**（固/液）时，本格水汽必须先推给四邻气体格再清零——
+        /// 否则「Sum() 仍计入、却没有去处」的静默泄漏就发生了。
+        /// </summary>
+        [Test]
+        public void Set_ReplacingMoistAirWithSolid_EvacuatesHumidityToGasNeighbours()
+        {
+            ParticleWorld world = NewWorld();
+            world.Humidity.Set(5, 5, 0.5f);
+
+            world.Set(5, 5, TestTypes.GrainId);
+
+            Assert.AreEqual(0f, world.Humidity.Get(5, 5), 1e-4f, "非气体格不持有湿度：本格清零");
+            Assert.AreEqual(0.5f, world.Humidity.Sum(), 1e-4f, "水汽被推给气体邻居，总量不变（守恒优先）");
+            Assert.AreEqual(0.125f, world.Humidity.Get(4, 5), 1e-4f, "四邻各得 1/4");
+            Assert.AreEqual(0.125f, world.Humidity.Get(6, 5), 1e-4f);
+            Assert.AreEqual(0.125f, world.Humidity.Get(5, 4), 1e-4f);
+            Assert.AreEqual(0.125f, world.Humidity.Get(5, 6), 1e-4f);
+        }
+
+        /// <summary>没有气体邻居可推时（封闭口袋）不清零：守恒优先于「固/液不持有湿度」这条不变量。</summary>
+        [Test]
+        public void Set_ReplacingTrappedMoistAirWithSolid_KeepsHumidityWhenThereIsNoGasNeighbour()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(4, 5, TestTypes.GrainId);
+            world.Set(6, 5, TestTypes.GrainId);
+            world.Set(5, 4, TestTypes.GrainId);
+            world.Set(5, 6, TestTypes.GrainId);
+            world.Humidity.Set(5, 5, 0.7f);
+
+            world.Set(5, 5, TestTypes.GrainId);
+
+            Assert.AreEqual(0.7f, world.Humidity.Get(5, 5), 1e-4f, "四面都不是气体：湿度留在原地，不消失");
+            Assert.AreEqual(0.7f, world.Humidity.Sum(), 1e-4f);
+        }
+
+        /// <summary>
+        /// SetPhase：相变到非气体时同样驱逐；相变到气体则原样携带（云随风平移靠的就是后者）。
+        /// </summary>
+        [Test]
+        public void SetPhase_ToNonGas_EvacuatesHumidity_ButToGasCarriesIt()
+        {
+            ParticleWorld world = NewWorld();
+            world.Humidity.Set(5, 5, 0.4f);
+
+            world.SetPhase(5, 5, TestTypes.SolidFlowId); // 空 → 固
+
+            Assert.AreEqual(0f, world.Humidity.Get(5, 5), 1e-4f, "相变到固体：水汽被驱逐");
+            Assert.AreEqual(0.4f, world.Humidity.Sum(), 1e-4f, "驱逐 1:1，总量不变");
+            Assert.AreEqual(0.1f, world.Humidity.Get(4, 5), 1e-4f);
+
+            // 空 → 气体：湿度不该被抹掉，也不该被推走。
+            ParticleWorld gas = new ParticleWorld(4, 4, 7u, TestTables.Build(new AtmosphereParticle()));
+            gas.Humidity.Set(1, 1, 0.4f);
+            gas.SetPhase(1, 1, 1);
+
+            Assert.AreEqual(0.4f, gas.Humidity.Get(1, 1), 1e-4f, "气体形态携带湿度，不驱逐也不清零");
+            Assert.AreEqual(0.4f, gas.Humidity.Sum(), 1e-4f);
+        }
+
+        /// <summary>
+        /// 绝热直减（C6）：气体竖直换位时热随位移增减——上升冷却、下沉增温，两格独立结算、ΔQ 符号相反。
+        /// </summary>
+        [Test]
+        public void Swap_VerticalGasExchange_AppliesAdiabaticLapse()
+        {
+            ParticleWorld world = new ParticleWorld(4, 4, 7u, TestTables.Build(new AtmosphereParticle()));
+            const ushort atmosphere = 1;
+            world.Set(1, 1, atmosphere);
+            world.Heat.SetHeat(1, 1, 10f);
+
+            Assert.IsTrue(world.Swap(1, 1, 1, 2));
+
+            float lapse = world.Heat.AdiabaticLapse; // 默认 0.1 °/格；大气热容 1
+            Assert.AreEqual(10f - lapse, world.Heat.GetHeat(1, 2), 1e-4f, "上移一格：气体按 lapse × C 冷却");
+            Assert.AreEqual(0f + lapse, world.Heat.GetHeat(1, 1), 1e-4f, "下沉一格：气体按 lapse × C 增温");
+
+            // 水平换位 Δy = 0：不结算（同一高度没有绝热变化）。
+            world.Heat.SetHeat(1, 2, 10f);
+            world.Heat.SetHeat(2, 2, 0f);
+            Assert.IsTrue(world.Swap(1, 2, 2, 2));
+            Assert.AreEqual(10f, world.Heat.GetHeat(2, 2), 1e-4f, "水平交换不触发绝热直减");
+            Assert.AreEqual(0f, world.Heat.GetHeat(1, 2), 1e-4f);
+        }
+
+        /// <summary>固体不受绝热直减：竖直换位只是把 Q 原样搬走。</summary>
+        [Test]
+        public void Swap_VerticalSolidExchange_MovesHeatUnchanged()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(5, 5, TestTypes.GrainId);
+            world.Heat.SetHeat(5, 5, 40f);
+            world.Set(5, 6, TestTypes.StaticId);
+            world.Heat.SetHeat(5, 6, 7f);
+
+            Assert.IsTrue(world.Swap(5, 5, 5, 6));
+
+            Assert.AreEqual(40f, world.Heat.GetHeat(5, 6), 1e-4f, "固体竖直换位不改热");
+            Assert.AreEqual(7f, world.Heat.GetHeat(5, 5), 1e-4f);
+        }
+
+        /// <summary>
+        /// 凝结释放潜热（C1）：饱和的冷空气凝结出一个水格后，本格热量 = 原 Q + LatentHeatPerUnit（加热云层）。
+        /// 中心恰好持有一个整水滴的湿度：碰并及时本格即可成滴、残余为 0 → 不向邻居播撒，
+        /// 全场因此最多只有一个水格，断言不依赖「谁先碰并」这种巧合。
+        /// 走全局注册表（<see cref="ParticleIds.Water"/> 需要回填），与气象测试同一取舍。
+        /// </summary>
+        [Test]
+        public void StepRain_CondensationReleasesLatentHeatIntoTheCell()
+        {
+            const float temperature = 1.25f;                   // 冷：饱和湿度 ≈ 0.054 ≪ 1
+            const float humidity = HumidityField.Unit;
+            ParticleWorld world = UniformAtmosphere(temperature, humidity);
+
+            float before = world.Humidity.Sum();
+            for (int i = 0; i < 500 && CountType(world, ParticleIds.Water) == 0; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(1, CountType(world, ParticleIds.Water), "只应凝结出一个水格");
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(RainTestCentre, RainTestCentre).typeId,
+                "凝结发生在带湿度的中心格");
+            Assert.AreEqual(temperature * 2f + HumidityField.LatentHeatPerUnit,
+                world.Heat.GetHeat(RainTestCentre, RainTestCentre), 1e-3f,
+                "凝结释放潜热：水格热量 = 原 Q（= T × C，C = 1 + 湿度 = 2）+ LatentHeatPerUnit");
+            Assert.AreEqual(before, world.Humidity.Sum() + HumidityField.Unit, 1e-3f,
+                "水汽 → 一个水格 1:1，无凭空生灭");
+        }
+
+        /// <summary>
+        /// 降雨判据是**指数饱和曲线**（C2）而非「温度必须低于露点」：T = 32（高于露点 30）但湿度远超
+        /// <c>SaturationHumidity(32)</c> ≈ 0.46 的空气照样凝结——旧实现会在 <c>temperature &gt; DewPoint</c> 处提前退出。
+        /// 湿度 3 时概率 roll 恒过（<c>humidity × RainRate = 1.2 &gt; 1</c>），因此单帧即可判定。
+        /// </summary>
+        [Test]
+        public void StepRain_CondensesAirHotterThanDewPoint_WhenAboveItsSaturationHumidity()
+        {
+            ParticleWorld world = UniformAtmosphere(32f, 3f);
+
+            world.StepLogic();
+
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(RainTestCentre, RainTestCentre).typeId,
+                "32° 的空气只要越过 SaturationHumidity(32) 就该凝结，与「是否低于露点」无关");
+        }
+
+        /// <summary>
+        /// 反向：湿度低于该温度的饱和湿度就不凝结（高温空气即使能凑够一个水滴、概率 roll 也过关，仍不降雨）。
+        /// </summary>
+        [Test]
+        public void StepRain_LeavesAirBelowItsSaturationHumidityAlone()
+        {
+            // T = 60 ⇒ SaturationHumidity = 0.4 · 2^3 = 3.2；中心 0.5、其余八格各 0.07 ⇒ 碰并可凑 1.06 个水滴。
+            ParticleWorld world = UniformAtmosphere(60f, 0.5f, 0.07f);
+
+            for (int i = 0; i < 50; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(0, CountType(world, ParticleIds.Water), "未达饱和湿度：再热、料再够也不凝结");
+        }
+
+        /// <summary>降雨测试场景的中心格坐标。</summary>
+        private const int RainTestCentre = 3;
+
+        /// <summary>
+        /// 7×7 全大气、全场温度一致的确定性降雨局面：中心 (3,3) 带 <paramref name="centreHumidity"/>，
+        /// 其余格带 <paramref name="neighbourHumidity"/>（供中心碰并取料）。关闭一切热量与湿度输送，
+        /// 中心恒停在 (3,3)。返回的世界已跑过 <see cref="ParticleRegistration.RegisterAll"/>（ParticleIds 需回填）。
+        /// </summary>
+        /// <remarks>
+        /// **7×7 而非 3×3**：边界格的越界邻居读作 T = 0，在高温（32 / 60）下会让它们因浮力换位
+        /// （顺带触发 C6 绝热）——3×3 里那圈边界紧挨中心，会把中心格整个 Swap 走，断言便落空。
+        /// 7×7 的内圈 (1..5)² 对均匀温度场恒静止，中心因此稳定。
+        /// </remarks>
+        /// <param name="temperature">全场统一温度（°C），决定每格的 Q 与饱和判据。</param>
+        /// <param name="centreHumidity">中心格 (3,3) 的湿度。</param>
+        /// <param name="neighbourHumidity">其余格的湿度。</param>
+        private static ParticleWorld UniformAtmosphere(float temperature, float centreHumidity, float neighbourHumidity = 0f)
+        {
+            ParticleRegistration.RegisterAll();
+            ParticleWorld world = new ParticleWorld(7, 7, 7u);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0f;
+            world.Light.Enabled = false;
+            world.Humidity.Diffusion = 0f;
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f;
+
+            for (int y = 0; y < 7; y++)
+            {
+                for (int x = 0; x < 7; x++)
+                {
+                    world.Set(x, y, ParticleIds.Atmosphere);
+                    world.Humidity.Set(x, y, neighbourHumidity);
+                    world.Heat.SetHeat(x, y, temperature * (1f + neighbourHumidity)); // C = 1 + 湿度
+                }
+            }
+
+            world.Humidity.Set(RainTestCentre, RainTestCentre, centreHumidity);
+            world.Heat.SetHeat(
+                RainTestCentre, RainTestCentre, temperature * (1f + centreHumidity));
+            return world;
+        }
+
         // ============================== 扫描语义 ==============================
 
         [Test]
@@ -1444,6 +1658,12 @@ namespace TapTap2026.Tests
         [Test]
         public void DrySolid_ReposeSlopeFollowsFriction()
         {
+            // 同 Stickiness_RaisesTheReposeSlopeOfAPile：本测试要跑三堆共 300 颗的长时间真实模拟，
+            // 期间 Unity-MCP 插件掉线会打一条 Error 日志（batchmode 下必然连不上），测试框架会把它当成
+            // 「未处理的失败日志」而误判本测试失败（断言其实全过）。该日志与模拟无关，因此忽略；
+            // [TearDown] 会恢复默认。彻底消除应修 MCP 令牌（见 AGENTS.md 的 MCP 一节）。
+            LogAssert.ignoreFailingMessages = true;
+
             const int width = 41;
             const int height = 40;
             const int grains = 100;

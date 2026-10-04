@@ -36,6 +36,33 @@ namespace TapTap2026.Simulation
         /// <summary>bit7：类型私有。</summary>
         public const byte User7 = 0x80;
 
+        /// <summary>
+        /// bit3-4：**大气私有**（<see cref="AtmosphereParticle"/>）——最近一次水平热压漂移的方向记忆。
+        /// 只占用这两位：读取用本掩码，清除用 <see cref="DriftDirectionClearMask"/>，写入用
+        /// <c>|</c> 组合，绝不整体赋值 <c>flags</c>（尤其保留 bit0 处理标记）。
+        /// 大气在自身文件头部登记了该占用。
+        /// </summary>
+        public const byte DriftDirectionMask = 0x18;
+
+        /// <summary>
+        /// 清除 <see cref="DriftDirectionMask"/> 的掩码（<c>~0x18 &amp; 0xFF</c>）。
+        /// 用预计算的 byte 常量而非 <c>~DriftDirectionMask</c>：后者在常量折叠时是 int −25，
+        /// 显式转 byte 会触发 CS0221（与 <see cref="ProcessedParityMask"/> 同一写法）。
+        /// </summary>
+        public const byte DriftDirectionClearMask = 0xE7;
+
+        /// <summary><see cref="DriftDirectionMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int DriftDirectionShift = 3;
+
+        /// <summary>风向记忆：无（尚未漂移，或记忆已被浮力等非水平运动清除）。</summary>
+        public const byte DriftDirectionNone = 0;
+
+        /// <summary>风向记忆：向左（−x）。</summary>
+        public const byte DriftDirectionLeft = 1;
+
+        /// <summary>风向记忆：向右（+x）。</summary>
+        public const byte DriftDirectionRight = 2;
+
         /// <summary>该格在本 tick（由 <paramref name="stamp"/> 标识）是否已被处理过。</summary>
         public static bool IsProcessed(byte flags, byte stamp)
         {

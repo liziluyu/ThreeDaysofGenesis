@@ -4,7 +4,7 @@ namespace TapTap2026.Simulation
 {
     /// <summary>
     /// 光照控制器：一个按时序通断的光源，照亮时向**每一列最上面的非气体粒子**（固体或液体——光打到水面就停）注入热量。
-    /// 纯 C#、无 Unity 依赖，由 <see cref="ParticleWorld.Step"/> 每 tick 驱动一次（与模拟同频、确定性）。
+    /// 纯 C#、无 Unity 依赖，由 <see cref="ParticleWorld.StepLogic"/> 每逻辑帧驱动一次（与模拟同频、确定性）。
     /// </summary>
     /// <remarks>
     /// <para>通断是**占空比循环**：<see cref="Enabled"/> 打开后，先亮相位持续 <see cref="LitTicks"/> 刻，
@@ -18,11 +18,12 @@ namespace TapTap2026.Simulation
     /// <see cref="ParticleTags.Liquid"/> 标签的格，就往那格加 <see cref="Intensity"/> 的热量 Q
     /// （不是温度——升温多少还取决于该物质的热容）。光只穿过气体：海洋是表面被晒热、表面蒸发，
     /// 而不是被穿透过热海底。</para>
-    /// <para>**云会遮光**：每列维护一个「云层厚度」= 该列湿度之和（<see cref="GetCloudThickness"/>），
-    /// 光穿过整列时按 Beer–Lambert 衰减，到达地表的能量是
-    /// <c>Intensity × exp(-<see cref="CloudExtinction"/> × 厚度)</c>。
+    /// <para>**云会遮光**：施热时自顶向下逐格累加**光路上**的湿度（遇第一个固/液格即止），
+    /// 按 Beer–Lambert 衰减，到达地表的能量是
+    /// <c>Intensity × exp(-<see cref="CloudExtinction"/> × 光路湿度)</c>（即 <see cref="GetCloudTransmittance"/>）。
     /// 因此云厚的那一列地表凉、云薄的那一列地表热——这给水循环加了一条负反馈
-    /// （云多 → 地表冷 → 蒸发少 → 云少）。<see cref="CloudExtinction"/> = 0 即关掉这条。</para>
+    /// （云多 → 地表冷 → 蒸发少 → 云少）。<see cref="CloudExtinction"/> = 0 即关掉这条。
+    /// 只算光路上的湿度，意味着洞穴 / 顶棚下方的地表不会再被上方云层连带遮黑。</para>
     /// <para>简化：一次性均匀照到整个网格，没有方向、也不按距离或角度衰减。需要阴影 / 衰减再另行扩展。</para>
     /// <para>另导出 <see cref="Daylight"/>（0 = 夜、1 = 昼）给渲染层做整场明暗：白天保持上限、夜晚保持下限，
     /// 只在白天开始 / 结束的 <see cref="TransitionTicks"/> 刻里平滑过渡。它与施热无关，只是时序的读数。</para>
@@ -38,7 +39,7 @@ namespace TapTap2026.Simulation
         private float _intensity = 5f;
         private int _transitionTicks = 60;
         private float _cloudExtinction = DefaultCloudExtinction;
-        private float[] _cloudThickness = Array.Empty<float>();
+        private ParticleWorld _world;
         private int _elapsed;
 
         /// <summary>是否光照（总开关）。关闭时不注入热量，相位也不推进。</summary>
@@ -71,7 +72,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 云层消光系数（每单位「列云层厚度」）。到达地表的能量按**每列**衰减：
-        /// <c>透过率 = exp(-CloudExtinction × 该列湿度总量)</c>（Beer–Lambert）。
+        /// <c>透过率 = exp(-CloudExtinction × 光路上的湿度总量)</c>（Beer–Lambert）。
         /// 0 = 云不遮光（旧行为）。负数 / NaN 归零。
         /// </summary>
         public float CloudExtinction
@@ -81,20 +82,44 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 第 <paramref name="x"/> 列的**云层厚度** = 该列所有格湿度之和（只有非固非液格持有湿度，
-        /// 因此它就是光竖直穿过这条列时路上的云量）。每 tick 由 <see cref="Step"/> 从湿度场重算；
-        /// 越界返回 0。
+        /// 第 <paramref name="x"/> 列的**云层厚度** = 光从网格顶竖直下落到第一个固/液格这一段路上
+        /// 累加的湿度（只有非固非液格持有湿度，所以就是光程上的云量）。按需计算；越界 / 尚未
+        /// <see cref="Step"/> 过返回 0。
         /// </summary>
         public float GetCloudThickness(int x)
         {
-            return (uint)x < (uint)_cloudThickness.Length ? _cloudThickness[x] : 0f;
+            ParticleWorld world = _world;
+            if (world == null || (uint)x >= (uint)world.Width)
+            {
+                return 0f;
+            }
+
+            int width = world.Width;
+            HumidityField humidity = world.Humidity;
+            float thickness = 0f;
+            for (int y = world.Height - 1; y >= 0; y--)
+            {
+                if (ParticleRules.BlocksLight(world, x, y))
+                {
+                    break;
+                }
+
+                thickness += humidity.GetAt(y * width + x);
+            }
+
+            return thickness;
         }
 
         /// <summary>第 <paramref name="x"/> 列当前的透光率 ∈ (0, 1]：<c>exp(-CloudExtinction × 云层厚度)</c>。
         /// 消光系数为 0 或无云时恒为 1。</summary>
         public float GetCloudTransmittance(int x)
         {
-            float thickness = GetCloudThickness(x);
+            return CloudTransmittance(GetCloudThickness(x));
+        }
+
+        /// <summary>给定光路湿度总量的透光率 ∈ (0, 1]：<c>exp(-CloudExtinction × 厚度)</c>；消光为 0 或无云时恒为 1。</summary>
+        private float CloudTransmittance(float thickness)
+        {
             if (_cloudExtinction <= 0f || thickness <= 0f)
             {
                 return 1f;
@@ -194,16 +219,16 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>把相位拨回起点（下一个 tick 从亮相位开始）。</summary>
+        /// <summary>把相位拨回起点（下一个逻辑帧从亮相位开始）。</summary>
         public void Reset()
         {
             _elapsed = 0;
         }
 
         /// <summary>
-        /// 推进一 tick：维护每列的云层厚度，并在照亮时向每列最上面的非气体粒子（固体或液体）
-        /// 注入按该列云量衰减后的 <see cref="Intensity"/> 热量。
-        /// 由 <see cref="ParticleWorld.Step"/> 调用；正常玩法不要手动调用，否则会额外施热、破坏确定性。
+        /// 推进一逻辑帧：照亮时向每列最上面的非气体粒子（固体或液体）注入按**光路云量**衰减后的
+        /// <see cref="Intensity"/> 热量。
+        /// 由 <see cref="ParticleWorld.StepLogic"/> 调用；正常玩法不要手动调用，否则会额外施热、破坏确定性。
         /// </summary>
         public void Step(ParticleWorld world)
         {
@@ -212,8 +237,7 @@ namespace TapTap2026.Simulation
                 throw new ArgumentNullException(nameof(world));
             }
 
-            // 每列云量是导出读数：不论光照开关都维护，渲染 / 调试可直接读。
-            UpdateCloudThickness(world);
+            _world = world; // 供 GetCloudThickness / GetCloudTransmittance 按需扫描，不参与施热。
 
             if (!_enabled)
             {
@@ -228,40 +252,33 @@ namespace TapTap2026.Simulation
             _elapsed++;
         }
 
-        /// <summary>从湿度场重算每列的云层厚度（整列湿度之和）。</summary>
-        private void UpdateCloudThickness(ParticleWorld world)
-        {
-            int width = world.Width;
-            if (_cloudThickness.Length < width)
-            {
-                _cloudThickness = new float[width];
-            }
-
-            world.Humidity.ColumnSums(_cloudThickness);
-        }
-
         private void ApplyHeat(ParticleWorld world, float amount)
         {
             HeatMap heat = world.Heat;
+            HumidityField humidity = world.Humidity;
             int width = world.Width;
             int height = world.Height;
 
             for (int x = 0; x < width; x++)
             {
-                // 云层遮蔽：本列云量越大，到达地表的能量越少（Beer–Lambert，透过率 = exp(-k × 厚度)）。
-                float reach = amount * GetCloudTransmittance(x);
-                if (reach <= 0f)
-                {
-                    continue; // 云太厚：这一列照不到地面
-                }
-
+                // 云层遮蔽：自顶向下边走边累加**光路上**的湿度（遇第一个固/液格即止），
+                // 到达该格的能量按 Beer–Lambert 衰减（透过率 = exp(-k × 光路湿度)）。
+                // 只算光路上，洞内 / 顶棚下方的湿度因此不遮光。
+                float thickness = 0f;
                 for (int y = height - 1; y >= 0; y--)
                 {
                     if (ParticleRules.BlocksLight(world, x, y))
                     {
-                        heat.AddHeat(x, y, reach);
+                        float reach = amount * CloudTransmittance(thickness);
+                        if (reach > 0f)
+                        {
+                            heat.AddHeat(x, y, reach);
+                        }
+
                         break;
                     }
+
+                    thickness += humidity.GetAt(y * width + x);
                 }
             }
         }

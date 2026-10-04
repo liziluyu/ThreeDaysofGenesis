@@ -29,17 +29,30 @@ namespace TapTap2026.Simulation
         /// <summary>一个水格蒸发/凝结出的湿度量。所有相变方向都用它，保证水总量守恒。</summary>
         public const float Unit = 1f;
 
+        /// <summary>
+        /// **潜热**：每 <see cref="Unit"/> 湿度（= 一个水格）携带的热量，单位与 <see cref="HeatMap"/> 的热量一致。
+        /// 蒸发（液→气）从本格取走它、凝结（气→液）还给本格，相变因此**不是无热的**：
+        /// 水在沸点蒸出后会迅速带走热量、凝结处则重新放热——这正是"海陆风"里海洋上空偏冷、
+        /// 云底偏暖的微观来源之一。
+        /// </summary>
+        /// <remarks>
+        /// 校准依据：常温 T≈20 的水 Q = 6.5 × 20 = 130，蒸出成空气（热容 1）后 Q = 130 − 110 = 20，
+        /// 温度近似连续（不会蒸发一下就凭空爆热或骤冷）；沸腾 T=80 的水蒸出后 Q = 520 − 110 = 410，
+        /// 蒸汽仍然是热的——与"水蒸气烫手"的直觉一致。界内每单位水严格守恒（相变只换载体，不产不灭）。
+        /// </remarks>
+        public const float LatentHeatPerUnit = 110f;
+
         /// <summary>扩散系数：高湿度向低湿度摊开的比例（与热传导同形）。</summary>
         public const float DefaultDiffusion = 0.01f;
 
         /// <summary>水平温度定向系数：同一高度上湿度向更热格子迁移的强度（每单位温差）。</summary>
         public const float DefaultHorizontalBias = 0.05f;
 
-        /// <summary>竖直温度定向系数：越热的格子湿度越向上的强度（每 tick、每单位归一化温度）。
+        /// <summary>竖直温度定向系数：越热的格子湿度越向上的强度（每逻辑帧、每单位归一化温度）。
         /// 实际向上流出的比例是 <c>RiseBias × T / <see cref="RiseTemperatureScale"/></c>。</summary>
         public const float DefaultRiseBias = 0.5f;
 
-        /// <summary>竖直升腾的温度归一化尺度：温度达到它时，一格每 tick 最多把全部湿度往上送。</summary>
+        /// <summary>竖直升腾的温度归一化尺度：温度达到它时，一格每逻辑帧最多把全部湿度往上送。</summary>
         public const float RiseTemperatureScale = 100f;
 
         /// <summary><see cref="RiseTemperatureScale"/> 的倒数（热路径用乘法）。</summary>
@@ -52,12 +65,14 @@ namespace TapTap2026.Simulation
         /// </summary>
         public const float RiseStopHumidity = 0.2f;
 
-        /// <summary>降水阈值：湿度达到它、且温度低于露点时开始"碰并"成雨。
+        /// <summary>降水阈值的**锚点**：露点处的饱和湿度，即 <c><see cref="SaturationHumidity"/>(<see cref="DewPoint"/>)</c>。
+        /// 湿度达到该温度下的饱和湿度才开始"碰并"成雨；温度越低，门槛越低（见 <see cref="SaturationHumidity"/>）。
         /// 低于 <see cref="Unit"/> 是有意的——雨滴由本格与邻居的水汽凑成（见 <c>ParticleWorld.StepRain</c>），
         /// 所以不必要求单格先攒满一个整水滴（实测天空里很难达到 1.0）。</summary>
         public const float RainThreshold = 0.4f;
 
-        /// <summary>露点：温度低于它的饱和空气才凝结（成云/降雨）。</summary>
+        /// <summary>露点：饱和曲线的锚点温度，此处饱和湿度恰为 <see cref="RainThreshold"/>。
+        /// 温度高于它时饱和湿度按 <see cref="SaturationHumidity"/> 指数上升（空气存得住更多水汽，不易降雨）。</summary>
         public const float DewPoint = 30f;
 
         /// <summary>蒸发上限：本格湿度达到它就停止蒸发（饱和水汽压的等效表达）。
@@ -74,16 +89,24 @@ namespace TapTap2026.Simulation
         /// 取太小又会满屏惨白（实测：0.12 时近纯白格 1866 个，0.16 时降到 52 个而云层依旧清楚）。</summary>
         public const float CloudFullHumidity = 0.16f;
 
-        /// <summary>降水速率（每 tick、每单位湿度凝结成雨的概率）：湿度越高掉得越快（负反馈，云量因此稳定）。</summary>
+        /// <summary>降水速率（每逻辑帧、每单位湿度凝结成雨的概率）：湿度越高掉得越快（负反馈，云量因此稳定）。</summary>
         public const float RainRate = 0.4f;
 
-        /// <summary>**不可见**蒸发的播撒半径：4 = 9×9 一大片，每格只分到 <c>Unit/49 ≈ 0.02</c>，
-        /// 远低于 <see cref="VisibleThreshold"/>（0.06）——所以这条路蒸出来的水汽**看不见**。
+        /// <summary>**不可见**蒸发的播撒半径：4 = 9×9 = <b>81</b> 格，空旷处每格只分到 <c>Unit/81 ≈ 0.012</c>。
+        /// 但半封闭地形里接收格可能极少（石墙口袋只剩 2 格时份额高达 0.5），因此还要配
+        /// <see cref="InvisibleSpreadMaxShare"/> 的份额门控——接收格不足就干脆不蒸发、水保留。
         /// 水的常温慢蒸发与湿土受热干燥都走它（可见水汽只由沸腾产生）。</summary>
         public const int InvisibleSpreadRadius = 4;
 
+        /// <summary>**不可见**蒸发的份额上限：单格份额 <c>Unit / 接收格数</c> 超过它时这次蒸发不做
+        /// （<see cref="SpreadUnitIntoAir"/> 返回 0，调用方**保留水、不做相变/变干**）。
+        /// 取 0.04 = 1/25：接收格 ≥ 25 才放行；配合 <see cref="InvisibleSpreadCap"/> 的 0.02 上限，
+        /// 单格湿度始终 &lt; 0.02 + 0.04 = <see cref="VisibleThreshold"/>（0.06），这条路因此**保持不可见**。</summary>
+        public const float InvisibleSpreadMaxShare = 0.04f;
+
         /// <summary><see cref="InvisibleSpreadRadius"/> 下的饱和上限：播撒范围内**任一**气体格达到它就不再蒸发。
-        /// 取 0.02，使「最湿的一格 + 本次份额」仍低于 <see cref="VisibleThreshold"/>——这条路因此**永远不可见**。
+        /// 取 0.02，使「最湿的一格（&lt; 0.02）+ 本次份额（≤ <see cref="InvisibleSpreadMaxShare"/> = 0.04）」
+        /// 仍低于 <see cref="VisibleThreshold"/>（0.06）——这条路因此保持不可见。
         /// 它同时是「饱和水汽压」的物理节流：边界层湿了就蒸发不动，等输送把水汽带走再继续。</summary>
         public const float InvisibleSpreadCap = 0.02f;
 
@@ -232,12 +255,16 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// 把**一份水汽**（<see cref="Unit"/>）均摊给 (centerX,centerY) 周围半径 <paramref name="radius"/> 内的
         /// 气体 / 空格，每格分到 <c>Unit / 接收格数</c>——播撒，而不是集中，因此摊得多薄取决于半径。
-        /// 返回实际接收的格数：<c>0</c> 表示周围没有任何气体，这份水汽无处可去，
-        /// **调用方必须先确认有接收者**（否则水汽凭空消失，破坏水总量守恒）。
+        /// 返回实际接收的格数：<c>0</c> 表示**没有播撒**，此时水**必须由调用方保留**、不得做相变/变干。
+        /// 返回 0 有两种原因：周围没有任何气体（水汽无处可去）；或单格份额超过 <paramref name="maxShare"/>
+        /// 被份额门控拦下（半封闭地形里"一摊就是一大坨可见水汽"就出在这里）。
         /// 越界格不算接收者（<see cref="ParticleRules.IsGasOrEmpty"/> 对越界返回 true，故此处显式判界）。
         /// </summary>
+        /// <param name="maxShare">单格份额上限，超过则整次播撒放弃并返回 0；≤ 0 表示不限
+        /// （沸腾等**可见**蒸发按设计走这条，传 0）。不可见的慢蒸发 / 湿土干燥传
+        /// <see cref="InvisibleSpreadMaxShare"/>。</param>
         /// <remarks>蒸发（水 / 湿土）把水汽交给大气的唯一入口；与 <see cref="Add"/> 一样下界截断、无上界。</remarks>
-        public int SpreadUnitIntoAir(ParticleWorld world, int centerX, int centerY, int radius)
+        public int SpreadUnitIntoAir(ParticleWorld world, int centerX, int centerY, int radius, float maxShare)
         {
             if (world == null)
             {
@@ -267,6 +294,12 @@ namespace TapTap2026.Simulation
             }
 
             float share = Unit / receivers;
+            if (maxShare > 0f && share > maxShare)
+            {
+                // 接收格太少，摊不薄——这份水汽若播下去会立刻可见。不做，把水留给调用方。
+                return 0;
+            }
+
             for (int dy = -radius; dy <= radius; dy++)
             {
                 for (int dx = -radius; dx <= radius; dx++)
@@ -279,6 +312,18 @@ namespace TapTap2026.Simulation
             }
 
             return receivers;
+        }
+
+        /// <summary>
+        /// 给定温度下的**饱和湿度**：<c><see cref="RainThreshold"/> × 2^((temperature − <see cref="DewPoint"/>) / 10)</c>。
+        /// 这是饱和水汽压随温度陡降（每降 ~10° 约减半）的指数近似——温度越低，空气越"存不住"水汽、越容易凝结。
+        /// 取代了旧 <c>coldFactor</c> 线性近似与「温度高于露点直接跳过」的硬截断：
+        /// <see cref="ParticleWorld.StepRain"/> 统一以 <c>humidity &lt; SaturationHumidity(temperature)</c> 判否。
+        /// 露点 30° 处恰为 <see cref="RainThreshold"/>，两个常量因此仍是曲线的锚点。
+        /// </summary>
+        public static float SaturationHumidity(float temperature)
+        {
+            return RainThreshold * (float)Math.Pow(2.0, (temperature - DewPoint) / 10.0);
         }
 
         /// <summary>
@@ -325,7 +370,8 @@ namespace TapTap2026.Simulation
         /// 把每列湿度总量写进 <paramref name="destination"/>（长度须 ≥ <see cref="Width"/>），
         /// 即**每列的云层厚度**——光竖直穿过的整条路径上的云量（只有非固非液格持有湿度，
         /// 而光路上的格恰好都是气体/空，故整列求和就是光程上的云量）。
-        /// 由 <see cref="LightController"/> 每 tick 维护、用来决定该列地表能收到多少光。
+        /// 保留给测试 / 工具（<see cref="LightController"/> 已改为在 <c>ApplyHeat</c> 里边扫光路边累加，
+        /// 不再每逻辑帧调用本方法）。
         /// </summary>
         /// <exception cref="ArgumentNullException">目标缓冲为 null。</exception>
         /// <exception cref="ArgumentException">目标缓冲短于场宽。</exception>
@@ -361,10 +407,21 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 一次湿度输送：扩散 + 温度定向（水平冷→热、竖直越热越向上），只在气体 / 空格之间进行。
-        /// 由 <see cref="ParticleWorld.Step"/> 每 tick 调用一次，界内严格守恒（成对反对称结算）。
+        /// 由 <see cref="ParticleWorld.StepLogic"/> 每逻辑帧调用一次，界内严格守恒（成对反对称结算）。
         /// </summary>
+        /// <remarks>
+        /// <see cref="RiseStopHumidity"/> **只门控竖直平流项**：已凝成云的空气（按真实湿度 <c>current</c> 判定）
+        /// 不再上升，但对称扩散项照常结算——否则会把整对竖直交换冻死（半封闭地形里的一格宽水井曾因此永冻不散）。
+        /// x 扫描方向按 <see cref="ParticleWorld.Parity"/> 交替（false 升序 / true 降序），消除固定方向的偏置。
+        /// </remarks>
+        /// <exception cref="ArgumentNullException"><paramref name="world"/> 为 null。</exception>
         public void Step(ParticleWorld world)
         {
+            if (world == null)
+            {
+                throw new ArgumentNullException(nameof(world));
+            }
+
             float diffusion = _diffusion;
             float horizontalBias = _horizontalBias;
             float riseBias = _riseBias;
@@ -379,7 +436,7 @@ namespace TapTap2026.Simulation
 
             // 每个格子的"可给出额度"：一对邻居一条出边，两条出边可能都想把该格搬空，
             // 用额度逐个扣减就不会出现负值——而负值一旦被下界截断就会**凭空造出湿度**
-            // （实测：不做额度控制时每 3000 tick 多出 158 个水格）。
+            // （实测：不做额度控制时每 3000 逻辑帧多出 158 个水格）。
             float[] budget = _budget ?? (_budget = new float[_humidity.Length]);
             Array.Copy(current, budget, current.Length);
 
@@ -387,10 +444,16 @@ namespace TapTap2026.Simulation
             int width = _width;
             int height = _height;
 
+            // x 扫描方向逐逻辑帧交替：否则"每对只在 a 侧结算一次"会长期偏向某一侧（方向偏置）。
+            bool reversed = world.Parity;
+            int startX = reversed ? width - 1 : 0;
+            int endX = reversed ? -1 : width;
+            int stepX = reversed ? -1 : 1;
+
             for (int y = 0; y < height; y++)
             {
                 int row = y * width;
-                for (int x = 0; x < width; x++)
+                for (int x = startX; x != endX; x += stepX)
                 {
                     // 只有非固非液的格持有湿度：固/液是屏障，不参与输送。
                     if (!IsMoistAir(world, x, y))
@@ -418,11 +481,16 @@ namespace TapTap2026.Simulation
                     // 水汽会一路顶到天花板、堆成贴着顶行的薄盖子，而顶行又是向虚空散热的最冷处，
                     // 于是"云只有薄薄一层、雨像从虚空里落下来"。加门控后云会在**第一次达到可见浓度的高度**
                     // 铺成一层，那才是云的形状。
-                    if (y + 1 < height && IsMoistAir(world, x, y + 1) && budget[a] < RiseStopHumidity)
+                    //
+                    // 门控**只作用在平流项 upward 上**、且读真实湿度 current[a]（不是被水平出流扣过的
+                    // budget[a]）：否则整对竖直交换（含对称扩散项）会被冻死——一格宽水井里的湿度曾因此永冻。
+                    if (y + 1 < height && IsMoistAir(world, x, y + 1))
                     {
                         int b = a + width;
                         float self = budget[a];
-                        float upward = riseBias * (heat.GetTemperatureAt(a) * InverseRiseTemperature) * self;
+                        float upward = current[a] < RiseStopHumidity
+                            ? riseBias * (heat.GetTemperatureAt(a) * InverseRiseTemperature) * self
+                            : 0f;
                         float flow = diffusion * (self - budget[b]) + upward;
                         Transfer(next, budget, a, b, flow);
                     }

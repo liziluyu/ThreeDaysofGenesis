@@ -86,7 +86,7 @@ namespace TapTap2026.Simulation
         /// 校验一份类型属性。注册流程与自定义类型表（<see cref="ParticleWorld"/> 的四参构造）共用本方法，
         /// 保证任何进入运行期的类型都经过同一套检查。
         /// </summary>
-        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、HeatCapacity 非有限正数、Friction 或 Stickiness 不在 [0,1]、或未带任何类别标签。</exception>
+        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、HeatCapacity 非有限正数、ThermalConductivity 不在 [0, <see cref="HeatMap.MaxThermalConductivity"/>]、ThermalEmissivity 不在 [0, <see cref="HeatMap.MaxThermalEmissivity"/>]、Friction 或 Stickiness 不在 [0,1]、或未带任何类别标签。</exception>
         public static void ValidateTypeInfo(ParticleTypeInfo info, string description)
         {
             string name = string.IsNullOrEmpty(description) ? "<未命名类型>" : description;

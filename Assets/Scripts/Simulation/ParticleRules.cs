@@ -369,6 +369,39 @@ namespace TapTap2026.Simulation
             return otherRank == selfRank && (selfTags & ParticleTags.Solid) == 0;
         }
 
+        // ==================== 液体：热对流（海洋 / 湖泊翻转） ====================
+
+        /// 液体热对流：本格比**正上方**的液体暖超过 <paramref name="epsilon"/> 时与上方那格交换位置
+        /// （暖水上浮一格）——海洋 / 湖泊翻转的机制：白天被晒暖的表层形成稳定分层（上暖下冷，不翻转），
+        /// 热量靠传导存进水柱；夜晚表面被辐射抽冷后变成「上冷下暖」的不稳定分层，
+        /// 深处的暖水持续上浮、把白天存的热带回表面——海面因此整夜比陆地暖，陆风得以涌现。
+        /// </summary>
+        /// <remarks>
+        /// <para>只要求正上方是**界内**的液体、且 <c>T(本格) &gt; T(正上方) + epsilon</c>，
+        /// 跨类型判断只走 <see cref="TagsAt"/>（不特判任何 typeId），决策完全确定、不消耗随机数。</para>
+        /// <para>反方向的冷水下沉由这一条规则**对称达成**：冷格下方的暖格上浮时自然把它换下去——
+        /// 不必再写一条方向相反、容易与之打架的规则。表层格（上方是气体）不参与，上浮永远发生在水体内部。</para>
+        /// <para>调用方负责只在竖直与横向都动不了时才调用它（见 <c>WaterParticle.OnMotion</c>），
+        /// 因此对流不会与下落 / 横流争夺优先级。</para>
+        /// </remarks>
+        public static bool TryLiquidConvect(ParticleWorld world, int x, int y, float epsilon)
+        {
+            int aboveY = y + 1;
+            if (!world.IsInBounds(x, aboveY) || !HasTag(world, x, aboveY, ParticleTags.Liquid))
+            {
+                return false;
+            }
+
+            HeatMap heat = world.Heat;
+            if (heat.GetTemperature(x, y) <= heat.GetTemperature(x, aboveY) + epsilon)
+            {
+                return false;
+            }
+
+            world.Swap(x, y, x, aboveY);
+            return true;
+        }
+
         // ==================== 气体：浮力与上升（镜像下落系） ====================
 
         /// <summary>(x,y) 是否是气体可以换入的格子：空（typeId 0）或任何带 <see cref="ParticleTags.Gas"/> 标签的格。
@@ -515,6 +548,18 @@ namespace TapTap2026.Simulation
         /// 水平热压流：仅当左右邻居恰有一侧更热（差值超过 <paramref name="epsilon"/>）时往暖侧换一格——
         /// 冷空气流向暖区（低空海风）。两侧都更热或都不更热时不动；换入受 <see cref="CanGasEnter"/> 的密度次序约束。
         /// </summary>
+        /// <remarks>
+        /// 抗振荡（审计 B1）：热压流把热量随粒子一起搬走，换位后梯度对刚移动的格子反向，于是无记忆时同一对
+        /// 格子会确定性逐帧往返（标记位置 5,4,5,4…），任何温差阈值都挡不住同幅反向。本方法因此用
+        /// <c>flags</c> 的 <see cref="CellFlags.DriftDirectionMask"/> 记住本粒子上次的漂移方向：
+        /// <list type="bullet">
+        /// <item>本帧可漂且方向与记忆**相反** → 不走、记忆保留（禁反向，走廊里最多走一格即停）；</item>
+        /// <item>可漂且方向与记忆相同、或无记忆 → 漂移一格并写入该方向（顺梯度持续前进 = 净输运）；</item>
+        /// <item>本帧没有任何可漂方向（梯度穿过死区 / 被挡）→ 清记忆（换向时梯度必经死区，记忆自然复位）。</item>
+        /// </list>
+        /// 记忆位用 <see cref="CellFlags.DriftDirectionMask"/> / <see cref="CellFlags.DriftDirectionClearMask"/>
+        /// 组合读写，<b>bit0 处理标记不受影响</b>。决策完全确定，不消耗随机数。
+        /// </remarks>
         public static bool TryThermalDrift(ParticleWorld world, int x, int y, float epsilon)
         {
             HeatMap heat = world.Heat;
@@ -524,17 +569,46 @@ namespace TapTap2026.Simulation
 
             if (leftWarmer == rightWarmer)
             {
+                ClearThermalDrift(world, x, y);
                 return false;
             }
 
             int direction = leftWarmer ? -1 : 1;
+            byte wanted = leftWarmer ? CellFlags.DriftDirectionLeft : CellFlags.DriftDirectionRight;
+            byte remembered = (byte)((world.At(x, y).flags & CellFlags.DriftDirectionMask) >> CellFlags.DriftDirectionShift);
+
+            // 与记忆相反：无条件禁反向，记忆保留，等待梯度穿过死区自然复位。
+            // 顺记忆方向或无记忆则继续漂移（净输运 / 建立记忆）。
+            if (remembered != CellFlags.DriftDirectionNone && remembered != wanted)
+            {
+                return false;
+            }
+
             if (!CanGasEnter(world, x, y, x + direction, y))
             {
                 return false;
             }
 
             world.Swap(x, y, x + direction, y);
+
+            // 换位后本格在 x + direction：把新方向写到它身上（Swap 已把旧 flags 带过来并刷新了 bit0）。
+            WriteThermalDrift(world, x + direction, y, wanted);
             return true;
+        }
+
+        /// <summary>清掉本格的漂移方向记忆（梯度已死 / 被挡），保留含 bit0 在内的其余位。</summary>
+        private static void ClearThermalDrift(ParticleWorld world, int x, int y)
+        {
+            byte flags = (byte)(world.At(x, y).flags & CellFlags.DriftDirectionClearMask);
+            world.At(x, y).flags = flags;
+        }
+
+        /// <summary>写入本格的漂移方向记忆，<c>|</c> / <c>&amp; ~</c> 组合保留含 bit0 处理标记在内的其余位。</summary>
+        private static void WriteThermalDrift(ParticleWorld world, int x, int y, byte direction)
+        {
+            byte flags = (byte)((world.At(x, y).flags & CellFlags.DriftDirectionClearMask)
+                | (byte)(direction << CellFlags.DriftDirectionShift));
+            world.At(x, y).flags = flags;
         }
 
         private static bool TryRiseSide(ParticleWorld world, int x, int y, int deltaX)

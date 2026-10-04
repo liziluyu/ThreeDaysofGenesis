@@ -4,7 +4,10 @@ namespace TapTap2026.Simulation
 {
     // AtmosphereParticle —— 大气（气体标签，空气本身粒子化：风与对流、以及**湿度**的载体）
     //
-    // flags 私有位：无（bit3-7 全部空闲）
+    // flags 私有位：bit3-4 水平热压漂移的方向记忆（CellFlags.DriftDirectionMask /
+    //        DriftDirectionShift / DriftDirectionNone/Left/Right，已在 CellFlags.cs 登记为「大气私有」）。
+    //        bit5-7 空闲。读写记忆位用 CellFlags 的掩码常量：读取 DriftDirectionMask、清除
+    //        DriftDirectionClearMask、写入 |，绝不整体赋值 flags（会破坏 bit0 处理标记）。
     // 邻居查询范围：四邻（浮力比温）、上下/斜向各 1 格、同行左右各 1 格
     // 交互的 ParticleIds：无 —— 只比温度，不特判类型
     //
@@ -16,6 +19,13 @@ namespace TapTap2026.Simulation
     //       这里**故意不做随机漂移**：那是数值噪声、不是风，而它搬运的是整格（含热量与湿度），
     //       会给云层注入逐 tick 的可见抖动（实测可见度翻转 178 → 57 每 tick）。气体的混合改由
     //       HumidityField 的扩散与温度定向平流负责——真实的混合是场的行为，不是随机换位。
+    //
+    //       水平热压流带**风向记忆**（见 ParticleRules.TryThermalDrift）：热压流把热量随粒子一起搬走，
+    //       换位后梯度对刚移动的格子反向，于是无记忆时同一对格子会确定性逐帧往返（审计 B1：
+    //       标记位置 5,4,5,4…）。这里在 flags 的 bit3-4 记下上次漂移方向：反向即不走（走廊里最多
+    //       走一格即停），顺向或无记忆才前进，本帧无任何可漂方向才清记忆（换向时梯度必穿过死区）。
+    //       于是低空海风能沿稳定梯度持续净输运，而不是原地抖动。浮力换行即退出该水平时间序列，
+    //       因此浮力成功时会清掉记忆（见 OnMotion）。
     //
     // 湿度：云不存在于此类型里，也不存在于任何粒子类型里——云是**湿度场**（HumidityField）里的高值区。
     //       空气 Swap 时湿度跟着走（见 ParticleWorld.Swap），于是云随风平移、被湍流混合、自然连片；
@@ -55,15 +65,39 @@ namespace TapTap2026.Simulation
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
+            // 浮力换了行即退出这段水平漂移的时间序列，所以成功前先清掉风向记忆；失败（原位未动）再恢复，
+            // 否则会把记忆误清、让水平热压流重新开始逐帧往返。
+            byte memory = ReadDriftMemory(world, x, y);
+            if (memory != CellFlags.DriftDirectionNone)
+            {
+                WriteDriftMemory(world, x, y, CellFlags.DriftDirectionNone);
+            }
+
             if (ParticleRules.TryBuoyantStep(world, x, y, BuoyancyEpsilon))
             {
                 return;
             }
 
-            if (ParticleRules.TryThermalDrift(world, x, y, BuoyancyEpsilon))
+            if (memory != CellFlags.DriftDirectionNone)
             {
-                return;
+                WriteDriftMemory(world, x, y, memory);
             }
+
+            ParticleRules.TryThermalDrift(world, x, y, BuoyancyEpsilon);
+        }
+
+        /// <summary>读本格的风向记忆（<see cref="CellFlags.DriftDirectionMask"/>）。</summary>
+        private static byte ReadDriftMemory(ParticleWorld world, int x, int y)
+        {
+            return (byte)((world.At(x, y).flags & CellFlags.DriftDirectionMask) >> CellFlags.DriftDirectionShift);
+        }
+
+        /// <summary>写本格的风向记忆，<c>|</c> / <c>&amp; ~</c> 组合保留含 bit0 处理标记在内的其它位。</summary>
+        private static void WriteDriftMemory(ParticleWorld world, int x, int y, byte direction)
+        {
+            byte flags = (byte)((world.At(x, y).flags & CellFlags.DriftDirectionClearMask)
+                | (byte)(direction << CellFlags.DriftDirectionShift));
+            world.At(x, y).flags = flags;
         }
 
         public void OnLogic(ParticleWorld world, int x, int y)

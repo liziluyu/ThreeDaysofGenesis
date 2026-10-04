@@ -45,8 +45,7 @@ namespace TapTap2026.Simulation
         /// <remarks>
         /// 与 <see cref="OnLogic"/> 的关系：逻辑帧上先跑 <see cref="OnLogic"/> 再跑本方法；
         /// 若 <see cref="OnLogic"/> 已把本格换成别的类型（相变 / 反应），本帧不再调用本方法。
-        /// 运动帧上只调用本方法，不做任何相变 / 反应——那些都属于 <see cref="OnLogic"/>。
-        /// 禁止在本方法里做相变（<c>SetPhase</c> / <c>Set</c> / <c>Clear</c> 本格）之外的跨类型反应；
+        /// 运动帧上只调用本方法，**不做任何相变 / 反应**——那些都属于 <see cref="OnLogic"/>。
         /// 一个粒子一帧只做一次决策、至多移动一次，移动后立即返回。
         /// </remarks>
         void OnMotion(ParticleWorld world, int x, int y);

@@ -129,7 +129,9 @@ namespace TapTap2026.Simulation
         /// 与网格同形的**湿度**场（每格一个水汽质量），世界持有并随世界重建。
         /// 只有非固非液的格持有湿度；水蒸发提升湿度，湿度像热量一样传播并带温度定向
         /// （水平冷→热、竖直越热越向上），高值低温处凝结成雨。
-        /// 湿度随 <see cref="Swap"/> 被气流搬走（云随风平移），随 <see cref="Set"/> / <see cref="Clear"/> 清零。
+        /// 湿度随 <see cref="Swap"/> 被气流搬走（云随风平移）；<see cref="Set"/> / <see cref="Clear"/> 换上全新物质时，
+        /// 目标若是气体则本格湿度清零；目标若是固/液（不持有湿度），则该格残余先由 <see cref="EvacuateHumidity"/>
+        /// 推给四邻气体格再清零（推不掉则留下，守恒优先于不变量）。
         /// 蒸发 / 凝结 / 降水都是 1:1 搬运，因此水总量守恒。见 <see cref="HumidityField"/>。
         /// </summary>
         public HumidityField Humidity
@@ -262,6 +264,8 @@ namespace TapTap2026.Simulation
         /// 交换两个格子。位置变化**只能**通过它完成：不产生任何对象创建或销毁。
         /// 两个格子的 bit0 都会被写成当前 tick 的标记，因此被移动的粒子不会在本 tick 被二次处理。
         /// **不触发** <c>OnSpawn</c> / <c>OnKill</c>；<c>shade</c> 随格子一起移动，不重新抽样。
+        /// Q 与湿度随物质一起搬运；若被搬动的是**气体**，竖直位移还会按
+        /// <see cref="HeatMap.AdiabaticLapse"/> 做一次绝热直减（上升冷却、下沉增温，见 <see cref="ApplyAdiabatic"/>）。
         /// </summary>
         /// <returns>两个坐标都在界内则 true；任一越界则什么都不做并返回 false。</returns>
         public bool Swap(int x0, int y0, int x1, int y1)
@@ -287,10 +291,64 @@ namespace TapTap2026.Simulation
             // 所以水与气体换位时搬过去的是气体那侧的湿度，水不会把水汽带走。
             _humidity.Swap(a, b);
 
+            // 绝热直减：气体竖直换位时按位移调整自身热量——上升（Δy > 0）冷却、下沉（Δy < 0）增温。
+            // 两格各自按「新 y − 旧 y」独立结算，因此上升侧与下沉侧的 ΔQ 符号相反；水平换位 Δy = 0 直接跳过。
+            ApplyAdiabatic(a, x0, y0, y0 - y1);
+            ApplyAdiabatic(b, x1, y1, y1 - y0);
+
             byte stamp = _stamp;
             _cells[a].flags = CellFlags.WithProcessed(_cells[a].flags, stamp);
             _cells[b].flags = CellFlags.WithProcessed(_cells[b].flags, stamp);
             return true;
+        }
+
+        /// <summary>
+        /// (x,y) 上的物质是不是气体 / 空（空气 typeId 0，或带 <see cref="ParticleTags.Gas"/> 标签的类型）。
+        /// 湿度的可驻留判据：非气体格必须持有 0 湿度（固/液是屏障，见 <see cref="EvacuateHumidity"/>）。
+        /// </summary>
+        private bool IsGasType(ushort typeId)
+        {
+            if (typeId == ParticleRegistry.AirTypeId)
+            {
+                return true;
+            }
+
+            if (typeId >= _types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = _types[typeId];
+            return type != null && (type.Info.Tags & ParticleTags.Gas) != 0;
+        }
+
+        /// <summary>
+        /// <see cref="Swap"/> 之后的绝热直减结算：<paramref name="index"/> 上的物质刚从 (x, y - Δy) 搬到 (x, y)，
+        /// 若它是气体则按 <c>ΔQ = -AdiabaticLapse × Δy × C</c> 调整热量（上升冷却、下沉增温）。
+        /// C 取该类型的热容；空气（typeId 0）用 <see cref="HeatMap.AirHeatCapacity"/>。水平位移 Δy = 0 时直接返回。
+        /// </summary>
+        /// <remarks>
+        /// 热量按**位温**守恒的近似兑现：气块在界内竖直移动时 Q 增减，而不是把 Q 原样搬走。
+        /// 两格独立结算，故上升格与下沉格的 ΔQ 大小相同、符号相反——界内总量在成对换位里精确抵消。
+        /// 热路径：一次标签/typeId 判断 + 一次类型表查表，无分配。
+        /// </remarks>
+        private void ApplyAdiabatic(int index, int x, int y, int deltaY)
+        {
+            if (deltaY == 0)
+            {
+                return;
+            }
+
+            ushort typeId = _cells[index].typeId;
+            if (!IsGasType(typeId))
+            {
+                return;
+            }
+
+            float capacity = typeId == ParticleRegistry.AirTypeId
+                ? HeatMap.AirHeatCapacity
+                : _types[typeId].Info.HeatCapacity;
+            _heat.AddHeat(x, y, -_heat.AdiabaticLapse * deltaY * capacity);
         }
 
         /// <summary>
@@ -300,6 +358,8 @@ namespace TapTap2026.Simulation
         /// 执行顺序严格为：读受害者 → 受害者 <c>OnKill(world, x, y, typeId)</c>（此刻网格上仍是受害者本体）
         /// → 写入新格（typeId / flags = 当前标记 / shade 重新抽样）→ 新类型 <c>OnSpawn</c>。
         /// 因此 <c>OnKill</c> 内对本格的写会被随后写入的新格覆盖，残留物必须写到邻居格。
+        /// 换上的是**全新物质**：旧热随旧物质离场，新物质从环境热量开始；目标换成非气体（固/液）时，
+        /// 旧格的水汽先由 <see cref="EvacuateHumidity"/> 推给四邻气体格再清零（推不掉则留下，守恒优先于不变量）。
         /// 同类型重复 Set 是空操作，不触发任何钩子、不消耗随机数。
         /// </remarks>
         /// <returns>坐标越界或 typeId 未注册则 false（非法 typeId 只报错一次）。</returns>
@@ -339,8 +399,17 @@ namespace TapTap2026.Simulation
             // 新物质替换掉旧物质：热由物质携带，旧热随旧物质离场，新物质从环境热量开始。
             _heat.ResetHeatAt(index);
 
-            // 同理，悬浮水滴属于旧物质；新物质不含凝结物（相变路径会先读出旧值再显式写回）。
-            _humidity.ResetAt(index);
+            // 水汽也是旧物质的一部分：目标是非气体（固/液）时，固/液不持有湿度，先把本格水汽推给四邻
+            // 气体格再清零（推不掉则留在原地，守恒优先，见 EvacuateHumidity）。目标仍是气体则按
+            // 「全新物质」语义直接清零。
+            if (IsGasType(typeId))
+            {
+                _humidity.ResetAt(index);
+            }
+            else
+            {
+                EvacuateHumidity(x, y, index);
+            }
 
             if (typeId == ParticleRegistry.AirTypeId)
             {
@@ -362,15 +431,17 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// **相变专用**：把 (x,y) 换成 <paramref name="typeId"/>，并把旧格的**热量 Q 与凝结物**原样带过去，
-        /// 随后触发新类型的 <c>OnSpawn</c>（新类型因此可以在 OnSpawn 里接管凝结物、释放潜热等）。
+        /// **相变专用**：把 (x,y) 换成 <paramref name="typeId"/>，并把旧格的**热量 Q 与湿度**原样带过去，
+        /// 随后触发新类型的 <c>OnSpawn</c>（新类型因此可以在 OnSpawn 里结算潜热、消费湿度等）。
         /// </summary>
         /// <remarks>
-        /// 与 <see cref="Set"/> 的区别正在于「携带」：<c>Set</c> 视为换上**全新物质**（Q 与凝结物清零），
-        /// 而相变是**同一份物质换了个形态**——水/蒸汽/云之间的质量与热量必须留在原格、逐格守恒。
-        /// 典型用法是蒸发：<c>SetPhase(x, y, Steam)</c> 保留 Q，新蒸汽因为热容骤降而变得更烫（浮力来源）。
-        /// 抛给新类型 <c>OnSpawn</c> 的理由是它可能还要改这一格（例如空气接管云滴、凝结物 +1）。
-        /// 它**不会**替相变双方做守恒记账，那由各自的类型代码负责（见 <c>WaterParticle</c> 与 <see cref="StepRain"/>）。
+        /// 与 <see cref="Set"/> 的区别正在于「携带」：<c>Set</c> 视为换上**全新物质**（Q 清零、湿度驱逐），
+        /// 而相变是**同一份物质换了个形态**——水 / 大气之间的质量与热量必须留在原格、逐格守恒。
+        /// 典型用法是蒸发：<c>SetPhase(x, y, ParticleIds.Atmosphere)</c> 保留 Q，新大气因为热容骤降而变得更烫（浮力来源）。
+        /// **湿度只对气体形态原样携带**：换成非气体（固/液）时固/液不持有湿度，该格水汽改由
+        /// <see cref="EvacuateHumidity"/> 推给四邻气体格（推不掉则留下，守恒优先于不变量）。
+        /// 抛给新类型 <c>OnSpawn</c> 的理由是它可能还要改这一格；它**不会**替相变双方做守恒记账，
+        /// 那由各自的类型代码负责（见 <c>WaterParticle</c> 与 <see cref="StepRain"/>）。
         /// </remarks>
         /// <returns>坐标越界或 typeId 未注册则 false（非法 typeId 只报错一次）。</returns>
         public bool SetPhase(int x, int y, ushort typeId)
@@ -403,15 +474,20 @@ namespace TapTap2026.Simulation
             }
 
             float heat = _heat.GetHeat(x, y);
-            float humidity = _humidity.Get(x, y);
+
+            // 相变到非气体（固/液）时固/液不持有湿度：先把它推给四邻气体格再清零。
+            // 气体形态则原样携带——本格湿度不动，即随之进入新形态。
+            if (!IsGasType(typeId))
+            {
+                EvacuateHumidity(x, y, index);
+            }
 
             ref Cell cell = ref _cells[index];
             cell.typeId = typeId;
             cell.flags = _stamp;
 
-            // Q 与凝结物跟着物质走，不重置（这正是与 Set 的区别）。
+            // Q 跟着物质走，不重置（这正是与 Set 的区别）。
             _heat.SetHeat(x, y, heat);
-            _humidity.Set(x, y, humidity);
 
             if (typeId == ParticleRegistry.AirTypeId)
             {
@@ -432,17 +508,19 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 降水：温度低于露点的饱和空气（湿度 ≥ <see cref="HumidityField.RainThreshold"/>）
+        /// 降水：湿度达到当前温度的**饱和湿度**（<see cref="HumidityField.SaturationHumidity"/>）的气体格
         /// 按 <c>湿度 × RainRate</c> 的概率凝结成雨。由 <see cref="StepLogic"/> 每逻辑帧调用一次。
         /// </summary>
         /// <remarks>
+        /// 饱和湿度随温度下降而下降（饱和水汽压曲线的指数近似）：越冷越容易凝结，这是"云底在低温处"的判据。
         /// 湿度越高掉得越快，这是让云量收敛的负反馈（否则水汽会一路攒成满天薄雾）。
-        /// 凝结把一整个水格的质量从湿度场搬成一个 Water 粒子（1:1，水守恒）；格子变成液体后会**把它剩余的
-        /// 水汽推给周围的气体邻居**——固/液不持有湿度这条不变量因此得以保持，同时不丢质量。
+        /// 凝结把一整个水格的质量从湿度场搬成一个 Water 粒子（1:1，水守恒），并按
+        /// <see cref="HumidityField.LatentHeatPerUnit"/> 给本格补上潜热（凝结放热，加热云层）；
+        /// 格子变成液体后由 <see cref="SetPhase"/> 把剩余水汽推给周围的气体邻居——
+        /// 固/液不持有湿度这条不变量因此得以保持，同时不丢质量。
         /// </remarks>
         private void StepRain()
         {
-            Cell[] cells = _cells;
             int width = _width;
             int height = _height;
 
@@ -459,21 +537,11 @@ namespace TapTap2026.Simulation
 
                     float humidity = _humidity.GetAt(i);
                     float temperature = _heat.GetTemperatureAt(i);
-                    if (temperature > HumidityField.DewPoint)
-                    {
-                        continue; // 暖处的饱和空气只是闷热，不会下雨
-                    }
 
-                    // 饱和湿度随温度下降而下降（饱和水汽压随温度陡降的线性近似）：
-                    // 越冷的地方越容易下雨。没有这一条，高位冷空气与海面用同一个阈值，
-                    // 要么海面先下雨（云散）、要么高空的云永远攒不到阈值（海洋被蒸干）。
-                    float coldFactor = temperature / HumidityField.DewPoint;
-                    if (coldFactor < 0.1f)
-                    {
-                        coldFactor = 0.1f;
-                    }
-
-                    if (humidity < HumidityField.RainThreshold * coldFactor)
+                    // 饱和判据：湿度低于该温度下的饱和湿度就不凝结。SaturationHumidity 用
+                    // RainThreshold · 2^((T − DewPoint)/10) 表达「越冷越容易饱和」，替代旧的线性 coldFactor；
+                    // 高湿高温的空气因此不再降雨（热地表不会积累成永久白斑），低温柔量空气反而能凝结。
+                    if (humidity < HumidityField.SaturationHumidity(temperature))
                     {
                         continue;
                     }
@@ -529,9 +597,12 @@ namespace TapTap2026.Simulation
                         }
                     }
 
-                    // 本格剩下的水汽（湿度高于一个水滴时）推给邻居：固/液不持有湿度。
-                    EvacuateHumidity(x, y, i);
+                    // 本格剩下的水汽（湿度高于一个水滴时）由 SetPhase 在换成液体时推给四邻气体格
+                    // （固/液不持有湿度）——上面的封闭气泡检查保证收得下、不会把水汽困在水里。
                     SetPhase(x, y, ParticleIds.Water);
+
+                    // 凝结释放潜热，加热云层：每凝结一个水格，本格热量 +LatentHeatPerUnit。
+                    _heat.AddHeat(x, y, HumidityField.LatentHeatPerUnit);
                 }
             }
         }
@@ -577,21 +648,28 @@ namespace TapTap2026.Simulation
             return receivers;
         }
 
-        /// <summary>把 (x,y) 残留的湿度**全部**推给周围的气体邻居（推不动的部分留在原地）。
-        /// 用于「气体 → 固/液」的相变：固/液不持有湿度——若留下残余，等它日后蒸发时会与新增的水汽
-        /// 叠加，凭空造水（实测：每 4000 tick 多出 0.3 个水格）。</summary>
+        /// <summary>
+        /// 把 (x,y) 一格的水汽**全部**推给四邻气体格，随即把本格湿度清零；无气体邻居可推时留在原地。
+        /// </summary>
+        /// <remarks>
+        /// 调用时机：一格即将变成非气体（固/液）——<see cref="Set"/> / <see cref="SetPhase"/> 在目标非气体时调用，
+        /// 降雨凝结路径则经 <see cref="SetPhase"/> 间接走到这里。固/液不持有湿度：若留下残余，等它日后
+        /// 相变回气体时会与新增的水汽叠加、凭空造水（实测：每 4000 tick 多出 0.3 个水格）。
+        /// 四面都不是气体时**不清零**——守恒优先于「固/液不持有湿度」这条不变量。
+        /// </remarks>
         private void EvacuateHumidity(int x, int y, int index)
         {
             float residual = _humidity.GetAt(index);
             if (residual <= 0f)
             {
+                _humidity.ResetAt(index); // 抹掉 -0f 之类的极小负值，保证不变量成立
                 return;
             }
 
             int receivers = CountMoistReceivers(x, y);
             if (receivers == 0)
             {
-                return; // 四面都不是气体：无处可去，只能留在原地（调用方须先确认收得下）
+                return; // 四面都不是气体：无处可去，只能留在原地（守恒优先）
             }
 
             float share = residual / receivers;
@@ -605,7 +683,7 @@ namespace TapTap2026.Simulation
                 }
             }
 
-            _humidity.AddAt(index, -share * receivers);
+            _humidity.ResetAt(index);
         }
 
         /// <summary>确定性随机数（xorshift32）。类型代码一律用它，禁止 UnityEngine.Random。</summary>
@@ -666,7 +744,7 @@ namespace TapTap2026.Simulation
         /// <b>①′随机刻</b>（随机抽 <see cref="RandomTicksPerStep"/> 个格，命中非空气非静态的格就调 <c>OnRandomTick</c>）→
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
         /// <b>③湿度输送</b>（<see cref="HumidityField.Step"/>：扩散 + 水平冷→热 + 竖直越热越向上）→
-        /// <b>③′降水</b>（温度低于露点的饱和空气凝结成雨）→
+        /// <b>③′降水</b>（湿度越过该温度饱和湿度的气体格凝结成雨，并按 <see cref="HumidityField.LatentHeatPerUnit"/> 释放潜热）→
         /// <b>④光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
         /// 因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
         /// 上层应让逻辑帧落在运动帧的节拍上——每 3 个运动帧跑一次本方法，即 60 Hz 运动 / 20 Hz 逻辑。
@@ -683,9 +761,10 @@ namespace TapTap2026.Simulation
 
                 _tick++;
 
-                // 网格扫描之后：先做一次全格四邻热传导（含辐射/虚空散热），再让光照向每列最上面的非气体粒子施热。
-                // 全程在 try 内，异常（如某类型钩子抛出）时本帧的 _tick 不自增，
-                // 传导 / 湿度 / 降水 / 光照一并不生效，与「异常后粒子仍会在下一帧被处理」的约定一致。
+                // 网格扫描之后：②全格四邻热传导（含辐射 / 虚空散热）→ ③湿度输送（扩散 + 冷→热 + 越热越向上）
+                // → ③′降水（饱和且够冷的气体格凝结成雨、释放潜热）→ ④光照（向每列最上面的非气体粒子施热）。
+                // 全程在 try 内：任一阶段抛异常时，其后阶段一并不生效；此时 _tick 已自增（见上），
+                // 但 finally 会按新 tick 恢复写入标记，因此「异常后粒子仍会在下一帧被处理」的约定依然成立。
                 _heat.Step();
                 _humidity.Step(this);
                 StepRain();
@@ -693,8 +772,9 @@ namespace TapTap2026.Simulation
             }
             finally
             {
-                // 某个钩子抛异常时 _tick 未自增，此处按「旧 tick」恢复写入标记，
-                // 使异常后新建的粒子仍会被下一帧处理；正常路径则按自增后的 tick 恢复。
+                // 无论正常还是异常退出，都按**当前** tick 恢复写入标记：扫描 / 随机刻阶段抛异常时 _tick 尚未自增，
+                // 按旧 tick 恢复，使异常后新建的粒子仍会被下一帧处理；_tick 自增之后（热 / 湿度 / 降水 / 光照）
+                // 抛异常则按新 tick 恢复，标记同样与下一帧的扫描一致。
                 _stamp = OutsideStamp;
             }
         }
@@ -797,6 +877,12 @@ namespace TapTap2026.Simulation
             {
                 // 逻辑钩子先跑（相变 / 反应）。它若把本格换成了别的类型，说明这一格本帧已经「用掉」了：
                 // 新格已由 Set / SetPhase 标成已处理，旧类型的运动规则也不再适用于新物质——本帧跳过运动。
+                //
+                // 契约（onLogic）：`OnLogic` 里**同类型**的 `Swap` 同样禁止绕过这次运动跳过。
+                // 跳过判定只比较 typeId，因此「相变后原地同 id 换位」不会被识别；任何 OnLogic
+                // 若在本格上做同 id 的 Swap（例如与自己左边的同类换位），必须自己在换位后
+                // 保证本帧不再执行运动——否则会在同一帧被 ProcessCell 二次运动。当前所有
+                // OnLogic 实现（水、湿土、大气等）都不做同 id 换位。
                 type.OnLogic(this, x, y);
                 if (cells[index].typeId != id)
                 {

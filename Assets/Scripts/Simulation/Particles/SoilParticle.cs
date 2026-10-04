@@ -49,6 +49,9 @@ namespace TapTap2026.Simulation
             // 水格被 Clear（它的热量先并进本格，物质带热，避免「水一接触土、热凭空消失」）。
             // 上面是水的这一格，扫过它时本逻辑帧已经处理完了（扫描自上而下），因此在这里清掉它不会漏掉它的更新。
             // 湿土怎么把这份水再传下去由 WetSoilParticle 负责（水现在存在湿土这一格里了）。
+            //
+            // 判据用 Liquid 标签：**当前所有液体都视为水**（只有 ParticleIds.Water 带 Liquid 标签）。
+            // 未来加入岩浆 / 酸等其它液体时，必须改成 id == ParticleIds.Water，否则任何液体都会被当水灌成湿土。
             if ((ParticleRules.TagsAt(world, x, y + 1) & ParticleTags.Liquid) != 0)
             {
                 world.SetPhase(x, y, ParticleIds.WetSoil);

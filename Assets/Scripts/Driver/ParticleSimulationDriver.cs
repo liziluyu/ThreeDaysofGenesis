@@ -23,7 +23,7 @@ namespace TapTap2026.Game
         [SerializeField] private ParticleSimulationSettings _settings;
         [SerializeField] private ParticleRenderer _renderer;
 
-        [Tooltip("关掉只停逻辑推进，仍可手动上屏。")]
+        [Tooltip("是否推进模拟。关掉即暂停：运动帧与逻辑帧一起冻结，仍可用 PresentNow 手动上屏。")]
         [SerializeField] private bool _simulate = true;
 
         [Header("沙箱尺寸（格，0 = 用 Settings 资产的值）")]
@@ -52,11 +52,30 @@ namespace TapTap2026.Game
             get { return _world; }
         }
 
-        /// <summary>是否推进逻辑。运行时可切换（暂停/继续）。</summary>
+        /// <summary>是否推进模拟（运动帧与逻辑帧）。运行时可切换（继续/暂停）。</summary>
         public bool Simulate
         {
             get { return _simulate; }
             set { _simulate = value; }
+        }
+
+        /// <summary>是否处于暂停：暂停时不推进任何帧（运动帧与逻辑帧一起冻结），网格内容不变化。</summary>
+        public bool Paused
+        {
+            get { return !_simulate; }
+            set { _simulate = !value; }
+        }
+
+        /// <summary>进入暂停：冻结所有帧（运动帧与逻辑帧）。幂等。由调用方决定何时暂停（例如输入处理）。</summary>
+        public void Pause()
+        {
+            _simulate = false;
+        }
+
+        /// <summary>退出暂停：恢复推进所有帧。幂等。</summary>
+        public void Resume()
+        {
+            _simulate = true;
         }
 
         /// <summary>把网格**当前**状态立即上屏一次（暂停中改了网格后可用）。本方法不推进逻辑帧。</summary>
@@ -193,6 +212,7 @@ namespace TapTap2026.Game
             heat.Conductivity = current.Conductivity;
             heat.VoidHeatLoss = current.VoidHeatLoss;
             heat.RadiativeLoss = current.RadiativeLoss;
+            heat.AdiabaticLapse = current.AdiabaticLapse;
             heat.AirThermalConductivity = current.AirThermalConductivity;
             heat.AirThermalEmissivity = current.AirThermalEmissivity;
             heat.DebugHeatOverlay = _heatDebugOverlay;

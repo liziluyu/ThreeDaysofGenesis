@@ -4,13 +4,17 @@ using TapTap2026.Simulation;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿、确定性，
-    /// 以及生产注册路径的回填与标签。
+    /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿、确定性、
+    /// 液体热对流（暖水换位 / 死区 / 不抢下落 / 夜间海面反超陆面的涌现回归），
+    /// 以及蒸发（慢蒸发不可见 / 沸腾可见 / 潜热吸热）与生产注册路径的回填与标签。
     /// </summary>
     /// <remarks>
-    /// 行为测试一律走 <see cref="TestTables.Build"/> 的隔离类型表（水 = id 1，搭配的固体 = id 2），
-    /// 不触碰全局注册表；只有 <see cref="ProductionRegistration_BackfillsLiquidTaggedId"/>
-    /// 走 <see cref="ParticleRegistration.RegisterAll"/> 验证生产路径。
+    /// <para>纯流体行为测试走 <see cref="TestTables.Build"/> 的隔离类型表（水 = id 1，搭配的固体 = id 2），
+    /// 不触碰全局注册表。</para>
+    /// <para>蒸发测试必须走 <see cref="ParticleRegistration.RegisterAll"/> 的生产表：播撒的接收格判据
+    /// <see cref="ParticleRules.IsGasOrEmpty"/> 与相变目标 <see cref="ParticleIds.Atmosphere"/> 都依赖
+    /// <see cref="ParticleIds"/> 的回填字段，隔离表里它们是 0（契约允许的唯一例外路径，与
+    /// <c>WeatherParticleTests</c> 的取舍一致）。</para>
     /// </remarks>
     public sealed class WaterParticleTests
     {
@@ -258,5 +262,307 @@ namespace TapTap2026.Tests
             Assert.IsFalse(water.Info.IsStatic, "水不是静态类型");
             Assert.Greater(water.Info.MaxFlowSpread, 0, "液体必须有非零横流上限");
         }
+
+        // ==================== 蒸发：B2 / B3 回归 + 潜热（C1 / C3） ====================
+
+        /// <summary>把 (x,y) 设成指定温度（T = Q / 热容；热容从**本世界**的类型表读，故隔离表与生产表通用；
+        /// 空气没有类型条目，用 <see cref="HeatMap.AirHeatCapacity"/>）。</summary>
+        private static void SetTemperature(ParticleWorld world, int x, int y, float temperature)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            float capacity = id == ParticleRegistry.AirTypeId
+                ? HeatMap.AirHeatCapacity
+                : world.Types[id].Info.HeatCapacity;
+            world.Heat.SetHeat(x, y, temperature * capacity);
+        }
+
+        /// <summary>
+        /// B3 回归：世界顶行的水，正上方越界——**不得**把越界当成空气而蒸发。
+        /// 直接重复调用水的逻辑钩子（不跑整帧）：概率门每约 300 次就会放行一次，因此若缺
+        /// <c>IsInBounds</c> 检查，这里必然抓到一次"整份水汽落进自己那格"的假蒸发。
+        /// </summary>
+        [Test]
+        public void TopRowWater_NeverEvaporatesSlowly()
+        {
+            ParticleRegistration.RegisterAll();
+            const int height = 6;
+            const int x = 6;
+            ParticleWorld world = new ParticleWorld(12, height, 20261004u);
+            world.Set(x, height - 1, ParticleIds.Water);
+            SetTemperature(world, x, height - 1, WaterParticle.SlowEvaporationTemperature);
+
+            ParticleType water = ParticleRegistry.Types[ParticleIds.Water];
+            for (int i = 0; i < 10000; i++)
+            {
+                water.OnLogic(world, x, height - 1);
+            }
+
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(x, height - 1).typeId,
+                "顶行的水正上方越界（不是空气），不该被当成空气蒸发（审计 B3）");
+            Assert.AreEqual(0f, world.Humidity.Sum(), 1e-4f, "顶行的水不该产生任何湿度");
+        }
+
+        /// <summary>
+        /// B2 回归：半封闭地形里接收格太少时，慢蒸发必须**放弃并保留水**——否则
+        /// <c>Unit/接收格数</c> 会远超可见阈值，凭空冒出一坨看得见的水汽。
+        /// 1 格宽竖井只剩正上方一格空气：份额 0.5 ≫ <see cref="HumidityField.InvisibleSpreadMaxShare"/>。
+        /// </summary>
+        [Test]
+        public void SlowEvaporation_WithTooFewReceivers_KeepsTheWater()
+        {
+            ParticleRegistration.RegisterAll();
+            ParticleWorld world = new ParticleWorld(1, 3, 20261004u);
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.Water);
+            SetTemperature(world, 0, 1, WaterParticle.SlowEvaporationTemperature);
+
+            ParticleType water = ParticleRegistry.Types[ParticleIds.Water];
+            for (int i = 0; i < 10000; i++)
+            {
+                water.OnLogic(world, 0, 1);
+            }
+
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(0, 1).typeId,
+                "接收格只有 1 个（份额 0.5）：慢蒸发必须放弃、水保留（审计 B2）");
+            Assert.AreEqual(0f, world.Humidity.Sum(), 1e-4f, "半封闭地形不得凭空冒出可见水汽");
+        }
+
+        /// <summary>
+        /// 开阔地形里慢蒸发最终发生，且**带走一份潜热**（C1）：
+        /// 本格 Q = 原 Q − <see cref="HumidityField.LatentHeatPerUnit"/>，水格变大气、湿度总量守恒。
+        /// </summary>
+        [Test]
+        public void SlowEvaporation_RemovesLatentHeatFromTheWater()
+        {
+            ParticleRegistration.RegisterAll();
+            const int x = 8;
+            const int y = 4;
+            ParticleWorld world = new ParticleWorld(16, 16, 20261004u);
+            world.Set(x, y, ParticleIds.Water);
+            float capacity = ParticleRegistry.Types[ParticleIds.Water].Info.HeatCapacity;
+            float startHeat = WaterParticle.SlowEvaporationTemperature * capacity;
+            world.Heat.SetHeat(x, y, startHeat);
+
+            ParticleType water = ParticleRegistry.Types[ParticleIds.Water];
+            int frames = 0;
+            while (world.GetCell(x, y).typeId == ParticleIds.Water && frames < 20000)
+            {
+                water.OnLogic(world, x, y);
+                frames++;
+            }
+
+            Assert.AreNotEqual(ParticleIds.Water, world.GetCell(x, y).typeId,
+                "够暖、正上方是开阔空气：慢蒸发最终应发生");
+            Assert.AreEqual(0, CountType(world, ParticleIds.Water), "水格已蒸发");
+            Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格蒸发出一份水汽");
+            Assert.AreEqual(startHeat - HumidityField.LatentHeatPerUnit, world.Heat.GetHeat(x, y), 1e-3f,
+                "蒸发带走 110 潜热：本格变冷（C1，海面被蒸发冷却）");
+        }
+
+        /// <summary>
+        /// 沸腾是**可见**路径，按设计不受份额门控：同样只剩 1 个接收格的竖井里，
+        /// 到达沸点的水照样蒸发（与 B2 的慢蒸发形成对照）。
+        /// </summary>
+        [Test]
+        public void BoilingEvaporation_IsNotLimitedByMaxShare()
+        {
+            ParticleRegistration.RegisterAll();
+            ParticleWorld world = new ParticleWorld(1, 3, 20261004u);
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.Water);
+            SetTemperature(world, 0, 1, WaterParticle.BoilingPoint);
+
+            ParticleRegistry.Types[ParticleIds.Water].OnLogic(world, 0, 1);
+
+            Assert.AreEqual(ParticleIds.Atmosphere, world.GetCell(0, 1).typeId,
+                "沸腾必须蒸发：可见路径不限份额（maxShare = 0）");
+            Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格蒸发出一份水汽");
+            Assert.GreaterOrEqual(world.Humidity.Get(0, 1), HumidityField.VisibleThreshold,
+                "沸腾汽团以原地为中心可见（接收格含本格）");
+        }
+
+        // ==================== 液体热对流（海洋 / 湖泊翻转） ====================
+
+        /// <summary>每列最上面**非气体**格（水面 / 地面 / 墙顶）的温度；整列都是气体时返回 <see cref="float.NaN"/>。</summary>
+        private static float SurfaceTemperature(ParticleWorld world, int x)
+        {
+            for (int y = world.Height - 1; y >= 0; y--)
+            {
+                if (!ParticleRules.IsGasOrEmpty(world, x, y))
+                {
+                    return world.Heat.GetTemperature(x, y);
+                }
+            }
+
+            return float.NaN;
+        }
+
+        /// <summary>
+        /// 单格对流：上冷下暖两格静止水夹在石壁之间（横竖都动不了），是不稳定分层——
+        /// 跑若干运动帧后暖水上浮一格、两格换位，热量随粒子一起搬（Q 由 <c>Swap</c> 带走）。
+        /// </summary>
+        [Test]
+        public void LiquidConvection_WarmWaterRisesThroughTheColdAbove()
+        {
+            ParticleWorld world = CreateWorld(3, 6);
+            FillRow(world, 0, StoneId);
+            for (int y = 1; y <= 4; y++)
+            {
+                world.Set(0, y, StoneId);
+                world.Set(2, y, StoneId);
+            }
+
+            world.Set(1, 1, WaterId); // 下暖
+            world.Set(1, 2, WaterId); // 上冷
+            SetTemperature(world, 1, 1, 40f);
+            SetTemperature(world, 1, 2, 10f);
+
+            for (int i = 0; i < 10; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(WaterId, world.GetCell(1, 1).typeId, "水量守恒");
+            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId, "水量守恒");
+            Assert.AreEqual(40f, world.Heat.GetTemperature(1, 2), 1e-3f, "暖水上浮：热量随粒子搬到上方");
+            Assert.AreEqual(10f, world.Heat.GetTemperature(1, 1), 1e-3f, "冷水被换到下方");
+        }
+
+        /// <summary>
+        /// 下暖上冷但温差不超过 <see cref="WaterParticle.LiquidConvectionEpsilon"/> 时纹丝不动：
+        /// 死区把等温面上的浮点残差挡在门外，避免无意义的换位。
+        /// </summary>
+        [Test]
+        public void LiquidConvection_IgnoresDifferenceWithinEpsilon()
+        {
+            float warm = 10f + WaterParticle.LiquidConvectionEpsilon * 0.8f;
+
+            ParticleWorld world = CreateWorld(3, 6);
+            FillRow(world, 0, StoneId);
+            for (int y = 1; y <= 4; y++)
+            {
+                world.Set(0, y, StoneId);
+                world.Set(2, y, StoneId);
+            }
+
+            world.Set(1, 1, WaterId);
+            world.Set(1, 2, WaterId);
+            SetTemperature(world, 1, 1, warm); // 下方略暖，但在死区内
+            SetTemperature(world, 1, 2, 10f);
+
+            for (int i = 0; i < 30; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(warm, world.Heat.GetTemperature(1, 1), 1e-3f, "温差在死区内：下方保持不动");
+            Assert.AreEqual(10f, world.Heat.GetTemperature(1, 2), 1e-3f, "温差在死区内：上方保持不动");
+        }
+
+        /// <summary>
+        /// 对流不抢在下落前面：正下方是气体的落水照常下落一格；
+        /// 原语对「正上方不是液体」恒为 false（上方是空气也绝不换上去）。
+        /// </summary>
+        [Test]
+        public void LiquidConvection_DoesNotTriggerOverGas()
+        {
+            ParticleWorld world = CreateWorld(4, 8);
+            world.Set(2, 5, WaterId);
+            SetTemperature(world, 2, 5, 60f); // 就算很暖，上下都是空气也不对流
+
+            world.StepMotion();
+
+            Assert.AreEqual(WaterId, world.GetCell(2, 4).typeId, "正下方是空气：照常下落一格");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(2, 5).typeId, "原格已空");
+
+            ParticleWorld ruleWorld = CreateWorld(4, 8);
+            ruleWorld.Set(2, 5, WaterId);
+            SetTemperature(ruleWorld, 2, 5, 60f);
+
+            Assert.IsFalse(
+                ParticleRules.TryLiquidConvect(ruleWorld, 2, 5, WaterParticle.LiquidConvectionEpsilon),
+                "正上方不是液体：原语返回 false");
+            Assert.AreEqual(WaterId, ruleWorld.GetCell(2, 5).typeId, "原语不该换位");
+        }
+
+        /// <summary>
+        /// 核心涌现回归，锁死用户报告的现象「陆地无论昼夜总比水域热、陆风无法涌现」：
+        /// 一窄世界里左侧是深 8 格的水体立柱、右侧是高 8 格的干土立柱，上方皆大气。
+        /// 光照强度 10 跑 600 逻辑帧（白天），再关灯跑 600 逻辑帧（夜间）；
+        /// 断言**夜晚后段**水面温度高于土面温度——对流把白天搅进深水的热在夜里翻回表面，
+        /// 正是海风 / 陆风环流需要的"夜间海面更暖"。
+        /// 无对流时水只有表层储热、整夜被辐射抽冷，水面低于只靠浅层传导的土面（pre-fix 挂）。
+        /// 白天不断言方向：陆面更热是预期，本用例只锁"夜间反转"。
+        /// </summary>
+        /// <remarks>
+        /// 走 <see cref="ParticleRegistration.RegisterAll"/> 的**生产表**：这段模拟跑满 1200 逻辑帧，
+        /// 必定出现降雨，而降雨由 <c>ParticleWorld.StepRain</c> 用 <see cref="ParticleIds.Water"/> 凝结成水——
+        /// 隔离表里该字段是 0（或上一次生产注册留下的越界 id），只有生产表才自洽（与 <c>WeatherParticleTests</c> 同一取舍）。
+        /// 探针取两柱的**中线列**（各距最近的石壁 7~8 格），把 1 格宽石壁顶被晒热后的侧向导热
+        /// 影响压到最小；水面 / 土面高度用 <see cref="SurfaceTemperature"/> 动态取最上面非气体格，
+        /// 因此白天的蒸发掉格、降雨补水都不影响断言。
+        /// </remarks>
+        [Test]
+        public void LiquidConvection_KeepsSeaWarmerThanLand_ThroughTheNight()
+        {
+            ParticleRegistration.RegisterAll();
+            ParticleWorld world = new ParticleWorld(40, 16, 20261004u);
+
+            // 与生产 driver 一致：先把所有空格填成大气，再铺地板、砌墙、立柱。
+            for (int y = 0; y < world.Height; y++)
+            {
+                FillRow(world, y, ParticleIds.Atmosphere);
+            }
+
+            FillRow(world, 0, ParticleIds.Stone);
+
+            // 水体立柱：x = 1..14、深 8；石壁 x = 0 / 15 把它关住。
+            for (int y = 1; y <= 8; y++)
+            {
+                world.Set(0, y, ParticleIds.Stone);
+                world.Set(15, y, ParticleIds.Stone);
+                for (int x = 1; x <= 14; x++)
+                {
+                    world.Set(x, y, ParticleIds.Water);
+                }
+            }
+
+            // 干土立柱：x = 25..38、高 8；石壁 x = 24 / 39。
+            for (int y = 1; y <= 8; y++)
+            {
+                world.Set(24, y, ParticleIds.Stone);
+                world.Set(39, y, ParticleIds.Stone);
+                for (int x = 25; x <= 38; x++)
+                {
+                    world.Set(x, y, ParticleIds.Soil);
+                }
+            }
+
+            world.Heat.RadiativeLoss = 0.05f;       // 生产辐射率
+            world.Heat.AirThermalEmissivity = 0.1f; // 生产空气辐射率
+            world.Light.Enabled = true;
+            world.Light.Intensity = 10f;            // 生产光照强度
+            world.Light.LitTicks = int.MaxValue;
+            world.Light.DarkTicks = 0;
+
+            for (int i = 0; i < 600; i++)
+            {
+                world.StepLogic(); // 白天：光照 600 逻辑帧
+            }
+
+            world.Light.Enabled = false;
+
+            for (int i = 0; i < 600; i++)
+            {
+                world.StepLogic(); // 夜间：无光照 600 逻辑帧
+            }
+
+            float water = SurfaceTemperature(world, 8);
+            float soil = SurfaceTemperature(world, 32);
+
+            Assert.Greater(water, soil,
+                $"夜间后段水面温度（{water:F2}）应高于土面温度（{soil:F2}）：对流本应把白天储进深水的热带回表面");
+        }
+
     }
 }

@@ -49,6 +49,11 @@ namespace TapTap2026.Game
                  "越小热铺得越高、整根气柱越暖。改它要连光照强度一起改。0 = 关闭（热量只从顶行离开）。")]
         [SerializeField, Range(0f, HeatMap.MaxConductivity)] private float _radiativeLoss = 0.05f;
 
+        [Tooltip("绝热直减率（°/格）：气体竖直移动一格时温度的等效变化量——上升变冷、下沉变暖。" +
+                 "它是真实干绝热直减率（≈10 °C/km）在「格」尺度上的等效，给大气补上一层随高度变化的竖直温度梯度。" +
+                 "越大竖直温差越明显。0 = 关闭（气体移动不带温度变化）。")]
+        [SerializeField, Min(0f)] private float _adiabaticLapse = HeatMap.DefaultAdiabaticLapse;
+
         [Header("材料导热率（相对值 0..1：1 = 最强，0 = 绝热）")]
         [Tooltip("空气（typeId 0）的导热率。空气没有类型条目，只能在这里给；决定热从地表/水面漏进上方气柱的难易。")]
         [SerializeField, Range(0f, HeatMap.MaxThermalConductivity)] private float _airThermalConductivity = HeatMap.DefaultAirThermalConductivity;
@@ -133,6 +138,12 @@ namespace TapTap2026.Game
         public float RadiativeLoss
         {
             get { return Mathf.Clamp(_radiativeLoss, 0f, HeatMap.MaxConductivity); }
+        }
+
+        /// <summary>绝热直减率（°/格），非负：气体竖直移动一格温度的等效变化量。</summary>
+        public float AdiabaticLapse
+        {
+            get { return Mathf.Max(0f, _adiabaticLapse); }
         }
 
         /// <summary>空气的相对导热率，夹在 <c>[0, HeatMap.MaxThermalConductivity]</c>。</summary>
