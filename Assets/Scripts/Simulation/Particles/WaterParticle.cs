@@ -51,15 +51,6 @@ namespace TapTap2026.Simulation
         /// <summary>剧烈蒸发（沸腾）的播撒半径：1 = 3×3 一小片，每格浓度高 → 渲染成**可见**的白色汽团。</summary>
         private const int BoilingSpreadRadius = 1;
 
-        /// <summary>慢蒸发的播撒半径：4 = 9×9 一大片，每格只分到 ~0.027 → 远低于可见阈值。</summary>
-        private const int SlowSpreadRadius = 4;
-
-        /// <summary>慢蒸发的湿度上限：撒播范围内**任一格**达到它就不再慢蒸发。
-        /// 取 0.02，使"最湿的一格 + 本次份额（~0.027）"仍低于 <see cref="HumidityField.VisibleThreshold"/>（0.06）——
-        /// 慢蒸发因此**永远不可见**。沸腾不受此限：它刻意把水汽集中到完全可见。
-        /// 这也顺带是"饱和水汽压"的物理节流：边界层湿了就蒸发不动，等输送把水汽带走再继续。</summary>
-        private const float SlowSpreadHumidityCap = 0.02f;
-
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Liquid,
             density: 1.0f,
@@ -82,39 +73,15 @@ namespace TapTap2026.Simulation
         /// <param name="radius">播撒半径：1 = 3×3（每格浓度高，<b>看得见</b>）；越大摊得越薄（每格低于可见阈值，<b>看不见</b>）。</param>
         private static void Evaporate(ParticleWorld world, int x, int y, int radius)
         {
-            // 先把本格变成大气，再播撒湿度：本格此时已是气体，可以一起参与承载。
+            // 先把本格变成大气，再播撒湿度：本格此时已是气体，可以一起参与承载，
+            // 于是接收格数至少为 1（不至于因为"周围没空气"把这份水汽弄丢）。
             world.SetPhase(x, y, ParticleIds.Atmosphere);
-
-            // 只播撒给**界内且是气体/空**的格子；份额按实际能接收的格数均分，总量恰好一个水格（守恒）。
-            // 本格刚变成大气，所以 receivers 至少为 1。
-            int receivers = 0;
-            for (int dy = -radius; dy <= radius; dy++)
-            {
-                for (int dx = -radius; dx <= radius; dx++)
-                {
-                    if (world.IsInBounds(x + dx, y + dy) && ParticleRules.IsGasOrEmpty(world, x + dx, y + dy))
-                    {
-                        receivers++;
-                    }
-                }
-            }
-
-            float share = HumidityField.Unit / receivers;
-            for (int dy = -radius; dy <= radius; dy++)
-            {
-                for (int dx = -radius; dx <= radius; dx++)
-                {
-                    if (world.IsInBounds(x + dx, y + dy) && ParticleRules.IsGasOrEmpty(world, x + dx, y + dy))
-                    {
-                        world.Humidity.Add(x + dx, y + dy, share);
-                    }
-                }
-            }
+            world.Humidity.SpreadUnitIntoAir(world, x, y, radius);
         }
 
         /// <summary>
         /// 慢蒸发能不能发生：正上方必须是气体/空（**只在液面蒸发**，水下的水不会凭空变成气泡），
-        /// 且撒播范围内所有气体格都还够干（低于 <see cref="SlowSpreadHumidityCap"/>）。
+        /// 且撒播范围内的空气还没吸饱（见 <see cref="HumidityField.IsAirSaturated"/>）。
         /// 后者是"慢蒸发不可见"的保证：加完这一次的份额，最湿的一格仍低于可见阈值。
         /// </summary>
         private static bool CanEvaporateSlowly(ParticleWorld world, int x, int y)
@@ -124,21 +91,8 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            for (int dy = -SlowSpreadRadius; dy <= SlowSpreadRadius; dy++)
-            {
-                for (int dx = -SlowSpreadRadius; dx <= SlowSpreadRadius; dx++)
-                {
-                    int nx = x + dx;
-                    int ny = y + dy;
-                    if (world.IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(world, nx, ny)
-                        && world.Humidity.Get(nx, ny) >= SlowSpreadHumidityCap)
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            return true;
+            return !world.Humidity.IsAirSaturated(
+                world, x, y, HumidityField.InvisibleSpreadRadius, HumidityField.InvisibleSpreadCap);
         }
 
         public void OnLogic(ParticleWorld world, int x, int y)
@@ -173,7 +127,7 @@ namespace TapTap2026.Simulation
             {
                 // 沸腾：水汽集中原地 → 可见汽团；慢蒸发：摊成一大片 → 看不见，只让湿度稳步升高。
                 // 换成大气后本帧的运动会被 ProcessCell 跳过（新格已标记本帧已处理）。
-                Evaporate(world, x, y, boiling ? BoilingSpreadRadius : SlowSpreadRadius);
+                Evaporate(world, x, y, boiling ? BoilingSpreadRadius : HumidityField.InvisibleSpreadRadius);
             }
         }
 

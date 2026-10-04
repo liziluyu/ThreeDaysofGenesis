@@ -77,6 +77,16 @@ namespace TapTap2026.Simulation
         /// <summary>降水速率（每 tick、每单位湿度凝结成雨的概率）：湿度越高掉得越快（负反馈，云量因此稳定）。</summary>
         public const float RainRate = 0.4f;
 
+        /// <summary>**不可见**蒸发的播撒半径：4 = 9×9 一大片，每格只分到 <c>Unit/49 ≈ 0.02</c>，
+        /// 远低于 <see cref="VisibleThreshold"/>（0.06）——所以这条路蒸出来的水汽**看不见**。
+        /// 水的常温慢蒸发与湿土受热干燥都走它（可见水汽只由沸腾产生）。</summary>
+        public const int InvisibleSpreadRadius = 4;
+
+        /// <summary><see cref="InvisibleSpreadRadius"/> 下的饱和上限：播撒范围内**任一**气体格达到它就不再蒸发。
+        /// 取 0.02，使「最湿的一格 + 本次份额」仍低于 <see cref="VisibleThreshold"/>——这条路因此**永远不可见**。
+        /// 它同时是「饱和水汽压」的物理节流：边界层湿了就蒸发不动，等输送把水汽带走再继续。</summary>
+        public const float InvisibleSpreadCap = 0.02f;
+
         private readonly int _width;
         private readonly int _height;
         private float[] _humidity;
@@ -219,6 +229,97 @@ namespace TapTap2026.Simulation
             return total;
         }
 
+        /// <summary>
+        /// 把**一份水汽**（<see cref="Unit"/>）均摊给 (centerX,centerY) 周围半径 <paramref name="radius"/> 内的
+        /// 气体 / 空格，每格分到 <c>Unit / 接收格数</c>——播撒，而不是集中，因此摊得多薄取决于半径。
+        /// 返回实际接收的格数：<c>0</c> 表示周围没有任何气体，这份水汽无处可去，
+        /// **调用方必须先确认有接收者**（否则水汽凭空消失，破坏水总量守恒）。
+        /// 越界格不算接收者（<see cref="ParticleRules.IsGasOrEmpty"/> 对越界返回 true，故此处显式判界）。
+        /// </summary>
+        /// <remarks>蒸发（水 / 湿土）把水汽交给大气的唯一入口；与 <see cref="Add"/> 一样下界截断、无上界。</remarks>
+        public int SpreadUnitIntoAir(ParticleWorld world, int centerX, int centerY, int radius)
+        {
+            if (world == null)
+            {
+                throw new ArgumentNullException(nameof(world));
+            }
+
+            if (radius < 0)
+            {
+                radius = 0;
+            }
+
+            int receivers = 0;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    if (IsAir(world, centerX + dx, centerY + dy))
+                    {
+                        receivers++;
+                    }
+                }
+            }
+
+            if (receivers == 0)
+            {
+                return 0;
+            }
+
+            float share = Unit / receivers;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    if (IsAir(world, centerX + dx, centerY + dy))
+                    {
+                        Add(centerX + dx, centerY + dy, share);
+                    }
+                }
+            }
+
+            return receivers;
+        }
+
+        /// <summary>
+        /// (centerX,centerY) 周围半径 <paramref name="radius"/> 内的气体 / 空格，是否**任一格**的湿度已达
+        /// <paramref name="cap"/>——「空气已经吸不动了」的饱和判据（越界格不计）。
+        /// 蒸发前先问它：既不往饱和空气里继续灌水汽，也是「蒸发出来的水汽不可见」的保证
+        /// （见 <see cref="InvisibleSpreadCap"/>）。
+        /// </summary>
+        public bool IsAirSaturated(ParticleWorld world, int centerX, int centerY, int radius, float cap)
+        {
+            if (world == null)
+            {
+                throw new ArgumentNullException(nameof(world));
+            }
+
+            if (radius < 0)
+            {
+                radius = 0;
+            }
+
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    int x = centerX + dx;
+                    int y = centerY + dy;
+                    if (IsAir(world, x, y) && Get(x, y) >= cap)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>界内且是气体 / 空格（湿度的唯一载体）。</summary>
+        private static bool IsAir(ParticleWorld world, int x, int y)
+        {
+            return world.IsInBounds(x, y) && ParticleRules.IsGasOrEmpty(world, x, y);
+        }
 
         /// <summary>
         /// 把每列湿度总量写进 <paramref name="destination"/>（长度须 ≥ <see cref="Width"/>），

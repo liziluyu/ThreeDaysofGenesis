@@ -13,7 +13,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
   - `TapTap2026.Game`（`Assets/Scripts/Driver/` + `Assets/Scripts/Rendering/`）：引用 Simulation。`ParticleSimulationDriver`（MonoBehaviour）用固定步长累加器推进**两级时基**——**运动帧 60 Hz**（`world.StepMotion()`，只跑粒子运动）与**逻辑帧 20 Hz**（`world.StepLogic()`，先逻辑后运动，再跑随机刻/热传导/湿度/降水/光照）；逻辑帧是运动帧节拍上的子节拍（每 `LogicTicksPerMotionTick = round(_motionRate/_logicRate)` 个运动帧一次），并唯一决定上屏时机；`ParticleRenderer` 把 `Cell[]` 经 `ParticlePixelBuffer.Fill` 映射成一张 `Texture2D`，整个网格只有 1 个渲染对象。
   - `TapTap2026.Editor`（`Assets/Scripts/Editor/`，仅 Editor 平台）：编辑器工具，当前只有 `SystemProxyGuard`——系统代理 Mono 解析失败时把 `WebRequest.DefaultWebProxy` 钉为直连（见 MCP 一节）。
 - **随机刻（Minecraft 式）**：每逻辑帧在粒子扫描之后、热传导之前，`StepLogic` 均匀有放回地随机抽 `world.RandomTicksPerStep` 个格，命中非空气、非静态的格就调其类型的 `OnRandomTick`——用于「缓慢、按概率发生」的过程（生长/蔓延/渗流/腐化），不必每帧全网格扫描。抽取与世界同一 xorshift32 随机流（可复现）、不碰 bit0 处理标记；**默认 0（关闭，保持既有测试契约）**，生产值由 `ParticleSimulationSettings._randomTicksPerStep` 每帧注入 `world.RandomTicksPerStep`（资产现配 48 ≈ Minecraft 的 3 格 / 4096 密度）。契约与语义见 `docs/ParticleTypeInterface.md` §6「随机刻」。
-- **跨类型规则只看标签不看 typeId**：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。新增粒子类型 = 一个文件 + `ParticleRegistration.RegisterAll()` 追加一行 + `ParticleIds` 加一个字段（只能追加，顺序是存档兼容性的一部分）。当前类型：石头 / 沙 / 土 / 水 / 大气（蒸汽与云已并入**湿度场**，不再是粒子）。流程与评审清单见文档 §11。
+- **跨类型规则只看标签不看 typeId**：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。新增粒子类型 = 一个文件 + `ParticleRegistration.RegisterAll()` 追加一行 + `ParticleIds` 加一个字段（只能追加，顺序是存档兼容性的一部分）。当前类型：石头 / 沙 / 土 / **湿土** / 水 / 大气（蒸汽与云已并入**湿度场**，不再是粒子）。**土与湿土**是唯一一对"具体类型之间的反应"（双向走 `ParticleIds`）：干土在**正上方是水**时喝掉那格水、自己变湿土；湿土 = 干土 + 一份水，由它自己搬运这份水——**常温下每逻辑帧 50% 概率**把水交给正下方的干土（自己变干，水一格格往下渗），**受热（≥ 60°）时改往上送**（上方是干土则润湿之；上方是空气且没饱和就像水粒子慢蒸发一样摊一份水汽进空气、不可见），都送不出去就保持湿。水总量（水格 + 湿土格 + 湿度场）全程守恒；只有干土接得住水（石头/沙/水没有"湿"形态）。流程与评审清单见文档 §11。
 - **确定性**：模拟只认 `world.Tick` 与世界持有的 xorshift32；禁止 `UnityEngine.Random` / `Time.*` / `Input`。同种子同命令序列逐格可复现。
 - **场景**：`Assets/Scenes/SampleScene.unity` 是唯一 build 场景（Main Camera + Global Light 2D）；`Particle Sandbox` 物体上挂 `ParticleSimulationDriver` + `ParticleRenderer`（按 `world.Light.Daylight` 缩放整场亮度：白天上限、夜晚下限，过渡由光照周期给出）+ `ParticleSandboxSeeder`（默认不跑，右键菜单 `Reseed()` 才搭容器）+ `ParticleEditor`（左键刷、右键切换、鼠标旁显示当前粒子）+ `ParticleLightDriver`（光照开关/亮暗刻数/强度/昼夜过渡刻数），接线细节见文档 §10。
 
@@ -27,7 +27,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
 |`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
 |`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用；含网格尺寸、`_motionRate` 运动帧速率 / `_logicRate` 逻辑帧速率、`_randomTicksPerStep` 随机刻格数、`_conductivity`/`_voidHeatLoss`/`_radiativeLoss`/`_airThermalConductivity`/`_airThermalEmissivity` 热力学参数）。|
-|`Assets/Tests/EditMode/`|EditMode 测试（107 个）：`ParticleWorldTests`（隔离类型表，含随机刻）+ `SandStoneParticleTests`（生产注册路径）+ `WaterParticleTests` / `WeatherParticleTests`（水、湿度场与气象）。|
+|`Assets/Tests/EditMode/`|EditMode 测试（117 个）：`ParticleWorldTests`（隔离类型表，含随机刻）+ `SandStoneParticleTests`（生产注册路径）+ `WaterParticleTests` / `WeatherParticleTests`（水、湿度场与气象）+ `WetSoilParticleTests`（土的吸水反应）。|
 |`docs/`|设计文档（`ParticleTypeInterface.md`）。在 `Assets/` 之外，Unity 不导入，无需 `.meta`。|
 |`Assets/Settings/`|URP 配置：`UniversalRP.asset`、`Renderer2D.asset` 等。|
 |`Assets/Plugins/NuGet/`|MCP 插件的 NuGet 依赖 DLL（LFS 跟踪），由插件安装器生成，**不要手改**。|
@@ -91,7 +91,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 
 ## Testing & QA
 
-- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **107 个测试**（`ParticleWorldTests` 81 + `SandStoneParticleTests` 2 + `WaterParticleTests` 6 + `WeatherParticleTests` 18）。
+- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **117 个测试**（`ParticleWorldTests` 81 + `SandStoneParticleTests` 2 + `WaterParticleTests` 6 + `WeatherParticleTests` 18 + `WetSoilParticleTests` 10）。
 - 约定：测试用**隔离类型表**（`new ParticleWorld(w, h, seed, types)` 四参构造 + 测试专用 `ParticleType[]`），不污染全局注册表；生产注册路径的测试（`RegisterAll` 回填）集中在 `SandStoneParticleTests` 与 `WeatherParticleTests`（跨类型相变依赖 `ParticleIds` 回填，必须走生产表）。
 - **运行方式**（按可用性排序）：MCP `tests-run`（编辑器在线）→ Test Runner 窗口 → 批处理命令（编辑器离线）。
 - PlayMode：`testables` 未配置、`playModeTestRunnerEnabled: 0`，暂不支持。

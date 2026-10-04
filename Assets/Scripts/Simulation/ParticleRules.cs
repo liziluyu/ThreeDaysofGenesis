@@ -43,44 +43,48 @@ namespace TapTap2026.Simulation
             return AirRank;
         }
 
-
-        /// <summary>(x,y) 上的粒子是否带 <see cref="ParticleTags.Solid"/> 标签。越界与空气均为 false。</summary>
-        public static bool IsSolid(ParticleWorld world, int x, int y)
+        /// <summary>
+        /// (x,y) 上粒子的标签集。越界、空气、空槽一律返回 <see cref="ParticleTags.None"/>。
+        /// 一次查询取回全部标签，供需要同时判多个标签的调用方省掉重复查表（如润湿要区分「上面是水」与「上面是湿土」）。
+        /// </summary>
+        public static ParticleTags TagsAt(ParticleWorld world, int x, int y)
         {
             ushort id = world.GetCell(x, y).typeId;
             if (id == ParticleRegistry.AirTypeId)
             {
-                return false;
+                return ParticleTags.None;
             }
 
             ParticleType[] types = world.Types;
             if (id >= types.Length)
             {
-                return false;
+                return ParticleTags.None;
             }
 
             ParticleType type = types[id];
-            return type != null && (type.Info.Tags & ParticleTags.Solid) != 0;
+            return type == null ? ParticleTags.None : type.Info.Tags;
+        }
+
+        /// <summary>
+        /// (x,y) 上的粒子是否带 <paramref name="tags"/> 里的**任意**一个标签。越界、空气、空槽一律 false。
+        /// 跨类型判断只走标签，不特判具体 typeId——这是新增材料不必改已有类型代码的前提。
+        /// </summary>
+        public static bool HasTag(ParticleWorld world, int x, int y, ParticleTags tags)
+        {
+            return (TagsAt(world, x, y) & tags) != 0;
+        }
+
+        /// <summary>(x,y) 上的粒子是否带 <see cref="ParticleTags.Solid"/> 标签。越界与空气均为 false。</summary>
+        public static bool IsSolid(ParticleWorld world, int x, int y)
+        {
+            return HasTag(world, x, y, ParticleTags.Solid);
         }
 
         /// <summary>(x,y) 是否挡住光（带 Solid 或 Liquid 标签）：光照只穿过气体与空，打到水面/地面即停。
         /// 越界与空气均为 false。</summary>
         public static bool BlocksLight(ParticleWorld world, int x, int y)
         {
-            ushort id = world.GetCell(x, y).typeId;
-            if (id == ParticleRegistry.AirTypeId)
-            {
-                return false;
-            }
-
-            ParticleType[] types = world.Types;
-            if (id >= types.Length)
-            {
-                return false;
-            }
-
-            ParticleType type = types[id];
-            return type != null && (type.Info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0;
+            return HasTag(world, x, y, ParticleTags.Solid | ParticleTags.Liquid);
         }
 
         /// <summary>

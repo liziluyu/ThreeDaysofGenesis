@@ -5,11 +5,15 @@ namespace TapTap2026.Simulation
     // SoilParticle —— 土壤（固体标签的粉末，摩擦度 0.5 + 粘性 0.5）
     //
     // flags 私有位：无（bit3-7 全部空闲）
-    // 邻居查询范围：正下、左下/右下、以及斜滑反侧同一行（粘性判据：旁边有没有固体）
-    // 交互的 ParticleIds：无 —— 全部走 ParticleRules 的标签规则，不特判具体类型
+    // 邻居查询范围：正上方一格（吸水判据），以及 StepSolid 的「正下、左下/右下、斜滑反侧同一行」
+    // 交互的 ParticleIds：WetSoil —— 吸水后本格变成湿土（A 生成 B，走 ParticleIds）
+    // 写入的邻居：正上方那一格水（吸水时 Clear，物理上是被土吸走）
     //
-    // 行为：带 Solid 标签、受重力、只做「下落 + 斜落」（OnMotion）；没有相变 / 反应（OnLogic 留空），
-    //       因此同样是粉末，在平地与同类上安分不动。
+    // 行为：逻辑帧（20 Hz）先做吸水反应，运动帧（60 Hz）做「下落 + 斜落」的粉末运动——两者互不干扰：
+    //       吸水：**正上方一格是水（Liquid 标签）**时，本格吸饱水变成湿土（SetPhase，热量随物质留在原格），
+    //             并且**那一格水被吸干**（Clear）：一格水润湿一格土，随后水就消失了。
+    //             吸水只看正上方一格，不横向、不反向——水怎么继续往土里走由 WetSoilParticle 负责。
+    //       运动：带 Solid 标签、受重力、只做「下落 + 斜落」，因此同样是粉末，在平地与同类上安分不动。
     //       与沙的区别是两条规则叠加：
     //         - 摩擦度 0.5：土粒要连续 2 格净空才肯斜滑（落点正下方被顶着就停），单独作用时是 2:1 的堆；
     //         - 粘性 0.5：旁边有固体邻居（斜滑反侧同一行）时，安息角再抬一档到 3 格净空，堆体约 3:1；
@@ -41,7 +45,16 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // 土没有相变 / 反应：逻辑钩子留空。
+            // 吸水：**只看正上方一格**，是水就把那一格水喝掉——本格变成湿土（SetPhase 保留本格 Q），
+            // 水格被 Clear（它的热量先并进本格，物质带热，避免「水一接触土、热凭空消失」）。
+            // 上面是水的这一格，扫过它时本逻辑帧已经处理完了（扫描自上而下），因此在这里清掉它不会漏掉它的更新。
+            // 湿土怎么把这份水再传下去由 WetSoilParticle 负责（水现在存在湿土这一格里了）。
+            if ((ParticleRules.TagsAt(world, x, y + 1) & ParticleTags.Liquid) != 0)
+            {
+                world.SetPhase(x, y, ParticleIds.WetSoil);
+                world.Heat.AddHeat(x, y, world.Heat.GetHeat(x, y + 1));
+                world.Clear(x, y + 1);
+            }
         }
 
         public void OnMotion(ParticleWorld world, int x, int y)
@@ -53,7 +66,7 @@ namespace TapTap2026.Simulation
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 土暂无随机刻行为。
+            // 土暂无随机刻行为：润湿是即时的局部反应（正上方是水就吸水、是湿土就跟着湿），走逻辑钩子而非随机刻。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

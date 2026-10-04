@@ -42,7 +42,8 @@ namespace TapTap2026.Simulation
                     new SandParticle(),
                     new SoilParticle(),
                     new WaterParticle(),
-                    new AtmosphereParticle());
+                    new AtmosphereParticle(),
+                    new WetSoilParticle());
                 // ===========================================================
 
                 ParticleIds.Stone = ids[0];
@@ -50,6 +51,7 @@ namespace TapTap2026.Simulation
                 ParticleIds.Soil = ids[2];
                 ParticleIds.Water = ids[3];
                 ParticleIds.Atmosphere = ids[4];
+                ParticleIds.WetSoil = ids[5];
                 _registered = true;
             }
             catch (Exception exception)

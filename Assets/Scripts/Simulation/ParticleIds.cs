@@ -29,5 +29,10 @@ namespace TapTap2026.Simulation
 
         /// <summary>大气。气体：空气粒子化，浮力 + 热压流的载体（海陆风），也是云的载体（含凝结物的空气）。字段不叫 Air——Air 已被 typeId 0（空）占用。</summary>
         public static ushort Atmosphere;
+
+        /// <summary>湿土。土吸水后的形态（固体标签）：堆形与干土一致，颜色更深，比干土更重、更扛热、导热更好。
+        /// 由 <c>SoilParticle</c> 在正上方是水（吸干那格水）时生成，自身负责把这份水交给邻格的干土或蒸发进空气。
+        /// **只能追加到清单末尾**。</summary>
+        public static ushort WetSoil;
     }
 }
