@@ -78,7 +78,7 @@ namespace TapTap2026.Simulation
         /// 每单位湿度（= 1 水格）给所在格增加的附加热容（悬浮水汽的热惯性）：承载湿度的空气因此比干空气
         /// 更难升 / 降温（<c>C = CapacityOf(typeId) + humidity × 本常量</c>）。
         /// 相变本身的放热 / 吸热由各相变路径在相变完成后对本格 <c>AddHeat(±潜热)</c> 结算
-        /// （见 <see cref="HumidityField.LatentHeatPerUnit"/>）；本常量只负责让湿度改变格子的热容，
+        /// （见 <see cref="HumidityField.LatentHeat"/>）；本常量只负责让湿度改变格子的热容，
         /// 不改变界内热量总量（<c>Q</c> 仍然守恒）。
         /// </summary>
         public const float HumidityHeatCapacity = 1f;
@@ -304,7 +304,7 @@ namespace TapTap2026.Simulation
         /// 读取扁平下标处的热容：**物质热容 + 湿度携带的附加热容（悬浮水汽）**
         /// （<c>CapacityOf(typeId) + humidity * HumidityHeatCapacity</c>）。
         /// 湿度让承载它的空气热惯性变大——水汽比干空气更难升 / 降温（相变的潜热另由
-        /// <see cref="HumidityField.LatentHeatPerUnit"/> 在相变路径显式结算，见 <see cref="HumidityHeatCapacity"/>）。
+        /// <see cref="HumidityField.LatentHeat"/> 在相变路径显式结算，见 <see cref="HumidityHeatCapacity"/>）。
         /// 下标越界返回 <see cref="AirHeatCapacity"/>。
         /// </summary>
         public float GetCapacityAt(int index)

@@ -15,8 +15,8 @@ namespace TapTap2026.Simulation
     //           单格份额会超过 InvisibleSpreadMaxShare）时**不蒸发、水保留**——否则半封闭地形会凭空
     //           冒出可见水汽（审计 B2）。
     //       这就是"水蒸气只在沸腾时出现"：可见的水汽只由沸腾产生，慢蒸发是隐形的。
-    //       潜热：蒸发（沸腾与慢蒸发）从水里**带走** HumidityField.LatentHeatPerUnit（110）的热量，
-    //       海面因此被蒸发冷却；这份潜热由湿度单位携带、随降雨归还（见 HumidityField.LatentHeatPerUnit）。
+    //       潜热：蒸发（沸腾与慢蒸发）从水里**带走** HumidityField.LatentHeat(T)（随温度线性）的热量，
+    //       海面因此被蒸发冷却；这份潜热由湿度单位携带、随降雨按凝结温度归还（见 HumidityField.LatentHeat）。
     //       运动为四段固定优先级，成功即 return：
     //         1. TryFall：正下能进（空气 / 气体）就下落一格；同类水与固体都挡住；
     //         2. TryDiagonalFall（clearance 1）：正下被挡就沿坡斜滑——液体无安息角；
@@ -99,7 +99,7 @@ namespace TapTap2026.Simulation
         /// 随后播撒——此时 <see cref="HumidityField.SpreadUnitIntoAir"/> 数到的接收格数与本格预判一致，必定成功。
         /// 本格分到的那一份湿度因 <see cref="ParticleWorld.SetPhase"/> 保留湿度而留在原地，
         /// 沸腾的汽团因此仍以原地为中心保持可见。</para>
-        /// <para>相变完成后带走蒸馏潜热 <see cref="HumidityField.LatentHeatPerUnit"/>：蒸发让本格变冷。</para>
+        /// <para>相变完成后按蒸发时的温度带走蒸馏潜热 <see cref="HumidityField.LatentHeat"/>：蒸发让本格变冷。</para>
         /// </summary>
         /// <param name="radius">播撒半径：1 = 3×3（每格浓度高，<b>看得见</b>）；越大摊得越薄（每格低于可见阈值，<b>看不见</b>）。</param>
         /// <param name="maxShare">单格最大份额；&gt; 0 且 <c>Unit/接收格数</c> 超过它时放弃本次蒸发。0 = 不限。</param>
@@ -115,9 +115,10 @@ namespace TapTap2026.Simulation
             }
 
             // SetPhase（而非 Set）保留 Q 与湿度：本格变大气后仍是水汽的合法载体。
+            float temperature = world.Heat.GetTemperature(x, y);
             world.SetPhase(x, y, ParticleIds.Atmosphere);
             world.Humidity.SpreadUnitIntoAir(world, x, y, radius, maxShare);
-            world.Heat.AddHeat(x, y, -HumidityField.LatentHeatPerUnit);
+            world.Heat.AddHeat(x, y, -HumidityField.LatentHeat(temperature));
             return true;
         }
 
@@ -173,7 +174,7 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // 相变优先于运动。蒸发会带走一份潜热（见 HumidityField.LatentHeatPerUnit），
+            // 相变优先于运动。蒸发会带走一份潜热（见 HumidityField.LatentHeat），
             // 于是水面被蒸发冷却——这正是海风形成所需的冷源。
             float temperature = world.Heat.GetTemperature(x, y);
 

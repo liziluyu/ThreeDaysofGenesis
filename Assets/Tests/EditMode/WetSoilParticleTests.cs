@@ -399,8 +399,9 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, CountType(world, WetSoil), "湿土已消失");
             Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一份水汽（水总量守恒）");
             Assert.Greater(world.Humidity.Get(4, 2), 0f, "正上方的空气接到水汽");
-            Assert.AreEqual(heatBefore - HumidityField.LatentHeatPerUnit, world.Heat.GetHeat(4, 1), 1e-3f,
-                "干燥从土壤吸走相变潜热（C1：蒸发 Q 减 LatentHeatPerUnit，可为冷）");
+            Assert.AreEqual(heatBefore - HumidityField.LatentHeat(heatBefore / WetSoilHeatCapacity),
+                world.Heat.GetHeat(4, 1), 1e-3f,
+                "干燥从土壤吸走相变潜热（C1：蒸发 Q 减 LatentHeat(T)，随温度线性）");
 
             for (int i = 0; i < world.CellCount; i++)
             {

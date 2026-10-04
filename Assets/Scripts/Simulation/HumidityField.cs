@@ -30,17 +30,28 @@ namespace TapTap2026.Simulation
         public const float Unit = 1f;
 
         /// <summary>
-        /// **潜热**：每 <see cref="Unit"/> 湿度（= 一个水格）携带的热量，单位与 <see cref="HeatMap"/> 的热量一致。
+        /// **潜热系数**：每 <see cref="Unit"/> 湿度（= 一个水格）每**度**携带的热量
+        /// = <c>C_水(6.5) − C_空气(1)</c>。一次相变的潜热是 <see cref="LatentHeat"/>（随温度线性）。
         /// 蒸发（液→气）从本格取走它、凝结（气→液）还给本格，相变因此**不是无热的**：
         /// 水在沸点蒸出后会迅速带走热量、凝结处则重新放热——这正是"海陆风"里海洋上空偏冷、
         /// 云底偏暖的微观来源之一。
         /// </summary>
+        public const float LatentHeatPerDegree = 5.5f;
+
+        /// <summary>
+        /// 温度 <paramref name="temperature"/> 时一个水格相变的潜热：<c>LatentHeatPerDegree × T</c>。
+        /// </summary>
         /// <remarks>
-        /// 校准依据：常温 T≈20 的水 Q = 6.5 × 20 = 130，蒸出成空气（热容 1）后 Q = 130 − 110 = 20，
-        /// 温度近似连续（不会蒸发一下就凭空爆热或骤冷）；沸腾 T=80 的水蒸出后 Q = 520 − 110 = 410，
-        /// 蒸汽仍然是热的——与"水蒸气烫手"的直觉一致。界内每单位水严格守恒（相变只换载体，不产不灭）。
+        /// 设计目标是**相变点温度连续**：水（热容 6.5）蒸发成大气（热容 ≈1）后，本格要保持蒸发前的
+        /// 温度，取走的热量必须等于 <c>(C_水 − C_空气) × T</c>——定值潜热只在 T = 20（= 110）碰巧满足，
+        /// 高于它蒸出的是数百度的虚假超热汽（浮力被凭空放大）。改为随温度线性后：30° 水蒸出 ≈30° 的
+        /// 空气、80° 水蒸出 ≈80° 的空气，蒸发冷却随温度放大、沸腾区温度被压在沸点附近。
+        /// 界内每单位水严格守恒（相变只换载体，不产不灭）；凝结按凝结格当时的温度对称还热。
         /// </remarks>
-        public const float LatentHeatPerUnit = 110f;
+        public static float LatentHeat(float temperature)
+        {
+            return LatentHeatPerDegree * temperature;
+        }
 
         /// <summary>扩散系数：高湿度向低湿度摊开的比例（与热传导同形）。</summary>
         public const float DefaultDiffusion = 0.01f;

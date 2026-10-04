@@ -203,7 +203,7 @@ public readonly struct ParticleTypeInfo
 - **湿土把这份水交给邻格（`WetSoilParticle.OnLogic`）**，成功即本格变干（水要么进了邻格的干土，要么进了空气，湿土不会凭空变干）：
   - **受热上行**（`T ≥ DryingTemperature`，代码 60）：水优先往**上**走，分两种落点——
     - 上方是**干土**：有 `1/PercolationDenominator`（= **50%**）的概率把那格润湿成湿土、本格变干（与下渗同分母的概率门，用来打破「热源消失后水在相邻两格来回走」的时间对称）。
-    - 上方是**空气**且空气没吸饱：直接像水粒子慢蒸发一样把一份水汽摊进空气（`HumidityField.SpreadUnitIntoAir`，半径 4，份额门控 `InvisibleSpreadMaxShare` → **不可见**），本格变干并**从土壤吸走一份相变潜热**（本格 `AddHeat −LatentHeatPerUnit` = −110）；接收格不足（份额过大）时不变干、水保留。
+    - 上方是**空气**且空气没吸饱：直接像水粒子慢蒸发一样把一份水汽摊进空气（`HumidityField.SpreadUnitIntoAir`，半径 4，份额门控 `InvisibleSpreadMaxShare` → **不可见**），本格变干并**从土壤吸走一份相变潜热**（本格 `AddHeat −LatentHeat(T)`，随温度线性）；接收格不足（份额过大）时不变干、水保留。
   - **常温迁移**（`T < DryingTemperature`）：**有压才渗**——只有正上方是水（Liquid 标签）或湿土（被上方的水柱 / 湿层压着，即有水头压力）时，才以每**逻辑帧** `1/PercolationDenominator`（= **50%**）的概率把水交给邻格的干土——**正下方优先**，正下方被石头/沙/水/湿土挡住时按随机顺序改试**同行左右**的干土邻居（侧向渗流）。**先判压、再判目标、再摇骰**：无压或无目标都不消耗随机数，RNG 消耗不随场上湿土格数漂移。
     **孤立湿土（上方是空气）永久持水**——田间持水量：毛管力拽住水，重力渗不动它。湿润因此不会自己沉底，雨停即持；它退出循环的方式是被太阳晒干（受热上行路径）。连续降雨时链条效果是湿润锋面整体下移、身后的格子保持湿润，而不是湿斑穿柱而过攒到柱底。
   - 三条都走不通（无压、被石头/沙/水围着，或下方已是湿土且左右无干土）⇒ 水留在土里，本格保持湿土。
@@ -439,7 +439,7 @@ T = Q / C        C = 该格粒子类型的 Info.HeatCapacity（空气用 HeatMap
 
 C 里的湿度项只对**持有湿度的气体格**生效（固/液恒为 0 湿度），它让含水汽的空气热惯性变大——云所在的气柱更"扛热"。
 
-这套模型刻意简化、不完美：无**显式**对流（气体竖直位移的绝热降温 / 增温由 `AdiabaticLapse` 近似）、**蒸发 / 凝结已建模潜热**（`HumidityField.LatentHeatPerUnit`，每单位水严格守恒）、Q 不钳制（负值表示冷）；辐射只作用于暴露面（顶行或正上方是气体/空）、按材料辐射率 ε 缩放、且是线性近似（真实是 T⁴）。它保证的是三条最基础的热力学直觉：**界内热量守恒**、**温度随物质变化**、**热会散逸到天空（因此光照下会收敛到稳态而不是无限升温）**。
+这套模型刻意简化、不完美：无**显式**对流（气体竖直位移的绝热降温 / 增温由 `AdiabaticLapse` 近似）、**蒸发 / 凝结已建模潜热**（`HumidityField.LatentHeat(T)` = `LatentHeatPerDegree × T`，随温度线性、相变点温度连续，每单位水严格守恒）、Q 不钳制（负值表示冷）；辐射只作用于暴露面（顶行或正上方是气体/空）、按材料辐射率 ε 缩放、且是线性近似（真实是 T⁴）。它保证的是三条最基础的热力学直觉：**界内热量守恒**、**温度随物质变化**、**热会散逸到天空（因此光照下会收敛到稳态而不是无限升温）**。
 
 #### 热量由物质携带
 
@@ -722,9 +722,9 @@ public void OnLogic(ParticleWorld world, int x, int y)
 ```
 水   --(T ≥ WaterParticle.BoilingPoint = 80 或 T ≥ 20 且 1/300 每逻辑帧，
         且水面之上的空气湿度 < HumidityField.EvaporationCeiling)--> 水汽（湿度 +1，播撒给本格与气体邻居；
-        本格 AddHeat −LatentHeatPerUnit = −110 → 蒸发冷却）
+        本格 AddHeat −LatentHeat(T) → 蒸发冷却，随温度放大）
 水汽 --(湿度 ≥ HumidityField.SaturationHumidity(T) = RainThreshold × 2^((T − DewPoint)/10))
-    --> 雨（碰并凑够一个整水滴 → Water 粒子；凝结本格 AddHeat +110 → 云层放热）
+    --> 雨（碰并凑够一个整水滴 → Water 粒子；凝结本格 AddHeat +LatentHeat(T) → 云层放热）
 ```
 
 **云不是粒子，是"很湿的空气"**：湿度场（`HumidityField`）每格一个水汽质量，只有非固非液的格持有它。
@@ -747,7 +747,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 再加一道**份额门控** `HumidityField.InvisibleSpreadMaxShare`（0.04 = 1/25）：接收格 < 25 时摊不薄，`SpreadUnitIntoAir` 返回 0，调用方**不蒸发、水保留**——
 所以**接收格足够多**时这条路攒不出可见的白汽（0.02 + 份额 < `VisibleThreshold` 0.06），只是稳稳地往空气里加水汽；半封闭地形（石墙口袋只剩 2 格气体）则干脆不蒸，不会凭空冒出可见水汽（审计 B2）。
 **水的常温慢蒸发与湿土的受热干燥都走这条路**（同一入口 `HumidityField.SpreadUnitIntoAir`，传 `InvisibleSpreadMaxShare`；**沸腾传 0 表示不限份额**，因为沸腾按设计就要可见）。
-两条蒸发路都**从水里带走一份相变潜热** `HumidityField.LatentHeatPerUnit`（= 110，本格 `AddHeat −110`）——水面因此被蒸发冷却，海风所需的冷源正来自这里。
+两条蒸发路都**从水里带走一份相变潜热** `HumidityField.LatentHeat(T)`（= `LatentHeatPerDegree × T`，本格 `AddHeat −LatentHeat(T)`）——水面因此被蒸发冷却且冷却随水温放大，海风所需的冷源正来自这里。
 沸腾则相反：把同样 1 份水汽**集中**在 3×3 原地，每格浓度高 → 渲染成一片可见的白色汽团。
 用户看到的"水蒸气"因此只在真正沸腾时出现。（没有这道闸时，水盆上方会一直冒白汽，
 实测近地面最大湿度 0.72；有闸后降到 0.14，且紧贴水面的两层完全不显示。）
@@ -771,8 +771,8 @@ public void OnLogic(ParticleWorld world, int x, int y)
 **守恒**：蒸发把 1 个水格变成 1 份湿度，降雨把 1 份湿度变成 1 个水格，输送只在格间搬运。
 因此「水格数 + 湿度总量」在整个循环里不变（由 `WaterCycle_ConservesTotalWater` 与
 `HumidityTransport_ConservesTotal` 守住）。相变走 `ParticleWorld.SetPhase`（携带热量 Q），
-降雨走 `ParticleWorld.StepRain`。**潜热每单位水严格守恒**：蒸发（水 / 湿土干燥 / 沸腾）本格 `−110`，
-`StepRain` 凝结成水格后本格 `+110`（凝结放热，加热云层），所以相变不是无热的。
+降雨走 `ParticleWorld.StepRain`。**潜热每单位水严格守恒且随温度线性**：蒸发（水 / 湿土干燥 / 沸腾）本格 `−LatentHeat(T)`，
+`StepRain` 凝结成水格后本格 `+LatentHeat(T)`（凝结放热，加热云层）——相变点温度连续，不再蒸出虚假超热汽。
 
 **为什么降雨要"碰并"**：雨滴由本格 + 气体邻居的水汽凑成。若要求单格先攒满一个整水滴，
 天空里几乎达不到那个值（实测最大湿度只有 0.2~0.9），海洋会一路蒸干而永不下雨。
@@ -1013,7 +1013,7 @@ Assets/Scripts/
     ParticleRegistration.cs                   唯一类型清单（新增类型只改这里；顺序只能追加）
     ParticleWorld.cs                          扁平数组、两级入口（StepMotion / StepLogic）、扫描、读写原语、RNG、随机刻抽取
     HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每逻辑帧四邻热传导；T = Q / C；Swap 对气体竖直位移结算绝热直减 AdiabaticLapse
-    HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上（RiseStopHumidity 只门控平流项、x 扫描按 Parity 交替）；云 = 湿度高的空气；蒸发的唯一入口 SpreadUnitIntoAir（5 参含 maxShare 份额门控）与饱和判据 IsAirSaturated / SaturationHumidity（降雨用指数饱和曲线）；潜热 LatentHeatPerUnit = 110
+    HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上（RiseStopHumidity 只门控平流项、x 扫描按 Parity 交替）；云 = 湿度高的空气；蒸发的唯一入口 SpreadUnitIntoAir（5 参含 maxShare 份额门控）与饱和判据 IsAirSaturated / SaturationHumidity（降雨用指数饱和曲线）；潜热 LatentHeat(T) = LatentHeatPerDegree × T（5.5/度，20° 锚点 = 110）
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
@@ -1021,7 +1021,7 @@ Assets/Scripts/
       StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
       SandParticle.cs                         沙（固体标签，摩擦度 0 / 粘性 0 ⇒ 1:1 安息角三角堆）
       SoilParticle.cs                         土壤（固体标签，摩擦度 0.5 / 粘性 0.5 ⇒ 约 3:1 安息角；**正上方是水就喝掉那格水并变成湿土**）
-      WetSoilParticle.cs                      湿土（固体标签，摩擦度 / 粘性沿用干土 ⇒ 同款堆形；密度 2.0、热容 2.0、导热 0.85 都比干土高，颜色更深。湿土 = 干土 + 一份水：受热上行（50% 概率门 + 潜热 −110）/ 常温（T < 60）**有压才渗**——上方是水或湿土才 50% 下渗（正下方优先、被挡随机序试左右干土），孤立湿土永久持水（田间持水量，湿斑不沉底）/ 上方是空气且受热就蒸发；水带热 T(源)×1.2 一起走；给出水后自己变回干土）
+      WetSoilParticle.cs                      湿土（固体标签，摩擦度 / 粘性沿用干土 ⇒ 同款堆形；密度 2.0、热容 2.0、导热 0.85 都比干土高，颜色更深。湿土 = 干土 + 一份水：受热上行（50% 概率门 + 潜热 −LatentHeat(T)）/ 常温（T < 60）**有压才渗**——上方是水或湿土才 50% 下渗（正下方优先、被挡随机序试左右干土），孤立湿土永久持水（田间持水量，湿斑不沉底）/ 上方是空气且受热就蒸发；水带热 T(源)×1.2 一起走；给出水后自己变回干土）
       WaterParticle.cs                        水（液体：下落 → 斜滑 → 带闸门的横流（每 tick 1 格：身后有液体推 或 落差视野 MaxFlowSpread=5 格内有更低处才流，否则静止——平地/水面上的零散水滴不抖动）→ 都走不通时液体热对流 TryLiquidConvect（比正上方的水暖 LiquidConvectionEpsilon=0.5 就上浮一格——白天顶加热是稳定分层不翻转，夜晚表冷底暖时深处暖水上浮把白天存的热带回表面 = 海洋翻转，海面夜间比陆地暖、陆风涌现的机制），无安息角；T ≥ 沸点 80 剧烈蒸发（水汽集中 3×3 → 可见），T ≥ 20 常温慢蒸发（水汽摊到半径 4 的 9×9 = 81 格，受 InvisibleSpreadCap 与 InvisibleSpreadMaxShare 双重节流 → 接收格 ≥ 25 才不可见；只在液面，顶行不蒸发）；两条蒸发路本格 −110 潜热；随机刻：冲刷——把半径 2 格圆盘内的第一个土壤/湿土/腐殖土 SetPhase 成沙）
       AtmosphereParticle.cs                   大气（气体：空气粒子化，浮力 + 热压流 = 海陆风的载体；flags bit3-4 = 水平热压漂移的方向记忆 CellFlags.DriftDirectionMask；世界初始化时由 driver 填满空格；调色板全透明 = 隐形天空，热力叠加时可当风的可视化层）
       GrassSeedParticle.cs                    草种子（固体粉末，摩擦 / 粘性 0.5；flags bit5-6 = 无发芽条件的随机刻命中计数。随机刻命中且八邻有湿土时，把自己与上方 1-3 格随机高度替换为草，遇固 / 液即停；连续 3 次命中都无发芽条件则直接变成腐殖质。不可在编辑器中选择，只能单颗投放）

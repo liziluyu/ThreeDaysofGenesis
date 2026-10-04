@@ -17,7 +17,7 @@ namespace TapTap2026.Simulation
     //   · 受热上行（T ≥ DryingTemperature）：水优先往上走，同样有 1/PercolationDenominator（= 50%）
     //     的概率门（与下渗对称，消除热源消失时相邻两格的往返）——上方是干土就把那格变成湿土；
     //     上方是空气且空气没吸饱，就像水粒子慢蒸发一样把一份水汽摊进空气（不可见，走湿度场），
-    //     但干燥要从土壤吸走相变潜热（LatentHeatPerUnit）。
+    //     但干燥要从土壤吸走相变潜热（LatentHeat，随温度线性）。
     //   · 常温迁移（T < DryingTemperature）：**有压才渗**——只有正上方是水或湿土（被上方的水柱 /
     //     湿层压着，即有水头压力）时，才以每逻辑帧 1/PercolationDenominator（= 50%）的概率把水
     //     交给**正下方**的干土（首选）；正下方被石头/沙/水/湿土挡住时，按随机顺序改试同行左右干土。
@@ -97,9 +97,10 @@ namespace TapTap2026.Simulation
                     && world.Humidity.SpreadUnitIntoAir(
                         world, x, y, HumidityField.InvisibleSpreadRadius, HumidityField.InvisibleSpreadMaxShare) > 0)
                 {
-                    // C1 潜热：干燥要从土壤吸热——SetPhase 保留 Q，故相变完成后再对本格补一笔负潜热。
+                    // C1 潜热：干燥要从土壤吸热——SetPhase 保留 Q，故相变完成后再对本格补一笔负潜热（随温度）。
+                    float temperature = world.Heat.GetTemperature(x, y);
                     world.SetPhase(x, y, ParticleIds.Soil);
-                    world.Heat.AddHeat(x, y, -HumidityField.LatentHeatPerUnit);
+                    world.Heat.AddHeat(x, y, -HumidityField.LatentHeat(temperature));
                 }
 
                 // 热土只走上行 / 蒸发：温度低于干燥阈值才允许下渗（B7），否则热源一消失就会立刻往回渗。

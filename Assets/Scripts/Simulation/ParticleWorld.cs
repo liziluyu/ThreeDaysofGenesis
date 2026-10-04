@@ -569,7 +569,7 @@ namespace TapTap2026.Simulation
         /// 饱和湿度随温度下降而下降（饱和水汽压曲线的指数近似）：越冷越容易凝结，这是"云底在低温处"的判据。
         /// 湿度越高掉得越快，这是让云量收敛的负反馈（否则水汽会一路攒成满天薄雾）。
         /// 凝结把一整个水格的质量从湿度场搬成一个 Water 粒子（1:1，水守恒），并按
-        /// <see cref="HumidityField.LatentHeatPerUnit"/> 给本格补上潜热（凝结放热，加热云层）；
+        /// <see cref="HumidityField.LatentHeat"/> 按凝结温度给本格补上潜热（凝结放热，加热云层）；
         /// 格子变成液体后由 <see cref="SetPhase"/> 把剩余水汽推给周围的气体邻居——
         /// 固/液不持有湿度这条不变量因此得以保持，同时不丢质量。
         /// </remarks>
@@ -659,8 +659,8 @@ namespace TapTap2026.Simulation
                     // （固/液不持有湿度）——上面的封闭气泡检查保证收得下、不会把水汽困在水里。
                     SetPhase(x, y, ParticleIds.Water);
 
-                    // 凝结释放潜热，加热云层：每凝结一个水格，本格热量 +LatentHeatPerUnit。
-                    _heat.AddHeat(x, y, HumidityField.LatentHeatPerUnit);
+                    // 凝结释放潜热，加热云层：每凝结一个水格，按凝结时的温度还回相变潜热。
+                    _heat.AddHeat(x, y, HumidityField.LatentHeat(temperature));
                 }
             }
         }
@@ -802,7 +802,7 @@ namespace TapTap2026.Simulation
         /// <b>①′随机刻</b>（随机抽 <see cref="RandomTicksPerStep"/> 个格，命中非空气非静态的格就调 <c>OnRandomTick</c>）→
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
         /// <b>③湿度输送</b>（<see cref="HumidityField.Step"/>：扩散 + 水平冷→热 + 竖直越热越向上）→
-        /// <b>③′降水</b>（湿度越过该温度饱和湿度的气体格凝结成雨，并按 <see cref="HumidityField.LatentHeatPerUnit"/> 释放潜热）→
+        /// <b>③′降水</b>（湿度越过该温度饱和湿度的气体格凝结成雨，并按 <see cref="HumidityField.LatentHeat"/> 释放潜热）→
         /// <b>④光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
         /// 因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
         /// 上层应让逻辑帧落在运动帧的节拍上——每 3 个运动帧跑一次本方法，即 60 Hz 运动 / 20 Hz 逻辑。

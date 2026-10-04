@@ -1126,7 +1126,7 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 凝结释放潜热（C1）：饱和的冷空气凝结出一个水格后，本格热量 = 原 Q + LatentHeatPerUnit（加热云层）。
+        /// 凝结释放潜热（C1）：饱和的冷空气凝结出一个水格后，本格热量 = 原 Q + LatentHeat(T)（加热云层）。
         /// 中心恰好持有一个整水滴的湿度：碰并及时本格即可成滴、残余为 0 → 不向邻居播撒，
         /// 全场因此最多只有一个水格，断言不依赖「谁先碰并」这种巧合。
         /// 走全局注册表（<see cref="ParticleIds.Water"/> 需要回填），与气象测试同一取舍。
@@ -1147,9 +1147,9 @@ namespace TapTap2026.Tests
             Assert.AreEqual(1, CountType(world, ParticleIds.Water), "只应凝结出一个水格");
             Assert.AreEqual(ParticleIds.Water, world.GetCell(RainTestCentre, RainTestCentre).typeId,
                 "凝结发生在带湿度的中心格");
-            Assert.AreEqual(temperature * 2f + HumidityField.LatentHeatPerUnit,
+            Assert.AreEqual(temperature * 2f + HumidityField.LatentHeat(temperature),
                 world.Heat.GetHeat(RainTestCentre, RainTestCentre), 1e-3f,
-                "凝结释放潜热：水格热量 = 原 Q（= T × C，C = 1 + 湿度 = 2）+ LatentHeatPerUnit");
+                "凝结释放潜热：水格热量 = 原 Q（= T × C，C = 1 + 湿度 = 2）+ LatentHeat(T)");
             Assert.AreEqual(before, world.Humidity.Sum() + HumidityField.Unit, 1e-3f,
                 "水汽 → 一个水格 1:1，无凭空生灭");
         }

@@ -111,7 +111,7 @@ namespace TapTap2026.Tests
 
         /// <summary>
         /// 水到沸点蒸发：本格变成大气，**附近（3×3 邻域）的湿度被抬升**（总量一个水格），
-        /// 且蒸发**带走潜热**（<see cref="HumidityField.LatentHeatPerUnit"/>）使本格变冷。
+        /// 且蒸发**带走潜热**（<see cref="HumidityField.LatentHeat"/>，随温度线性）使本格变冷。
         /// </summary>
         [Test]
         public void Water_Evaporates_WhenAtBoilingPoint_RaisingNearbyHumidity()
@@ -132,8 +132,8 @@ namespace TapTap2026.Tests
             Assert.Greater(world.Humidity.Get(5, 4), 0f, "邻近格子被提高（附近的湿度）");
             Assert.GreaterOrEqual(world.Humidity.Get(5, 4), HumidityField.VisibleThreshold,
                 "沸腾的水汽集中在原地，必须**看得见**（这正是「水蒸气只在沸腾时出现」里「出现」的那一半）");
-            Assert.AreEqual(WaterParticle.BoilingPoint * capacity - HumidityField.LatentHeatPerUnit,
-                world.Heat.GetHeat(4, 4), 1e-3f, "相变带走潜热（蒸发冷却）");
+            Assert.AreEqual(WaterParticle.BoilingPoint * capacity - HumidityField.LatentHeat(WaterParticle.BoilingPoint),
+                world.Heat.GetHeat(4, 4), 1e-3f, "相变带走潜热（蒸发冷却，随温度线性）");
         }
 
         /// <summary>沸点以下的水不蒸发，照常下落，也不产生湿度。</summary>

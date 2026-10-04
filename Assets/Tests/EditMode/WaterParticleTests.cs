@@ -371,7 +371,7 @@ namespace TapTap2026.Tests
 
         /// <summary>
         /// 开阔地形里慢蒸发最终发生，且**带走一份潜热**（C1）：
-        /// 本格 Q = 原 Q − <see cref="HumidityField.LatentHeatPerUnit"/>，水格变大气、湿度总量守恒。
+        /// 本格 Q = 原 Q − <see cref="HumidityField.LatentHeat"/>（随温度线性），水格变大气、湿度总量守恒。
         /// </summary>
         [Test]
         public void SlowEvaporation_RemovesLatentHeatFromTheWater()
@@ -397,8 +397,9 @@ namespace TapTap2026.Tests
                 "够暖、正上方是开阔空气：慢蒸发最终应发生");
             Assert.AreEqual(0, CountType(world, ParticleIds.Water), "水格已蒸发");
             Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格蒸发出一份水汽");
-            Assert.AreEqual(startHeat - HumidityField.LatentHeatPerUnit, world.Heat.GetHeat(x, y), 1e-3f,
-                "蒸发带走 110 潜热：本格变冷（C1，海面被蒸发冷却）");
+            Assert.AreEqual(startHeat - HumidityField.LatentHeat(WaterParticle.SlowEvaporationTemperature),
+                world.Heat.GetHeat(x, y), 1e-3f,
+                "蒸发带走潜热（随温度线性；20° 锚点 = 110）：本格变冷（C1，海面被蒸发冷却）");
         }
 
         /// <summary>
