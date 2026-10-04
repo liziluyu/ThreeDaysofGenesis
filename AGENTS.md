@@ -23,7 +23,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |---|---|
 |`Assets/Scenes/SampleScene.unity`|唯一的场景；唯一启用的 build 场景。|
 |`Assets/Scripts/Simulation/`|模拟内核 + 粒子类型（`Particles/`）。`TapTap2026.Simulation.asmdef`。|
-|`Assets/Scripts/Driver/`|两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz；`_simulate` 关掉即暂停全部帧；驱动只暴露状态与方法——`Pause()` / `Resume()` / `Paused`，**不含输入判断**；空格暂停的热键写在 `ParticleEditor`）+ `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 显式 `Reseed()` 搭演示容器、`ParticleEditor` 左键刷当前粒子、滚轮调半径 1..10、右键切换类型、空格暂停/恢复、鼠标旁显示当前类型与半径、屏幕左上角显示光标格的粒子名/温度/热量/湿度、`ParticleLightDriver` 把光照的开关/亮暗刻数/强度接到 `world.Light`）。|
+|`Assets/Scripts/Driver/`|两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz；`_simulate` 关掉即暂停全部帧；驱动只暴露状态与方法——`Pause()` / `Resume()` / `Paused`，**不含输入判断**；空格暂停的热键写在 `ParticleEditor`）+ `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 显式 `Reseed()` 搭演示容器、`ParticleEditor` 左键刷当前粒子、按住 E 用左键擦除、滚轮调半径 1..10、右键切换类型、空格暂停/恢复、鼠标旁显示当前类型与半径、屏幕左上角显示光标格的粒子名/温度/热量/湿度、`ParticleLightDriver` 把光照的开关/亮暗刻数/强度接到 `world.Light`）。|
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
 |`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
 |`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用；含网格尺寸、`_motionRate` 运动帧速率 / `_logicRate` 逻辑帧速率、`_randomTicksPerStep` 随机刻格数、`_conductivity`/`_voidHeatLoss`/`_radiativeLoss`/`_adiabaticLapse`/`_airThermalConductivity`/`_airThermalEmissivity` 热力学参数）。|

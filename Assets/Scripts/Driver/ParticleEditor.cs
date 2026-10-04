@@ -10,12 +10,13 @@ namespace TapTap2026.Game
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
     /// **右键**在可投放类型间循环切换（只含材料类：固/液；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
+    /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
     /// （网格 quad 挂在它的 transform 下，1 cell = 1 unit，无旋转与缩放）。</para>
-    /// <para>写入一律走 <see cref="ParticleWorld.Set"/>：世界会把新格标记成「本 tick 未处理」，
+    /// <para>写入一律走 <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.Clear"/>：世界会把新格标记成「本 tick 未处理」，
     /// 因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
     /// </remarks>
     [DisallowMultipleComponent]
@@ -142,7 +143,15 @@ namespace TapTap2026.Game
 
             if (Input.GetMouseButton(0) && TryGetCell(Input.mousePosition, world, out int x, out int y))
             {
-                Paint(world, x, y);
+                // E 是擦除修饰键：与左键同按时改走擦除（按住的整段时间都擦），不改当前投放类型。
+                if (Input.GetKey(KeyCode.E))
+                {
+                    Erase(world, x, y);
+                }
+                else
+                {
+                    Paint(world, x, y);
+                }
 
                 // 暂停时驱动不会自己上屏，不补这一下就看不到刚画下去的东西。
                 if (!_driver.Simulate)
@@ -168,6 +177,39 @@ namespace TapTap2026.Game
         {
             _brushRadius = Mathf.Clamp(BrushRadius + steps, MinBrushRadius, MaxBrushRadius);
             RefreshHud();
+        }
+
+        /// <summary>
+        /// **擦除**：把以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆清成空气。
+        /// 与 <see cref="Paint"/> 无关——擦除不看当前投放类型，也不受单颗投放白名单影响（按住 E 就是纯擦）。
+        /// </summary>
+        /// <returns>真正被清掉的格数（本来就是空气的格不计）；越界格被跳过。</returns>
+        public int Erase(ParticleWorld world, int cx, int cy)
+        {
+            int radiusSquared = BrushRadius * BrushRadius;
+            int cleared = 0;
+
+            for (int dy = -BrushRadius; dy <= BrushRadius; dy++)
+            {
+                for (int dx = -BrushRadius; dx <= BrushRadius; dx++)
+                {
+                    if (dx * dx + dy * dy > radiusSquared)
+                    {
+                        continue;
+                    }
+
+                    int x = cx + dx;
+                    int y = cy + dy;
+
+                    // 先确认真有东西可清：Clear 抹空气也返回 true，直接计数会把「白擦的格」算进去。
+                    if (world.IsInBounds(x, y) && !world.IsAir(x, y) && world.Clear(x, y))
+                    {
+                        cleared++;
+                    }
+                }
+            }
+
+            return cleared;
         }
 
         /// <summary>
@@ -226,12 +268,15 @@ namespace TapTap2026.Game
             GUI.Label(new Rect(x + 16f, y - 3f, 200f, 20f), _hudText);
         }
 
-        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」。</summary>
+        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」；按住 E（擦除修饰键）时前置提示。</summary>
         private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
         {
-            _probeText = TryGetCell(screenPosition, world, out int x, out int y)
+            string reading = TryGetCell(screenPosition, world, out int x, out int y)
                 ? DescribeCell(world, x, y)
                 : "视口外";
+
+            // 按住 E 时前缀一个固定串，免得以为左键还在投放。
+            _probeText = Input.GetKey(KeyCode.E) ? "【擦除】" + reading : reading;
         }
 
         /// <summary>
