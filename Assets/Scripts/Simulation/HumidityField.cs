@@ -323,9 +323,45 @@ namespace TapTap2026.Simulation
         /// </summary>
         public static float SaturationHumidity(float temperature)
         {
-            return RainThreshold * (float)Math.Pow(2.0, (temperature - DewPoint) / 10.0);
+            return RainThreshold * Exp2((temperature - DewPoint) / 10f);
         }
 
+        /// <summary>
+        /// 确定性的 2^x（不依赖 <see cref="Math.Pow"/>）：x 拆成整数与小数，2^整数用逐次乘/除 2
+        /// （二进制浮点下每步精确），2^f（f ∈ [0,1)）用 5 阶多项式（纯 float 四则，相对误差 ~1e-6）。
+        /// 参与降雨分支判据，必须在不同运行时/架构下得到一致结果；Math.Pow 不保证这一点。
+        /// </summary>
+        private static float Exp2(float x)
+        {
+            int n = (int)Math.Floor(x);
+            if (n < -126)
+            {
+                return 0f;
+            }
+
+            if (n > 127)
+            {
+                n = 127;
+            }
+
+            float f = x - n;
+            float p = 1f + f * (0.6931472f + f * (0.2402265f + f * (0.0555041f + f * (0.0096181f + f * 0.0013334f))));
+
+            float scale = 1f;
+            while (n > 0)
+            {
+                scale *= 2f;
+                n--;
+            }
+
+            while (n < 0)
+            {
+                scale *= 0.5f;
+                n++;
+            }
+
+            return p * scale;
+        }
         /// <summary>
         /// (centerX,centerY) 周围半径 <paramref name="radius"/> 内的气体 / 空格，是否**任一格**的湿度已达
         /// <paramref name="cap"/>——「空气已经吸不动了」的饱和判据（越界格不计）。
