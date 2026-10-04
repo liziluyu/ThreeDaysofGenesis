@@ -83,13 +83,13 @@ namespace TapTap2026.Tests
             FillRow(world, 0, StoneId);
             world.Set(4, 10, WaterId);
 
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(WaterId, world.GetCell(4, 9).typeId, "第一 tick 应直落一格");
             Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(4, 10).typeId);
 
             for (int i = 0; i < 20; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(WaterId, world.GetCell(4, 1).typeId, "最终应停在石头地板上");
@@ -117,7 +117,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 300; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(40, CountType(world, WaterId), "水量守恒");
@@ -158,7 +158,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 400; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(40, CountType(world, WaterId), "水量守恒");
@@ -194,7 +194,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 60; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(SandId, world.GetCell(4, 1).typeId, "沙应沉到水柱底部");
@@ -227,8 +227,8 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 100; i++)
             {
-                a.Step();
-                b.Step();
+                a.StepLogic();
+                b.StepLogic();
             }
 
             for (int i = 0; i < a.CellCount; i++)

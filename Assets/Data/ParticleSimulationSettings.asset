@@ -14,10 +14,12 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _width: 320
   _height: 180
-  _tickRate: 60
+  _motionRate: 60
+  _logicRate: 20
   _maxStepsPerFrame: 4
   _stepsPerPresent: 1
   _seed: 123456789
+  _randomTicksPerStep: 48
   _conductivity: 0.24
   _voidHeatLoss: 0.12
   _radiativeLoss: 0.05

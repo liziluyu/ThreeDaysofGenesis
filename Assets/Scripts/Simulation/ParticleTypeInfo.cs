@@ -50,10 +50,10 @@ namespace TapTap2026.Simulation
         /// </remarks>
         public readonly float ThermalEmissivity;
 
-        /// <summary>是否受重力。由该类型自己的 <c>OnUpdate</c> 决定如何使用。</summary>
+        /// <summary>是否受重力。由该类型自己的 <c>OnMotion</c> 决定如何使用。</summary>
         public readonly bool AffectedByGravity;
 
-        /// <summary>静态类型（墙体等）。扫描时直接跳过，永不进入 <c>OnUpdate</c>。</summary>
+        /// <summary>静态类型（墙体等）。扫描时直接跳过，永不进入 <c>OnMotion</c> / <c>OnLogic</c>。</summary>
         public readonly bool IsStatic;
 
         /// <summary>最大横流格数：单 tick 内单侧最多蔓延多少格。</summary>

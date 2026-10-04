@@ -219,6 +219,7 @@ namespace TapTap2026.Simulation
             return total;
         }
 
+
         /// <summary>
         /// 把每列湿度总量写进 <paramref name="destination"/>（长度须 ≥ <see cref="Width"/>），
         /// 即**每列的云层厚度**——光竖直穿过的整条路径上的云量（只有非固非液格持有湿度，

@@ -8,9 +8,12 @@ namespace TapTap2026.Game
     /// 固定时间步长驱动 + 渲染调度。是**唯一**同时认识模拟与渲染的地方。
     /// </summary>
     /// <remarks>
-    /// 解耦点：<see cref="ParticleWorld.Step"/> 只管推进模拟，从不渲染；
+    /// 解耦点：<see cref="ParticleWorld.StepMotion"/> / <see cref="ParticleWorld.StepLogic"/> 只管推进模拟，从不渲染；
     /// 渲染由本类在 <see cref="Update"/> 里按 <see cref="ParticleSimulationSettings.StepsPerPresent"/> 决定何时上屏。
-    /// 默认值 1 = 每个逻辑帧后渲染一次；调大即可变成「多个逻辑帧渲染一次」，无需改动模拟或渲染代码。
+    /// 默认值 1 = 每个运动帧后渲染一次；调大即可变成「多个运动帧渲染一次」，无需改动模拟或渲染代码。
+    /// <para>两级节拍：运动帧 60 Hz（只跑粒子运动）、逻辑帧 20 Hz（相变 / 反应 / 热传导 / 湿度 / 降水 / 光照 / 随机刻）。
+    /// 逻辑帧是运动帧节拍上的子节拍——每 <see cref="ParticleSimulationSettings.LogicTicksPerMotionTick"/>
+    /// 个运动帧跑一次 <see cref="ParticleWorld.StepLogic"/>，其余只跑 <see cref="ParticleWorld.StepMotion"/>。</para>
     /// <para>沙箱尺寸：默认取 <see cref="ParticleSimulationSettings"/> 的宽高，本组件的「沙箱尺寸」字段非 0 时覆盖之。
     /// 运行中改尺寸（Inspector 或 <see cref="Resize"/>）会重建一个空世界，已有内容不保留。</para>
     /// </remarks>
@@ -41,6 +44,7 @@ namespace TapTap2026.Game
         private ParticleWorld _world;
         private float _accumulator;
         private int _stepsSincePresent;
+        private int _motionTicks;
 
         /// <summary>当前世界。在 <c>Awake</c> 之后可用。</summary>
         public ParticleWorld World
@@ -140,6 +144,7 @@ namespace TapTap2026.Game
             _world = new ParticleWorld(RequestedWidth, RequestedHeight, settings.Seed);
             _accumulator = 0f;
             _stepsSincePresent = 0;
+            _motionTicks = 0;
 
             if (ParticleIds.Atmosphere != ParticleRegistry.AirTypeId)
             {
@@ -192,13 +197,15 @@ namespace TapTap2026.Game
             heat.AirThermalEmissivity = current.AirThermalEmissivity;
             heat.DebugHeatOverlay = _heatDebugOverlay;
             heat.DebugFullScaleTemperature = _heatDebugFullScale;
+            _world.RandomTicksPerStep = current.RandomTicksPerStep;
 
             if (_simulate)
             {
                 ParticleSimulationSettings settings = Settings;
-                float stepSeconds = 1f / settings.TickRate;
+                float stepSeconds = 1f / settings.MotionRate;
                 int maxSteps = settings.MaxStepsPerFrame;
                 int stepsPerPresent = settings.StepsPerPresent;
+                int logicEvery = settings.LogicTicksPerMotionTick;
 
                 _accumulator += Time.deltaTime;
 
@@ -211,11 +218,23 @@ namespace TapTap2026.Game
                 int stepped = 0;
                 while (_accumulator >= stepSeconds && stepped < maxSteps)
                 {
-                    _world.Step();
+                    // 逻辑帧是运动帧节拍上的一个子节拍：每 logicEvery 个运动帧跑一次「逻辑 + 运动」，
+                    // 其余运动帧只跑运动。因此运动帧 60 Hz、逻辑帧 = 60 / logicEvery。
+                    _motionTicks++;
+                    if (_motionTicks >= logicEvery)
+                    {
+                        _motionTicks = 0;
+                        _world.StepLogic();
+                    }
+                    else
+                    {
+                        _world.StepMotion();
+                    }
+
                     _accumulator -= stepSeconds;
                     stepped++;
 
-                    // 渲染与模拟解耦的接缝：跑完这个逻辑帧之后是否上屏，只在这里决定。
+                    // 渲染与模拟解耦的接缝：跑完这个运动帧之后是否上屏，只在这里决定。
                     _stepsSincePresent++;
                     if (_stepsSincePresent >= stepsPerPresent)
                     {

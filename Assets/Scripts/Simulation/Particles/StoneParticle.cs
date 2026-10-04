@@ -27,8 +27,8 @@ namespace TapTap2026.Simulation
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,
             density: 3.0f,
-            heatCapacity: 0.9f,   // 石头：热容适中
-            thermalConductivity: 0.7f,   // 石头：导热中等偏好
+            heatCapacity: 0.80f,   // 石头：从 0.9 调到 0.8，升温更快
+            thermalConductivity: 0.80f,   // 石头：固体里导热最快（原 0.7，接近水）
             thermalEmissivity: 1.0f,     // 近黑体
             affectedByGravity: true,
             isStatic: false,
@@ -38,11 +38,21 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(StoneParticle));
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             // 摩擦度 0.9 → 10 格净空；靠着同排的石头（坡面外侧）时粘性 0.9 再抬到 19 格，
             // 所以石头垛外侧几乎不滚落，只有孤立、旁边没石头的石块才按 10 格净空滑下去。
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+            // 石头只有运动与热学，没有相变 / 反应：逻辑帧留空。
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            // 石头暂无随机刻行为：它只有运动与热学，慢过程（风化等）尚未设计。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

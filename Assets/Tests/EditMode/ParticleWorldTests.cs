@@ -196,7 +196,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 3; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual((int)TestTypes.GrainId, (int)world.GetCell(5, 9).typeId, "颗粒应已落到 (5,9)");
@@ -228,7 +228,7 @@ namespace TapTap2026.Tests
             world.Heat.VoidHeatLoss = 0f;  // 隔离出「界内传导守恒」这一条
             world.Heat.SetHeat(5, 5, 10f); // 全空气：热容 1，故 T = Q
 
-            world.Step();
+            world.StepLogic();
 
             // 中心向外散一格：0.15 * 4 邻居 * (0 - 10) = -6 → 4；每个邻居 +0.15 * (10 - 0) = 1.5。
             Assert.AreEqual(4f, world.Heat.GetHeat(5, 5), 1e-4f);
@@ -255,7 +255,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0.2f, world.Heat.GetConductivity(0, 0), 1e-4f, "材料导热率从类型属性读");
             Assert.AreEqual(1f, world.Heat.GetConductivity(0, 1), 1e-4f, "空气（typeId 0）用 AirThermalConductivity");
 
-            world.Step();
+            world.StepLogic();
 
             // 界面导热率 = 0.1 * (0.2 + 1) / 2 = 0.06 ⇒ 下格 -6（→ 94），上格 +6（→ 6）。
             Assert.AreEqual(94f, world.Heat.GetHeat(0, 0), 1e-4f, "隔热材料散失得更少");
@@ -270,7 +270,7 @@ namespace TapTap2026.Tests
             world.Heat.Conductivity = 0f;
             world.Heat.SetHeat(5, 5, 10f);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(10f, world.Heat.GetHeat(5, 5));
             Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(4, 5));
@@ -285,7 +285,7 @@ namespace TapTap2026.Tests
             world.Heat.SetHeat(0, 2, 100f); // 顶行（y = Height-1）
             world.Heat.SetHeat(0, 1, 100f); // 内部行
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(90f, world.Heat.GetHeat(0, 2), 1e-4f, "顶行按温度散掉 0.1 * T");
             Assert.AreEqual(100f, world.Heat.GetHeat(0, 1), 1e-4f, "内部行不接触虚空，热量不变");
@@ -302,7 +302,7 @@ namespace TapTap2026.Tests
             world.Heat.SetHeat(0, 2, 100f); // 顶行
             world.Heat.SetHeat(0, 1, 100f); // 内部行：上方是空气，照样暴露、照样辐射
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(95f, world.Heat.GetHeat(0, 1), 1e-4f, "空气内部行按 0.05 * T 辐射散热");
             Assert.AreEqual(95f, world.Heat.GetHeat(0, 2), 1e-4f, "空气顶行同样辐射（与虚空散热叠加而非替代）");
@@ -325,7 +325,7 @@ namespace TapTap2026.Tests
             world.Heat.SetHeat(0, 1, 100f);
             world.Heat.SetHeat(0, 0, 100f);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(95f, world.Heat.GetHeat(0, 3), 1e-4f, "顶行暴露面辐射");
             Assert.AreEqual(100f, world.Heat.GetHeat(0, 2), 1e-4f, "埋在固体之下的格不辐射");
@@ -348,7 +348,7 @@ namespace TapTap2026.Tests
             world.Heat.SetHeat(0, 0, 100f);
             world.Heat.SetHeat(1, 0, 100f);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(95f, world.Heat.GetHeat(0, 0), 1e-4f, "ε = 1：按 0.05 * T 辐射");
             Assert.AreEqual(99f, world.Heat.GetHeat(1, 0), 1e-4f, "ε = 0.2：只按 0.05 * 0.2 * T 辐射");
@@ -366,12 +366,12 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(1f, world.Heat.AirThermalEmissivity, "默认 1（不改既有单测契约）");
 
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(95f, world.Heat.GetHeat(0, 0), 1e-4f, "默认 ε = 1：按 0.05 * T 辐射");
 
             world.Heat.SetHeat(0, 0, 100f);
             world.Heat.AirThermalEmissivity = 0.2f;
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(99f, world.Heat.GetHeat(0, 0), 1e-4f, "ε = 0.2：只按 0.05 * 0.2 * T 辐射");
         }
 
@@ -413,15 +413,15 @@ namespace TapTap2026.Tests
             world.Heat.VoidHeatLoss = 0.2f;
             world.Heat.SetHeat(0, 0, 100f);
 
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(80f, world.Heat.GetHeat(0, 0), 1e-4f);
 
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(64f, world.Heat.GetHeat(0, 0), 1e-4f, "是每 tick 持续流失，不是一次性");
 
             for (int i = 0; i < 40; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.Greater(world.Heat.GetHeat(0, 0), 0f, "是按比例衰减，不会变成负数");
@@ -437,7 +437,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 10; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(100f, world.Heat.GetHeat(0, 2), 1e-4f, "0 = 封闭系统，顶行不再流失");
@@ -470,14 +470,14 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 50; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             float early = world.Heat.GetTemperature(0, 0);
 
             for (int i = 0; i < 450; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             float settled = world.Heat.GetTemperature(0, 0);
@@ -515,12 +515,12 @@ namespace TapTap2026.Tests
             world.Heat.SetHeat(5, 5, 10f);
             TestHeatParticle.Delta = 2f;
 
-            world.Step();
+            world.StepLogic();
 
-            Assert.AreEqual(12f, world.Heat.GetHeat(5, 5), "粒子的 OnUpdate 必须能改世界热图");
+            Assert.AreEqual(12f, world.Heat.GetHeat(5, 5), "粒子的运动钩子必须能改世界热图");
             Assert.AreEqual(10f, TestHeatParticle.LastObservedHeat, "粒子先读到写入前的值");
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(14f, world.Heat.GetHeat(5, 5));
             Assert.AreEqual(12f, TestHeatParticle.LastObservedHeat);
@@ -550,7 +550,7 @@ namespace TapTap2026.Tests
             world.Light.DarkTicks = 100;
             world.Light.Intensity = 7f;
 
-            world.Step();
+            world.StepLogic();
 
             Assert.IsTrue(world.Light.IsLit);
             Assert.AreEqual(7f, world.Heat.GetHeat(0, 0), 1e-4f);
@@ -571,15 +571,15 @@ namespace TapTap2026.Tests
             world.Light.DarkTicks = 2;
             world.Light.Intensity = 1f;
 
-            world.Step(); // 第 1 刻：亮
-            world.Step(); // 第 2 刻：亮
+            world.StepLogic(); // 第 1 刻：亮
+            world.StepLogic(); // 第 2 刻：亮
             Assert.AreEqual(2f, world.Heat.GetHeat(0, 0), 1e-4f, "亮相位每刻都在加热");
 
-            world.Step(); // 第 3 刻：暗
-            world.Step(); // 第 4 刻：暗
+            world.StepLogic(); // 第 3 刻：暗
+            world.StepLogic(); // 第 4 刻：暗
             Assert.AreEqual(2f, world.Heat.GetHeat(0, 0), 1e-4f, "暗相位不加热");
 
-            world.Step(); // 第 5 刻：新周期，重新亮
+            world.StepLogic(); // 第 5 刻：新周期，重新亮
             Assert.AreEqual(3f, world.Heat.GetHeat(0, 0), 1e-4f, "周期循环回亮相位");
             Assert.AreEqual(5, world.Light.Elapsed);
         }
@@ -595,12 +595,12 @@ namespace TapTap2026.Tests
             world.Light.DarkTicks = 10;
 
             world.Light.Enabled = false;
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, 0), 1e-4f, "总开关关闭");
 
             world.Light.Enabled = true;
             world.Light.Intensity = 0f;
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, 0), 1e-4f, "强度 0");
         }
 
@@ -617,14 +617,14 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 4; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(0, world.Light.Elapsed, "关闭时不推进相位");
             Assert.AreEqual(HeatMap.AmbientHeat, world.Heat.GetHeat(0, 0), 1e-4f);
 
             world.Light.Enabled = true;
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(1f, world.Heat.GetHeat(0, 0), 1e-4f, "重新打开从亮相位开始");
         }
 
@@ -648,7 +648,7 @@ namespace TapTap2026.Tests
             for (int t = 0; t < expected.Length; t++)
             {
                 Assert.AreEqual(expected[t], world.Light.Daylight, 1e-6f, $"第 {t} 刻的日照度");
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(expected[0], world.Light.Daylight, 1e-6f, "新周期从下限重新开始");
@@ -665,9 +665,9 @@ namespace TapTap2026.Tests
             world.Light.TransitionTicks = 100; // 远超白天长度：夹到 LitTicks / 2 = 2
 
             Assert.AreEqual(0f, world.Light.Daylight, 1e-6f, "第 1 刻仍从下限起");
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(0.5f, world.Light.Daylight, 1e-6f, "2 刻的升坡");
-            world.Step();
+            world.StepLogic();
             Assert.AreEqual(1f, world.Light.Daylight, 1e-6f);
 
             // 过渡 0 = 硬切：白天一到立刻是上限。
@@ -822,8 +822,8 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 20; i++)
             {
-                clinging.Step();
-                isolated.Step();
+                clinging.StepLogic();
+                isolated.StepLogic();
             }
 
             Assert.AreEqual((int)TestTypes.CohesionId, (int)clinging.GetCell(2, 3).typeId, "同排两侧都有固体邻居，粘性 1 应粘住不滚");
@@ -869,7 +869,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 20; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual((int)TestTypes.FrictionOneId, (int)world.GetCell(2, 3).typeId, "下方有固体时摩擦度 1 的固体不得滚落");
@@ -879,7 +879,7 @@ namespace TapTap2026.Tests
             // 摩擦只影响斜滑，不影响正下：下方是空气时照常直落。
             ParticleWorld falling = NewWorld();
             falling.Set(2, 3, TestTypes.FrictionOneId);
-            falling.Step();
+            falling.StepLogic();
 
             Assert.AreEqual((int)TestTypes.FrictionOneId, (int)falling.GetCell(2, 2).typeId, "摩擦度 1 不应阻止直落");
         }
@@ -920,29 +920,29 @@ namespace TapTap2026.Tests
         public void Set_BetweenSteps_CreatesAParticleThatMovesOnTheVeryNextStep()
         {
             ParticleWorld world = NewWorld();
-            world.Step();
+            world.StepLogic();
             world.Set(5, 8, TestTypes.GrainId);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual((int)TestTypes.GrainId, (int)world.GetCell(5, 7).typeId);
             Assert.IsTrue(world.IsAir(5, 8));
         }
 
         [Test]
-        public void Step_WhenAnOnUpdateThrows_StillLeavesNewParticlesProcessableNextTick()
+        public void StepLogic_WhenAnOnMotionThrows_StillLeavesNewParticlesProcessableNextTick()
         {
             ParticleWorld world = NewWorld();
             world.Set(5, 8, TestTypes.ThrowerId);
             TestThrowerParticle.Armed = true;
 
-            Assert.Throws<InvalidOperationException>(() => world.Step());
+            Assert.Throws<InvalidOperationException>(() => world.StepLogic());
 
             TestThrowerParticle.Armed = false;
             world.Clear(5, 8);
             world.Set(1, 8, TestTypes.WalkerId);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual((int)TestTypes.WalkerId, (int)world.GetCell(2, 8).typeId, "异常后新建的粒子被误判为本 tick 已处理");
         }
@@ -1026,7 +1026,7 @@ namespace TapTap2026.Tests
             ParticleWorld world = NewWorld();
             world.Set(0, 8, TestTypes.WalkerId);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual((int)TestTypes.WalkerId, (int)world.GetCell(1, 8).typeId);
             Assert.IsTrue(world.IsAir(0, 8));
@@ -1041,7 +1041,7 @@ namespace TapTap2026.Tests
 
             for (int tick = 1; tick <= 6; tick++)
             {
-                world.Step();
+                world.StepLogic();
 
                 Assert.AreEqual((int)TestTypes.GrainId, (int)world.GetCell(5, 12 - tick).typeId);
                 Assert.IsTrue(world.IsAir(5, 12 - tick + 1));
@@ -1050,20 +1050,61 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void StaticType_NeverReceivesOnUpdate()
+        public void StaticType_NeverReceivesMotionOrLogic()
         {
             ParticleWorld world = NewWorld();
             world.Set(5, 12, TestTypes.StaticId);
 
             for (int i = 0; i < 10; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(0, TestTypes.Static.UpdateCount);
             Assert.AreEqual((int)TestTypes.StaticId, (int)world.GetCell(5, 12).typeId);
             Assert.AreEqual(10, world.Tick);
             Assert.IsFalse(world.Parity);
+        }
+
+        [Test]
+        public void StepMotion_RunsMotionWithoutLogic()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(5, 8, TestTypes.PhaseProbeId);
+
+            world.StepMotion();
+
+            Assert.AreEqual(0, TestTypes.PhaseProbe.LogicCount, "运动帧不跑逻辑钩子");
+            Assert.AreEqual(1, TestTypes.PhaseProbe.MotionCount, "运动帧跑一次运动钩子");
+            Assert.IsFalse(TestTypes.PhaseProbe.LogicRanBeforeMotion);
+            Assert.AreEqual(1, world.Tick, "运动帧同样推进世界时基");
+        }
+
+        [Test]
+        public void StepLogic_RunsLogicBeforeMotionOnTheSameCell()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(5, 8, TestTypes.PhaseProbeId);
+
+            world.StepLogic();
+
+            Assert.AreEqual(1, TestTypes.PhaseProbe.LogicCount);
+            Assert.AreEqual(1, TestTypes.PhaseProbe.MotionCount);
+            Assert.IsTrue(TestTypes.PhaseProbe.LogicRanBeforeMotion, "逻辑帧必须先跑逻辑、再跑同一格的运动");
+        }
+
+        [Test]
+        public void StepLogic_WhenLogicReplacesTheCell_SkipsMotionForThatCell()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(5, 8, TestTypes.PhaseProbeId);
+            TestTypes.PhaseProbe.MorphOnLogic = true;
+
+            world.StepLogic();
+
+            Assert.AreEqual((int)TestTypes.SolidFlowId, (int)world.GetCell(5, 8).typeId);
+            Assert.AreEqual(1, TestTypes.PhaseProbe.LogicCount);
+            Assert.AreEqual(0, TestTypes.PhaseProbe.MotionCount, "逻辑钩子换掉本格后，本帧不再跑旧类型的运动");
         }
 
         [Test]
@@ -1112,8 +1153,8 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 200; i++)
             {
-                a.Step();
-                b.Step();
+                a.StepLogic();
+                b.StepLogic();
             }
 
             for (int i = 0; i < a.CellCount; i++)
@@ -1179,9 +1220,115 @@ namespace TapTap2026.Tests
         public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
         {
             var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
-            var bad = new ParticleType(1, badInfo, null, null, null);
+            var bad = new ParticleType(1, badInfo, null, null, null, null, null);
 
             Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));
+        }
+
+        // ============================== 随机刻 ==============================
+
+        [Test]
+        public void RandomTicks_AreDisabledByDefault()
+        {
+            ParticleWorld world = NewWorld();
+            world.Set(3, 3, TestTypes.RandomTickId);
+
+            for (int i = 0; i < 5; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(0, world.RandomTicksPerStep, "随机刻默认关闭");
+            Assert.AreEqual(0, TestTypes.RandomTick.RandomTickCount);
+        }
+
+        [Test]
+        public void RandomTicks_FireExactlyTheConfiguredNumberOfTimesPerStep()
+        {
+            ParticleWorld world = NewWorld();
+            FillWith(world, TestTypes.RandomTickId);
+
+            world.RandomTicksPerStep = 7;
+            world.StepLogic();
+            Assert.AreEqual(7, TestTypes.RandomTick.RandomTickCount, "整格都是该类型时每次抽取都应命中");
+
+            world.StepLogic();
+            Assert.AreEqual(14, TestTypes.RandomTick.RandomTickCount, "每个 tick 各抽 7 次");
+        }
+
+        [Test]
+        public void RandomTicks_SkipAirCells()
+        {
+            ParticleWorld world = NewWorld();
+            world.RandomTicksPerStep = W * H;
+
+            world.StepLogic();
+
+            Assert.AreEqual(0, TestTypes.RandomTick.RandomTickCount, "全空气网格不应有任何随机刻");
+        }
+
+        [Test]
+        public void RandomTicks_NeverFireForStaticTypes()
+        {
+            ParticleWorld world = NewWorld();
+            FillWith(world, TestTypes.StaticId);
+
+            world.RandomTicksPerStep = W * H;
+            world.StepLogic();
+
+            Assert.AreEqual(0, TestTypes.Static.RandomTickCount, "静态类型即使被抽中也必须跳过");
+            Assert.AreEqual(0, TestTypes.Static.UpdateCount, "静态类型的运动 / 逻辑钩子同样永不触发");
+        }
+
+        [Test]
+        public void RandomTicks_ClampToCellCount()
+        {
+            ParticleWorld world = NewWorld();
+
+            world.RandomTicksPerStep = int.MaxValue;
+            Assert.AreEqual(W * H, world.RandomTicksPerStep);
+
+            world.RandomTicksPerStep = -5;
+            Assert.AreEqual(0, world.RandomTicksPerStep);
+        }
+
+        [Test]
+        public void RandomTicks_SameSeedSelectsTheSameCells()
+        {
+            long hashA = RunRandomTickSelection(777u, 9, out int pickedA);
+            long hashB = RunRandomTickSelection(777u, 9, out int pickedB);
+            long hashC = RunRandomTickSelection(778u, 9, out int pickedC);
+
+            Assert.AreEqual(9, pickedA);
+            Assert.AreEqual(9, pickedB);
+            Assert.AreEqual(9, pickedC);
+            Assert.AreEqual(hashA, hashB, "同一种子必须抽出同一批格");
+            Assert.AreNotEqual(hashA, hashC, "不同种子应抽出不同的批次");
+        }
+
+        /// <summary>在整格都是随机刻类型的网格上跑一步，返回命中坐标序列的哈希，并输出命中次数。</summary>
+        private static long RunRandomTickSelection(uint seed, int picks, out int picked)
+        {
+            TestTypes.ResetCounters();
+            ParticleWorld world = NewWorld(seed);
+            FillWith(world, TestTypes.RandomTickId);
+
+            world.RandomTicksPerStep = picks;
+            world.StepLogic();
+
+            picked = TestTypes.RandomTick.RandomTickCount;
+            return TestTypes.RandomTick.PickHash;
+        }
+
+        private static void FillWith(ParticleWorld world, ushort typeId)
+        {
+            for (int y = 0; y < world.Height; y++)
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    world.Set(x, y, typeId);
+                }
+            }
         }
 
         // ============================== 像素映射 ==============================
@@ -1327,7 +1474,7 @@ namespace TapTap2026.Tests
             var snapshot = (Cell[])stone.Cells.Clone();
             for (int i = 0; i < 100; i++)
             {
-                stone.Step();
+                stone.StepLogic();
             }
 
             for (int i = 0; i < stone.CellCount; i++)
@@ -1367,7 +1514,7 @@ namespace TapTap2026.Tests
             var snapshot = (Cell[])sticky.Cells.Clone();
             for (int i = 0; i < 100; i++)
             {
-                sticky.Step();
+                sticky.StepLogic();
             }
 
             for (int i = 0; i < sticky.CellCount; i++)
@@ -1421,7 +1568,7 @@ namespace TapTap2026.Tests
             var snapshot = (Cell[])verySticky.Cells.Clone();
             for (int i = 0; i < 100; i++)
             {
-                verySticky.Step();
+                verySticky.StepLogic();
             }
 
             for (int i = 0; i < verySticky.CellCount; i++)
@@ -1457,13 +1604,13 @@ namespace TapTap2026.Tests
                 world.Set(centerX, height - 1, TunableId);
                 for (int tick = 0; tick < ticksPerGrain; tick++)
                 {
-                    world.Step();
+                    world.StepLogic();
                 }
             }
 
             for (int i = 0; i < settleTicks; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             return world;
@@ -1485,7 +1632,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 30; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             // 同类固体互不置换：落石停在已有固体正上方，不会再往下挤。
@@ -1518,7 +1665,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 400; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(placed, CountType(world, ProductionTypes.SandId), "沙粒数量必须守恒");
@@ -1542,7 +1689,7 @@ namespace TapTap2026.Tests
             var snapshot = (Cell[])world.Cells.Clone();
             for (int i = 0; i < 100; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             for (int i = 0; i < world.CellCount; i++)
@@ -1585,7 +1732,7 @@ namespace TapTap2026.Tests
             var snapshot = (Cell[])soil.Cells.Clone();
             for (int i = 0; i < 100; i++)
             {
-                soil.Step();
+                soil.StepLogic();
             }
 
             for (int i = 0; i < soil.CellCount; i++)
@@ -1650,13 +1797,13 @@ namespace TapTap2026.Tests
                 world.Set(centerX, height - 1, typeId);
                 for (int tick = 0; tick < 40; tick++)
                 {
-                    world.Step();
+                    world.StepLogic();
                 }
             }
 
             for (int i = 0; i < 400; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             return world;

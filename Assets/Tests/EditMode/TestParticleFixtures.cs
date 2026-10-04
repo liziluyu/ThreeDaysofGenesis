@@ -23,9 +23,17 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, 1f, 1f, true, false, 0, 0f, 0f, Palette, "TestGrainParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             ParticleRules.TryFall(world, x, y);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -56,7 +64,7 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, 1f, 1f, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             if (ParticleRules.TryFall(world, x, y))
             {
@@ -71,6 +79,14 @@ namespace TapTap2026.Tests
             ParticleRules.TryFlowHorizontal(world, x, y, Info.MaxFlowSpread);
         }
 
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+        }
+
         public void OnSpawn(ParticleWorld world, int x, int y)
         {
         }
@@ -80,21 +96,33 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>测试专用的静态类型：OnUpdate 永不应被调用。</summary>
+    /// <summary>测试专用的静态类型：OnMotion / OnLogic 永不应被调用。</summary>
     internal sealed class TestStaticParticle : IParticleType
     {
         internal static readonly Color32[] Palette = { new Color32(255, 255, 255, 255) };
 
         internal int UpdateCount;
 
+        /// <summary>静态类型永不参与随机刻，本计数必须始终为 0。</summary>
+        internal int RandomTickCount;
+
         public ParticleTypeInfo Info
         {
             get { return new ParticleTypeInfo(ParticleTags.Solid, 999f, 1f, 1f, 1f, false, true, 0, 0f, 0f, Palette, "TestStaticParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             UpdateCount++;
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            RandomTickCount++;
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -106,7 +134,7 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>测试专用的「每 tick 向右走一格」粒子，用来验证每 tick 至多被处理一次。</summary>
+    /// <summary>测试专用的「每帧向右走一格」粒子，用来验证每帧至多被处理一次。</summary>
     internal sealed class TestWalkerParticle : IParticleType
     {
         internal static readonly Color32[] Palette = { new Color32(255, 0, 0, 255) };
@@ -118,13 +146,21 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestWalkerParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             UpdateCount++;
             if (world.IsAir(x + 1, y))
             {
                 world.Swap(x, y, x + 1, y);
             }
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -136,7 +172,7 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>测试专用的可流动固体：Solid 标签、非静态、不受重力、OnUpdate 不做任何事。</summary>
+    /// <summary>测试专用的可流动固体：Solid 标签、非静态、不受重力、OnMotion 不做任何事。</summary>
     /// <remarks>用于直接调用 <see cref="ParticleRules.TryFlowHorizontal"/>，隔离出「穿行判定」这一条规则。</remarks>
     internal sealed class TestSolidFlowParticle : IParticleType
     {
@@ -147,7 +183,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 5f, 1f, 1f, 1f, false, false, 8, 0f, 0f, Palette, "TestSolidFlowParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -160,7 +204,7 @@ namespace TapTap2026.Tests
         }
     }
 
-    /// <summary>OnUpdate 按需抛异常的粒子，用于验证 Step 异常后写入标记仍然正确。</summary>
+    /// <summary>OnMotion 按需抛异常的粒子，用于验证 Step 异常后写入标记仍然正确。</summary>
     internal sealed class TestThrowerParticle : IParticleType
     {
         internal static readonly Color32[] Palette = { new Color32(200, 0, 200, 255) };
@@ -172,12 +216,20 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestThrowerParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             if (Armed)
             {
                 throw new System.InvalidOperationException("TestThrowerParticle 故意抛出。");
             }
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -199,7 +251,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 0.2f, 1f, false, true, 0, 0f, 0f, Palette, "TestInsulatingParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -222,7 +282,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 0.2f, false, true, 0, 0f, 0f, Palette, "TestLowEmissivityParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -245,7 +313,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1.5f, false, false, 0, 0f, 0f, Palette, "TestBadEmissivityParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -268,7 +344,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestBadPaletteParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -291,7 +375,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.None, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestNoTagParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -314,9 +406,17 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 4f, 1f, 1f, 1f, true, false, 0, 1f, 0f, Palette, "TestFrictionOneSolidParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -338,9 +438,17 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 3f, 1f, 1f, 1f, true, false, 0, 0f, 1f, Palette, "TestCohesionParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -371,9 +479,17 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 2f, 1f, 1f, 1f, true, false, 0, _friction, _stickiness, Palette, "TestTunableSolidParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -387,7 +503,7 @@ namespace TapTap2026.Tests
 
     /// <summary>
     /// 测试专用的热源：每 tick 先读自己所在格的热量（记到 <see cref="LastObservedHeat"/>），再累加 <see cref="Delta"/>；
-    /// 不移动、不做其它事。用于验证粒子能在 <c>OnUpdate</c> 里查改世界热图。
+    /// 不移动、不做其它事。用于验证粒子能在 <c>OnMotion</c> 里查改世界热图。
     /// </summary>
     internal sealed class TestHeatParticle : IParticleType
     {
@@ -398,7 +514,7 @@ namespace TapTap2026.Tests
         /// <summary>每 tick 的热量增量。测试可改，<see cref="TestTypes.ResetCounters"/> 会复位。</summary>
         internal static float Delta = DefaultDelta;
 
-        /// <summary>最近一次 <c>OnUpdate</c> 读到（写入前）的热量。用于验证「先查后改」。</summary>
+        /// <summary>最近一次 <c>OnMotion</c> 读到（写入前）的热量。用于验证「先查后改」。</summary>
         internal static float LastObservedHeat = float.NaN;
 
         /// <summary>热容刻意取 2（空气是 1），用于验证 <c>T = Q / C</c> 的换算。</summary>
@@ -407,10 +523,18 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 2f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestHeatParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             LastObservedHeat = world.Heat.GetHeat(x, y);
             world.Heat.AddHeat(x, y, Delta);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
@@ -432,7 +556,15 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 1.5f, Palette, "TestBadStickinessParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -455,7 +587,137 @@ namespace TapTap2026.Tests
             get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 1.5f, 0f, Palette, "TestBadFrictionParticle"); }
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 测试专用：记录被随机刻命中的次数、坐标，并把命中坐标折进滚动哈希 <see cref="PickHash"/>，
+    /// 用于验证「同一种子 → 同一批随机刻」。不做任何移动，因此不干扰网格状态。
+    /// </summary>
+    internal sealed class TestRandomTickParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(0, 200, 0, 255) };
+
+        /// <summary>被随机刻命中的总次数。</summary>
+        internal int RandomTickCount;
+
+        /// <summary>最近一次命中的格坐标（尚未命中过时为 -1 / -1）。</summary>
+        internal int LastX = -1;
+        internal int LastY = -1;
+
+        /// <summary>命中坐标序列的滚动哈希（<c>(y * Width + x)</c> 逐次折入）。</summary>
+        internal long PickHash;
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestRandomTickParticle"); }
+        }
+
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+            // 随机刻测试只关心 OnRandomTick，扫描行为保持空。
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            RandomTickCount++;
+            LastX = x;
+            LastY = y;
+            PickHash = PickHash * 1000003L + (y * world.Width + x);
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 测试专用的两段钩子探针：分别记录 <c>OnLogic</c> / <c>OnMotion</c> 被调用的次数，
+    /// 并记录「本格运动时逻辑是否已经跑过」——用于验证运动帧只跑运动、逻辑帧先逻辑后运动。
+    /// </summary>
+    internal sealed class TestPhaseProbeParticle : IParticleType
+    {
+        internal static readonly Color32[] Palette = { new Color32(9, 99, 9, 255) };
+
+        /// <summary>逻辑钩子被调用的次数。</summary>
+        internal int LogicCount;
+
+        /// <summary>运动钩子被调用的次数。</summary>
+        internal int MotionCount;
+
+        /// <summary>每格运动时「这一格的逻辑钩子是否刚跑过」。逻辑帧上应为 true、运动帧上应为 false。</summary>
+        internal bool LogicRanBeforeMotion;
+
+        /// <summary>置为 true 时 <c>OnLogic</c> 把本格相变成 <see cref="TestTypes.SolidFlowId"/>（验证相变后本帧跳过运动）。</summary>
+        internal bool MorphOnLogic;
+
+        /// <summary>运动钩子里记录当格的逻辑是否跑过，并在每格消费后复位（单格世界下无歧义）。</summary>
+        private bool _logicRanForThisCell;
+
+        /// <summary>
+        /// 复位探针的全部状态。相变测试里 <c>OnMotion</c> 会被跳过（本格已被换掉），
+        /// 因此 <see cref="_logicRanForThisCell"/> 不会被消费——不在这里一并清掉，它就会漏进下一个测试，
+        /// 让那个测试的 <see cref="LogicRanBeforeMotion"/> 假阳性。
+        /// </summary>
+        internal void ResetProbe()
+        {
+            LogicCount = 0;
+            MotionCount = 0;
+            LogicRanBeforeMotion = false;
+            MorphOnLogic = false;
+            _logicRanForThisCell = false;
+        }
+
+        public ParticleTypeInfo Info
+        {
+            get { return new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, Palette, "TestPhaseProbeParticle"); }
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+            LogicCount++;
+            _logicRanForThisCell = true;
+
+            if (MorphOnLogic)
+            {
+                world.SetPhase(x, y, TestTypes.SolidFlowId);
+            }
+        }
+
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+            MotionCount++;
+            LogicRanBeforeMotion = _logicRanForThisCell;
+            _logicRanForThisCell = false;
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
         {
         }
 
@@ -484,11 +746,15 @@ namespace TapTap2026.Tests
         internal const ushort HeatId = 9;
         internal const ushort InsulatingId = 10;
         internal const ushort LowEmissivityId = 11;
+        internal const ushort RandomTickId = 12;
+        internal const ushort PhaseProbeId = 13;
 
         internal static readonly TestGrainParticle Grain = new TestGrainParticle();
         internal static readonly TestLiquidParticle Liquid = new TestLiquidParticle();
         internal static readonly TestStaticParticle Static = new TestStaticParticle();
         internal static readonly TestWalkerParticle Walker = new TestWalkerParticle();
+        internal static readonly TestRandomTickParticle RandomTick = new TestRandomTickParticle();
+        internal static readonly TestPhaseProbeParticle PhaseProbe = new TestPhaseProbeParticle();
 
         private static ParticleType[] _table;
 
@@ -513,6 +779,8 @@ namespace TapTap2026.Tests
                         Bind(HeatId, new TestHeatParticle()),
                         Bind(InsulatingId, new TestInsulatingParticle()),
                         Bind(LowEmissivityId, new TestLowEmissivityParticle()),
+                        Bind(RandomTickId, RandomTick),
+                        Bind(PhaseProbeId, PhaseProbe),
                     };
                 }
 
@@ -527,7 +795,13 @@ namespace TapTap2026.Tests
             Grain.LastKillerId = ushort.MaxValue;
             Grain.VictimIdSeenByKill = ushort.MaxValue;
             Static.UpdateCount = 0;
+            Static.RandomTickCount = 0;
             Walker.UpdateCount = 0;
+            RandomTick.RandomTickCount = 0;
+            RandomTick.LastX = -1;
+            RandomTick.LastY = -1;
+            RandomTick.PickHash = 0;
+            PhaseProbe.ResetProbe();
             TestThrowerParticle.Armed = false;
             TestHeatParticle.Delta = TestHeatParticle.DefaultDelta;
             TestHeatParticle.LastObservedHeat = float.NaN;
@@ -535,7 +809,7 @@ namespace TapTap2026.Tests
 
         private static ParticleType Bind(ushort id, IParticleType behaviour)
         {
-            return new ParticleType(id, behaviour.Info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
+            return new ParticleType(id, behaviour.Info, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
         }
     }
 
@@ -550,7 +824,7 @@ namespace TapTap2026.Tests
             {
                 IParticleType behaviour = behaviours[i];
                 table[i + 1] = new ParticleType(
-                    (ushort)(i + 1), behaviour.Info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
+                    (ushort)(i + 1), behaviour.Info, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
             }
 
             return table;
@@ -587,7 +861,7 @@ namespace TapTap2026.Tests
 
         private static ParticleType Bind(ushort id, IParticleType behaviour)
         {
-            return new ParticleType(id, behaviour.Info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
+            return new ParticleType(id, behaviour.Info, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
         }
     }
 }

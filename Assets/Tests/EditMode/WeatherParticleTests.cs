@@ -11,7 +11,7 @@ namespace TapTap2026.Tests
     /// 水循环测试必须走 <see cref="ParticleRegistration.RegisterAll"/> 的全局表：蒸发/降雨靠
     /// <see cref="ParticleIds"/> 的回填字段找到对方 typeId，隔离表里这些字段是 0（契约允许的唯一例外路径，
     /// 与 <c>SandStoneParticleTests</c> 的取舍一致）。浮力原语测试直接调用 <see cref="ParticleRules"/>，
-    /// 不经过 OnUpdate，因此不受阈值干扰。
+    /// 不经过运动 / 逻辑钩子，因此不受阈值干扰。
     /// <para>云不再是粒子：湿度 = <see cref="HumidityField"/> 里的一个标量，云就是湿度足够高的空气。</para>
     /// </remarks>
     public sealed class WeatherParticleTests
@@ -122,7 +122,7 @@ namespace TapTap2026.Tests
             float capacity = ParticleRegistry.Types[ParticleIds.Water].Info.HeatCapacity;
             world.Heat.SetHeat(4, 4, WaterParticle.BoilingPoint * capacity); // T = 沸点
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(ParticleIds.Atmosphere, world.GetCell(4, 4).typeId, "水到沸点应变成大气");
             Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格应蒸发出一个水格的湿度");
@@ -141,7 +141,7 @@ namespace TapTap2026.Tests
             world.Set(4, 4, ParticleIds.Water);
             world.Heat.SetHeat(4, 4, 4f); // T = 1，远低于沸点
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 3).typeId, "水正常下落");
             Assert.AreEqual(0f, world.Humidity.Sum(), 1e-3f, "不产生湿度");
@@ -186,7 +186,7 @@ namespace TapTap2026.Tests
 
             for (int t = 0; t < 8000; t++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             for (int i = 0; i < world.CellCount; i++)
@@ -285,7 +285,7 @@ namespace TapTap2026.Tests
             float before = TotalWater(world);
             for (int i = 0; i < 200 && CountType(world, ParticleIds.Water) == 0; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.Greater(CountType(world, ParticleIds.Water), 0, "饱和的冷空气应凝结成雨");
@@ -355,7 +355,7 @@ namespace TapTap2026.Tests
             float before = TotalWater(world);
             for (int t = 0; t < 4000; t++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(before, TotalWater(world), 1e-2f, "水总量在水循环里必须守恒（1:1 相变，无源无汇）");
@@ -381,7 +381,7 @@ namespace TapTap2026.Tests
 
             for (int t = 0; t < 300; t++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(before, TotalWater(world), 1e-2f, "湿度输送必须守恒（只搬运，不产不灭）");
@@ -444,9 +444,9 @@ namespace TapTap2026.Tests
             ParticleWorld thin = LightingColumn(0.25f);
             ParticleWorld thick = LightingColumn(1f);
 
-            clear.Step();
-            thin.Step();
-            thick.Step();
+            clear.StepLogic();
+            thin.StepLogic();
+            thick.StepLogic();
 
             float cloudless = clear.Heat.GetHeat(0, 0);
             float thinHeat = thin.Heat.GetHeat(0, 0);
@@ -479,7 +479,7 @@ namespace TapTap2026.Tests
             world.Humidity.Set(1, 2, 0.25f);
             IsolateLighting(world);
 
-            world.Step();
+            world.StepLogic();
 
             Assert.AreEqual(ColumnLightIntensity, world.Heat.GetHeat(0, 0), 1e-3f, "无云的那一列照常拿满光照");
             Assert.Less(world.Heat.GetHeat(1, 0), ColumnLightIntensity, "有云的那一列地表被削弱");

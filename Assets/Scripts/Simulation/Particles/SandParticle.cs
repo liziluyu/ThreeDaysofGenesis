@@ -24,8 +24,8 @@ namespace TapTap2026.Simulation
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,
             density: 1.5f,
-            heatCapacity: 0.8f,   // 干沙：热容小，晒热得快、凉得也快
-            thermalConductivity: 0.4f,   // 干沙：导热最差，热憋在表层（最保温）
+            heatCapacity: 0.70f,   // 干沙：固体里热容最小，晒热得最快、凉得也最快
+            thermalConductivity: 0.50f,   // 干沙：仍是固体里导热最差，但已调快（原 0.4）
             thermalEmissivity: 1.0f,     // 沙/岩/土都是近黑体，辐射率取 1（与旧行为一致）
             affectedByGravity: true,
             isStatic: false,
@@ -35,13 +35,23 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(SandParticle));
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             // 摩擦度 0：正下 -> 1:1 斜下，单一决策，至多移动一次后立即 return。
             // 不做横向自由流动：粉末的安息角完全由斜下滑落产生，
             //   - 平地：正下与两条斜下都是 Solid，静止；
             //   - 坡面：堆顶的沙沿坡斜滑，自然收敛成三角形。
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+            // 沙只有运动，没有相变 / 反应：逻辑帧留空。
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            // 沙暂无随机刻行为：它只有运动，慢过程（固结等）尚未设计。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

@@ -53,7 +53,7 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(AtmosphereParticle));
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             if (ParticleRules.TryBuoyantStep(world, x, y, BuoyancyEpsilon))
             {
@@ -64,6 +64,16 @@ namespace TapTap2026.Simulation
             {
                 return;
             }
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+            // 大气只有运动（浮力 / 热压流），没有相变 / 反应：逻辑帧留空。
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            // 大气暂无随机刻行为：混合由湿度场扩散与温度定向平流负责，不要往这里塞随机换位（那会注入云层抖动）。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

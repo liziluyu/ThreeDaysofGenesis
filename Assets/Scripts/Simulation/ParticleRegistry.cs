@@ -170,7 +170,9 @@ namespace TapTap2026.Simulation
         private static ushort Commit(IParticleType behaviour, ParticleTypeInfo info)
         {
             ushort id = (ushort)(_count + 1);
-            var type = new ParticleType(id, info, behaviour.OnUpdate, behaviour.OnSpawn, behaviour.OnKill);
+            var type = new ParticleType(
+                id, info, behaviour.OnMotion, behaviour.OnLogic,
+                behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
 
             EnsureCapacity(id);
             _types[id] = type;

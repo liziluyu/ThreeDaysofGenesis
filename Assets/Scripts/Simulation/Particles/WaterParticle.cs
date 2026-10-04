@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // WaterParticle —— 水（液体标签，摩擦度/粘性不读，填 0；热容 4.2，约为固体的 2~4 倍）
+    // WaterParticle —— 水（液体标签，摩擦度/粘性不读，填 0；热容 6.5，约为固体的 7~10 倍）
     //
     // flags 私有位：无（bit3-7 全部空闲）
     // 邻居查询范围：正下、左下/右下、同行左右各 MaxFlowSpread 格（横流扫描）
@@ -32,12 +32,11 @@ namespace TapTap2026.Simulation
         };
 
         /// <summary>
-        /// 沸点：本格温度达到它就剧烈蒸发成蒸汽。
+        /// 沸点：本格温度达到它就剧烈蒸发成水汽（并把水汽集中成可见的白色汽团）。
         /// 现为 80：空气辐射率降到 0.1 之后水面整体变暖（水盆可达 ~99°、浅水洼 ~70°），
         /// 40 会让浅水在阳光下当场爆沸晒干。80 之下**浅水洼晒不到沸点**（只慢蒸发），
         /// 只有深水最热的局部能在正午擦到沸点——剧烈蒸发留给真正的热源与极浅的薄水。
-        /// 上游约束见 <c>WaterCycle_ThresholdsKeepSteamHotterThanTheDewPoint</c>：阈值必须让
-        /// 蒸汽出生温度（阈值 × 4.2 / 2.0）仍高于露点，否则水循环短路。
+        /// 注意水温还取决于热容：热容越大，同样的光照 Q 下升温越慢（见 <c>WaterParticle</c> 的 <c>heatCapacity</c>）。
         /// </summary>
         public const float BoilingPoint = 80f;
 
@@ -64,7 +63,7 @@ namespace TapTap2026.Simulation
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Liquid,
             density: 1.0f,
-            heatCapacity: 4.2f,
+            heatCapacity: 6.5f,   // 水：热容再调大——升温最慢、最"扛热"，海陆温差（海风）与水面昼夜惰性更明显
             thermalConductivity: 0.95f,   // 水：导热最好，水体内部接近等温
             thermalEmissivity: 1.0f,      // 水是近黑体（红外吸收极强）：水面照常向外散热
             affectedByGravity: true,
@@ -142,10 +141,10 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnLogic(ParticleWorld world, int x, int y)
         {
             // 相变优先于运动。蒸发会把这份热量原样带进新格（SetPhase 携带 Q）——
-            // 水热容 4.2、大气 1，同一份热让湿空气更烫，浮力把它往上推。
+            // 水热容 6.5、大气 1，同一份热让湿空气更烫，浮力把它往上推。
             float temperature = world.Heat.GetTemperature(x, y);
 
             // 剧烈蒸发：达到沸点必定蒸发（沸腾是唯一会产生**可见**水汽的路径）。
@@ -173,10 +172,13 @@ namespace TapTap2026.Simulation
             if (boiling || slow)
             {
                 // 沸腾：水汽集中原地 → 可见汽团；慢蒸发：摊成一大片 → 看不见，只让湿度稳步升高。
+                // 换成大气后本帧的运动会被 ProcessCell 跳过（新格已标记本帧已处理）。
                 Evaporate(world, x, y, boiling ? BoilingSpreadRadius : SlowSpreadRadius);
-                return;
             }
+        }
 
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
             if (ParticleRules.TryFall(world, x, y))
             {
                 return;
@@ -188,6 +190,11 @@ namespace TapTap2026.Simulation
             }
 
             ParticleRules.TryFlowHorizontal(world, x, y, Info.MaxFlowSpread);
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            // 水暂无随机刻行为：蒸发是每个逻辑帧的概率过程，已在 OnLogic 内按温度与概率处理。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

@@ -8,7 +8,8 @@ namespace TapTap2026.Simulation
     // 邻居查询范围：正下、左下/右下、以及斜滑反侧同一行（粘性判据：旁边有没有固体）
     // 交互的 ParticleIds：无 —— 全部走 ParticleRules 的标签规则，不特判具体类型
     //
-    // 行为：带 Solid 标签、受重力、只做「下落 + 斜落」，因此同样是粉末，在平地与同类上安分不动。
+    // 行为：带 Solid 标签、受重力、只做「下落 + 斜落」（OnMotion）；没有相变 / 反应（OnLogic 留空），
+    //       因此同样是粉末，在平地与同类上安分不动。
     //       与沙的区别是两条规则叠加：
     //         - 摩擦度 0.5：土粒要连续 2 格净空才肯斜滑（落点正下方被顶着就停），单独作用时是 2:1 的堆；
     //         - 粘性 0.5：旁边有固体邻居（斜滑反侧同一行）时，安息角再抬一档到 3 格净空，堆体约 3:1；
@@ -27,8 +28,8 @@ namespace TapTap2026.Simulation
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,
             density: 1.8f,
-            heatCapacity: 1.5f,   // 湿土：热容大，升温慢、保温久（对齐现实比热容 ~1.5）
-            thermalConductivity: 0.5f,   // 湿土：导热中等（保温 → 内部温差明显）
+            heatCapacity: 0.80f,   // 干土：与石头并列，固体里偏小
+            thermalConductivity: 0.70f,   // 干土：固体里导热居中
             thermalEmissivity: 1.0f,     // 近黑体
             affectedByGravity: true,
             isStatic: false,
@@ -38,11 +39,21 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(SoilParticle));
 
-        public void OnUpdate(ParticleWorld world, int x, int y)
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+            // 土没有相变 / 反应：逻辑钩子留空。
+        }
+
+        public void OnMotion(ParticleWorld world, int x, int y)
         {
             // 摩擦度 0.5 → 2 格净空；旁边有固体邻居时粘性 0.5 再抬一档到 3 格：
             // 正下被挡住时若落点下方还被顶着就视为稳定，于是坡面比沙的 45° 陡得多，约 3:1。
             ParticleRules.StepSolid(world, x, y);
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            // 土暂无随机刻行为。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

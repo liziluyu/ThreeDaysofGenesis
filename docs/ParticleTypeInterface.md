@@ -14,7 +14,7 @@
 1. 所有粒子的数据存在**一个连续的扁平数组**里（`Cell[]`），靠 `(x, y)` 直接算出下标寻址；**没有任何 GameObject / MonoBehaviour / ScriptableObject 承载单个粒子**。
 2. 单个粒子只存**原始数据**（类型标识 + 状态位 + 颜色抖动索引），不含行为逻辑、不含物理组件、不含引用类型字段。
 3. 类型属性（标签、密度、调色板、最大横流格数、是否受重力、是否静态）存在**全局静态注册表**里，按 `typeId` O(1) 数组寻址。
-4. 注册表在启动时**一次性**初始化：每类型实例化一个行为单例，把 `OnUpdate` / `OnSpawn` / `OnKill` 提取成**委托**（函数指针）存进注册表数组。
+4. 注册表在启动时**一次性**初始化：每类型实例化一个行为单例，把 `OnMotion` / `OnLogic` / `OnRandomTick` / `OnSpawn` / `OnKill` 提取成**委托**（函数指针）存进注册表数组。
 5. 运行时只做 `typeId → 委托` 的查表直调。**热路径禁止**：字符串匹配、`Dictionary` 查询、接口虚分派、反射、装箱、闭包、LINQ、任何堆分配。
 6. 位置变化一律通过**交换两个下标的 Cell 数据**完成，模拟过程中不产生任何对象创建或销毁。
 7. 粒子间交互由当前被处理的粒子**直接读写邻居格**实现，不走事件、不走消息、不走回调链。
@@ -24,7 +24,7 @@
 
 - 类型单例上的**私有实例字段做类型级暂存**是允许的（例如反应扩散的邻域缓冲）。理由：整个模拟单线程、每类型只有一个实例，不存在 per-cell 状态。
   **禁止**把 per-cell 状态放进单例字段——per-cell 状态只能放进 `Cell`。
-- 类型级配置常量（密度、调色板）写在类里；**全局**模拟参数（网格尺寸、tick 频率、随机种子）走 `ScriptableObject`。
+- 类型级配置常量（密度、调色板）写在类里；**全局**模拟参数（网格尺寸、运动/逻辑帧速率、随机种子）走 `ScriptableObject`。
 - `string DebugName` 允许存在，因为它只用于编辑器/日志显示，**永不出现在模拟热路径**。
 
 ---
@@ -37,7 +37,7 @@
 | 原点 | **(0, 0) 在左下角**；`y` 向上增大 |
 | 重力方向 | **-y**（向下） |
 | 下标 | `index = y * Width + x` |
-| 扫描 | 行从 `y = Height-1` 到 `0`（从上到下）；同一行内 x 方向逐 tick 交替 |
+| 扫描 | 行从 `y = Height-1` 到 `0`（从上到下）；同一行内 x 方向逐帧交替 |
 | 越界读 | `GetCell` 返回**空气格**（`typeId == 0`），不抛异常 |
 | 越界写 | `Set` / `Clear` / `Swap` 是**定义好的空操作**，返回 `false`，不做任何写入 |
 | 空气 | `typeId == 0` 保留，永不注册行为，永不进入行为调用 |
@@ -47,7 +47,7 @@
 
 网格尺寸上限：单边 ≤ 4096（`Texture2D` 极限 16384，但 CPU `Color32` 缓冲与全量上传成本随面积线性增长）。
 
-**比例约定**（叙事用，不影响任何模拟参数——CA 规则全是局部的）：**1 格 ≈ 10 m、1 tick = 1/60 s**，幕布 320×180 ≈ 3.2 km × 1.8 km（近海海陆风的合理尺度）；温度是模拟内部相对温标，不与摄氏换算。昼夜据此定为 600/600 tick（20 s 一昼夜）。
+**比例约定**（叙事用，不影响任何模拟参数——CA 规则全是局部的）：**1 格 ≈ 10 m、1 运动帧 = 1/60 s**，幕布 320×180 ≈ 3.2 km × 1.8 km（近海海陆风的合理尺度）；温度是模拟内部相对温标，不与摄氏换算。昼夜是光照相位、按**逻辑帧**计数：600/600 逻辑帧 = 1200 / 20 Hz = **60 s 一昼夜**（逻辑帧降到 20 Hz 后一昼夜相应变长；要维持旧观感把 `_litTicks` / `_darkTicks` 调到 200/200）。
 
 ---
 
@@ -83,9 +83,9 @@ public struct Cell
 
 规则：
 
-- **bit0 使用奇偶存储，因此不需要每 tick 做 O(N) 清零 pass。** 类型代码**永远不要**直接写 `flags`，用 `world.At(x,y).flags |= CellFlags.Burning;`（OR 保留 bit0）这类写法；整体赋值 `flags = ...` 会破坏 bit0，属于违规。
+- **bit0 使用奇偶存储，因此不需要每帧做 O(N) 清零 pass。** 类型代码**永远不要**直接写 `flags`，用 `world.At(x,y).flags |= CellFlags.Burning;`（OR 保留 bit0）这类写法；整体赋值 `flags = ...` 会破坏 bit0，属于违规。
 - 类型私有位是安全的：一格在同一时刻只属于一个类型。
-- 类型在 `OnUpdate` 里**不需要**检查 bit0 —— 模拟系统在派发前已经跳过本 tick 已处理的格。
+- 类型在 `OnMotion` / `OnLogic` 里**不需要**检查 bit0 —— 模拟系统在派发前已经跳过本帧已处理的格。
 
 ### 关于 `vx` / `vy`（速度场，可选）
 
@@ -126,7 +126,7 @@ public readonly struct ParticleTypeInfo
     public readonly float    ThermalConductivity; // 相对导热率 σ ∈ [0,1]；界面导热率取两侧平均，见 §6
     public readonly float    ThermalEmissivity;   // 相对辐射率 ε ∈ [0,1]；暴露面按 ε 缩放辐射，见 §6
     public readonly bool     AffectedByGravity;  // 是否受重力
-    public readonly bool     IsStatic;           // 静态：扫描直接跳过，不进入 OnUpdate
+    public readonly bool     IsStatic;           // 静态：扫描直接跳过，不进入 OnMotion / OnLogic
     public readonly byte     MaxFlowSpread;      // 最大横流格数（单 tick 单侧横向最大蔓延）
     public readonly float    Friction;           // 摩擦度 0..1，只读于固体运动规则（见下）
     public readonly float    Stickiness;         // 粘性 0..1，只读于固体运动规则（见下）
@@ -157,7 +157,7 @@ public readonly struct ParticleTypeInfo
 
 - `Friction >= 1`：下方有固体就完全静止（与粘性无关）。
 - 粘性只在**粘住**时计入：反侧同排没有固体时，`Stickiness = 1` 的粒子也照样按摩擦度滑落。
-- 因此固体的 `OnUpdate` 就是一行 `ParticleRules.StepSolid(world, x, y);`——两个参数都从注册表读，类型不必自己抄常量。
+- 因此固体的 `OnMotion` 就是一行 `ParticleRules.StepSolid(world, x, y);`——两个参数都从注册表读，类型不必自己抄常量。
 
 当前生产类型的取值（安息角斜率 = 实测堆体斜率）：
 
@@ -191,18 +191,23 @@ public readonly struct ParticleTypeInfo
 
 `ParticleRules` 提供 `TagRank(ParticleTags)` 与 `IsSolid(world, x, y)` 两个原语，类型代码直接调用；`CanDisplace` / `CanFlowThrough` 已内置上述规则，并额外拒绝静态格（`IsStatic`）目标。`CanDisplace` 对**越界目标一律返回 false**（否则越界会被当成「空气可进入」，调用方以为能移动、随后的 `Swap` 却静默失败）；同时仍会拒绝静态格目标。
 
+
 ```csharp
 // Assets/Scripts/Simulation/ParticleType.cs —— 注册表条目（不可变）
 public sealed class ParticleType
 {
     public readonly ushort Id;
     public readonly ParticleTypeInfo Info;
-    public readonly ParticleUpdateDelegate OnUpdate;   // 提取自单例实例
+    public readonly ParticleMotionDelegate OnMotion;   // 运动帧（60 Hz）；提取自单例实例
+    public readonly ParticleLogicDelegate  OnLogic;    // 逻辑帧（20 Hz）；提取自单例实例
+    public readonly ParticleRandomTickDelegate OnRandomTick;
     public readonly ParticleSpawnDelegate  OnSpawn;
     public readonly ParticleKillDelegate   OnKill;
 }
 
-public delegate void ParticleUpdateDelegate(ParticleWorld world, int x, int y);
+public delegate void ParticleMotionDelegate(ParticleWorld world, int x, int y);
+public delegate void ParticleLogicDelegate (ParticleWorld world, int x, int y);
+public delegate void ParticleRandomTickDelegate(ParticleWorld world, int x, int y);
 public delegate void ParticleSpawnDelegate (ParticleWorld world, int x, int y);
 public delegate void ParticleKillDelegate  (ParticleWorld world, int x, int y, ushort killerTypeId);
 ```
@@ -268,7 +273,9 @@ public static class ParticleIds
 public interface IParticleType
 {
     ParticleTypeInfo Info { get; }
-    void OnUpdate(ParticleWorld world, int x, int y);
+    void OnMotion(ParticleWorld world, int x, int y);
+    void OnLogic (ParticleWorld world, int x, int y);
+    void OnRandomTick(ParticleWorld world, int x, int y);
     void OnSpawn (ParticleWorld world, int x, int y);
     void OnKill  (ParticleWorld world, int x, int y, ushort killerTypeId);
 }
@@ -276,17 +283,21 @@ public interface IParticleType
 
 **接口只用于作者期约束和注册期取委托。** 运行期持有的是注册表里的 `ParticleType`（委托 + 数据），**从不持有 `IParticleType` 引用、从不通过接口调方法**——这保证热路径没有接口虚分派。
 
-### 三个钩子的精确职责
+### 五个钩子的精确职责
+
+世界有两个节拍：**运动帧 60 Hz**（基本节拍）与**逻辑帧 20 Hz**（运动帧节拍上的子节拍，每 3 个运动帧一次）。一次逻辑帧 = 先逻辑、再运动、再跑随机刻 / 热传导 / 湿度 / 降水 / 光照；其余运动帧只跑运动。
 
 | 钩子 | 何时被调用 | 应该做什么 | 不应该做什么 |
 |---|---|---|---|
-| `OnUpdate` | 扫描到该类型且该格本 tick 未被处理时，**每 tick 至多一次** | 查邻居 → 判断 → 调用 `Swap`/`Set`/`Clear` 实现下落、流动、扩散、反应 | 不做渲染、不读 `Time.*`、不分配 |
+| `OnMotion` | **每运动帧**（60 Hz）扫描到该类型且该格本帧未被处理时，**每帧至多一次** | 只做移动：查邻居 → 判断 → 调用 `Swap` 实现下落、斜落、横流、浮力位移 | 相变 / 反应（那是 `OnLogic`）；不做渲染、不读 `Time.*`、不分配 |
+| `OnLogic` | **每逻辑帧**（20 Hz）扫描到该类型且该格本帧未被处理时，**在同格 `OnMotion` 之前** | 相变 / 反应 / 邻域写入：`SetPhase` / `Set` / `Clear`、把水汽或热写给邻居 | **移动**（不要 `Swap`，那是 `OnMotion` 的职责）；做渲染、读 `Time.*`、分配 |
+| `OnRandomTick` | 每逻辑帧世界随机抽 `RandomTicksPerStep` 个格时被命中，**同一次逻辑帧内同一格可能被命中多次**（也可能一次都不中） | 「缓慢、按概率发生」的局部过程：生长、蔓延、渗流、腐化——一次只处理自己这一格 | 塞进本该每帧发生的运动（那是 `OnMotion`）；指望它每帧都跑 |
 | `OnSpawn` | **每次**通过 `Set` 创建该类型格之后（`Swap` 不会触发） | 额外初始化：`vx/vy`、类型私有 flag 位、需要特定 `shade` 时覆盖默认抽样 | 不把新格再挪走（它已标记为本 tick 已处理） |
 | `OnKill` | 该类型格被**其它类型或空气覆盖**时，在写入新格**之前**调用 | 残留效果（往**邻居**格写烟/火/灰）、清理由自己申请的全局资源 | **写自己脚下那一格**（会被随后写入的新格覆盖，见下） |
 
 `OnKill` 的 `killerTypeId == 0` 表示被抹除（`Clear`），非 0 表示被该类型覆盖。
 
-`OnUpdate` / `OnSpawn` 的 `(x, y)` 是调用时刻该粒子的坐标，**就是 `world.Index` 反算的坐标**，不需要类型自己做除法。
+`OnMotion` / `OnLogic` / `OnSpawn` 的 `(x, y)` 是调用时刻该粒子的坐标，**就是 `world.Index` 反算的坐标**，不需要类型自己做除法。
 
 ### 单例实例上的字段
 
@@ -310,8 +321,10 @@ public sealed class XxxParticle : IParticleType
         palette: Palette,
         debugName: nameof(XxxParticle));
 
-    // 固体：ParticleRules.StepSolid(world, x, y); 按上面的 friction / stickiness 决定安息角
-    public void OnUpdate(ParticleWorld world, int x, int y) { /* ... */ }
+    // 固体：运动帧只做 ParticleRules.StepSolid(world, x, y);（按上面的 friction / stickiness 决定安息角）
+    public void OnMotion(ParticleWorld world, int x, int y) { /* ... */ }
+    public void OnLogic (ParticleWorld world, int x, int y) { /* 无相变 / 反应就留空 */ }
+    public void OnRandomTick(ParticleWorld world, int x, int y) { /* 无慢过程就留空 */ }
     public void OnSpawn (ParticleWorld world, int x, int y) { }
     public void OnKill  (ParticleWorld world, int x, int y, ushort killerTypeId) { }
 }
@@ -335,6 +348,7 @@ public sealed class ParticleWorld
     public int  CellCount { get; }              // == Width * Height
     public int  Tick   { get; }                 // 已完成的 tick 计数
     public bool Parity => (Tick & 1) != 0;      // 本次 Step 的扫描方向奇偶
+    public int  RandomTicksPerStep { get; set; } // 每逻辑帧随机抽并触发 OnRandomTick 的格数（0 = 关闭）；夹在 [0, CellCount]
     public Cell[] Cells { get; }                // 底层数组，只读契约：外部只允许读
     public ParticleType[] Types { get; }        // Types[0] == null（空气）
     public HeatMap Heat { get; }                // 与网格同形的热量场 Q（float/格），见下
@@ -357,7 +371,8 @@ public sealed class ParticleWorld
     public int  NextInt (int  maxExclusive);    // maxExclusive <= 0 → 0
     public byte NextByte(byte maxExclusive);    // 用于 shade 抽样
 
-    public void Step();                         // 驱动一次完整扫描（由 driver 调用）
+    public void StepMotion();                   // 运动帧：扫描一次、只调 OnMotion（由 driver 调用）
+    public void StepLogic();                    // 逻辑帧：先 OnLogic 再 OnMotion，随后随机刻 / 热 / 湿度 / 降水 / 光照
 }
 ```
 
@@ -381,13 +396,13 @@ T = Q / C        C = 该格粒子类型的 Info.HeatCapacity（空气用 HeatMap
 | `Swap(A, B)` | **Q 随物质一起搬走**——热沙下沉后仍然是热的，落到同一格的空气被换到高处。 |
 | `Set(x,y,T)` / `Clear` | 换上**新物质**，该格 Q 重置为 `AmbientHeat`（0）——旧物质连同它的热一起离场。 |
 | `Set(x,y,T)` 目标已是 T | 空操作，物质没换，Q 保留。 |
-| 粒子 `OnUpdate` 内 `AddHeat` | 直接改该格 Q，可正可负。 |
+| 粒子 `OnLogic` / `OnMotion` 内 `AddHeat` | 直接改该格 Q，可正可负。 |
 
 因此「热属于物质」而非「属于位置」；想要热量留在原地（例如一炉恒热），由类型自己把 Q 抄给新位置。
 
-#### 热传导：每 tick 一次全格四邻扩散
+#### 热传导：每逻辑帧一次全格四邻扩散
 
-`ParticleWorld.Step` 在粒子扫描之后调用 `HeatMap.Step()`，做一次显式差分扩散。每对相邻格交换的热量正比于**温度差**，界面导热率取两侧材料相对导热率 σ 的**算术平均**：
+`ParticleWorld.StepLogic` 在粒子扫描之后调用 `HeatMap.Step()`，做一次显式差分扩散。每对相邻格交换的热量正比于**温度差**，界面导热率取两侧材料相对导热率 σ 的**算术平均**：
 
 ```
 ΔQ(A←B) = Conductivity * (σ_A + σ_B) / 2 * (T_B - T_A)
@@ -405,7 +420,7 @@ T = Q / C        C = 该格粒子类型的 Info.HeatCapacity（空气用 HeatMap
 ΔQ(顶行) = -VoidHeatLoss * T
 ```
 
-虚空恒为 `AmbientHeat`（0），相当于一个无限大的冷库，热量只出不进。在辐射关闭时它是热量离开世界的唯一出口：没有它，光照注入的热只增不减（实测 `Intensity = 5` 时温度每 tick 涨 ~5.6，永不收敛）；有它之后，持续受热的世界会收敛到稳态：
+虚空恒为 `AmbientHeat`（0），相当于一个无限大的冷库，热量只出不进。在辐射关闭时它是热量离开世界的唯一出口：没有它，光照注入的热只增不减（实测 `Intensity = 5` 时温度每逻辑帧涨 ~5.6，永不收敛）；有它之后，持续受热的世界会收敛到稳态：
 
 ```
 T_稳态 ≈ 输入功率 / VoidHeatLoss        （光照 + 无其它热源时）
@@ -474,9 +489,9 @@ T_稳态 ≈ 输入功率 / VoidHeatLoss        （光照 + 无其它热源时�
 
 #### 光照：`LightController`
 
-世界持有一个光照控制器（`world.Light`），每 tick 在传导之后由 `Step` 驱动。它是个**占空比循环光源**，照亮时向**每一列最上面的非气体粒子**（Solid 或 Liquid——光穿过气体，打到水面/地面即停）注入 `Intensity` 的热量 Q（不是温度——升温多少取决于该物质的热容）。海洋因此被表面加热、表面蒸发，而不是被光穿透过热海底。
+世界持有一个光照控制器（`world.Light`），每逻辑帧在传导之后由 `StepLogic` 驱动。它是个**占空比循环光源**，照亮时向**每一列最上面的非气体粒子**（Solid 或 Liquid——光穿过气体，打到水面/地面即停）注入 `Intensity` 的热量 Q（不是温度——升温多少取决于该物质的热容）。海洋因此被表面加热、表面蒸发，而不是被光穿透过热海底。
 
-**云会遮光**：每列维护一个**云层厚度** = 该列所有格湿度之和（`HumidityField.ColumnSums` 每 tick 重算）。
+**云会遮光**：每列维护一个**云层厚度** = 该列所有格湿度之和（`HumidityField.ColumnSums` 每逻辑帧重算）。
 光竖直穿过整列时按 Beer–Lambert 衰减，到达该列地表的能量是
 
 ```
@@ -513,7 +528,7 @@ public sealed class LightController
     public float GetCloudThickness(int x);     // 第 x 列云层厚度 = 该列湿度之和
     public float GetCloudTransmittance(int x); // 第 x 列透光率 = exp(-CloudExtinction × 厚度)
     public void Reset();                    // 相位拨回起点
-    // Step(world) 由 ParticleWorld.Step 调用，正常玩法不要手动调用
+    // Step(world) 由 ParticleWorld.StepLogic 调用，正常玩法不要手动调用
 }
 ```
 
@@ -563,7 +578,7 @@ public sealed class HeatMap
     public float GetTemperatureAt(int index);       // 同上，按扁平下标（渲染层逐格映射用）
     public bool  SetHeat(int x, int y, float heat); // 越界无操作，返回 false
     public bool  AddHeat(int x, int y, float delta);// 累加；越界无操作，返回 false
-    public void  Step();                            // 由 ParticleWorld.Step 调用，粒子不要手动调
+    public void  Step();                            // 由 ParticleWorld.StepLogic 调用，粒子不要手动调
 }
 ```
 
@@ -572,7 +587,7 @@ public sealed class HeatMap
 粒子侧就是把热当成「另一份可读写的场」——**读温度用来判断、加/减热量用来改变**：
 
 ```csharp
-public void OnUpdate(ParticleWorld world, int x, int y)
+public void OnLogic(ParticleWorld world, int x, int y)
 {
     // 用温度做相变判断（同一份 Q 下，热容大的物质温度低）
     if (world.Heat.GetTemperature(x, y) >= IgnitionTemperature && world.IsAir(x, y + 1))
@@ -587,7 +602,7 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 语义（不可协商）：
 
 1. **Q 由物质携带**（见上表）：`Swap` 搬 Q，`Set` / `Clear` 重置 Q。
-2. **传导与散热都是世界的职责**：每 tick 自动四邻扩散一次、并让顶行向虚空散一次热，粒子**不要**自己再做，否则重复计算。
+2. **传导与散热都是世界的职责**：每逻辑帧自动四邻扩散一次、并让顶行向虚空散一次热，粒子**不要**自己再做，否则重复计算。
 3. **只增不减已被堵住**：热量唯一的出口是顶行向虚空散热（`VoidHeatLoss`）；除此之外没有环境基线、不钳制，Q 可正可负，量纲由玩法约定。
 4. **越界语义与 `Cell` 一致**：越界读返回 `AmbientHeat`、越界写是无操作返回 `false`；调用前仍应先 `IsInBounds`。
 5. **归世界所有**：`ParticleWorld` 构造时按同一宽高建热图；尺寸变化重建世界会**重置为全 0**。
@@ -596,10 +611,10 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 
 | 类型 | `HeatCapacity` | 直觉 |
 |---|---|---|
-| 沙（`SandParticle`） | `0.8` | 干沙：热容小，晒热得快、凉得也快 |
-| 土（`SoilParticle`） | `1.5` | 湿土（现实 ~1.5）：热容大，升温慢、保温久 |
-| 石（`StoneParticle`） | `0.9` | 石头：热容适中 |
-| 水（`WaterParticle`） | `4.2` | 水：热容最大（现实 4.18），升温最慢——海陆温差（海风）的根源 |
+| 沙（`SandParticle`） | `0.7` | 干沙：固体里热容最小，晒热最快、凉得也最快 |
+| 土（`SoilParticle`） | `0.8` | 湿土：调小到 0.8，升温比过去快 |
+| 石（`StoneParticle`） | `0.8` | 石头：调小到 0.8，升温更快 |
+| 水（`WaterParticle`） | `6.5` | 水：热容最大，升温最慢——海陆温差（海风）与水面昼夜惰性的根源 |
 | 大气（`AtmosphereParticle`） | `1.0` | 必须等于 `AirHeatCapacity`：空气格与大气粒子的温度口径一致 |
 | 空气 | `AirHeatCapacity = 1` | typeId 0（空）没有类型条目，固定常量 |
 
@@ -607,9 +622,9 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 
 | 类型 | `ThermalConductivity` | 直觉 |
 |---|---|---|
-| 沙（`SandParticle`） | `0.4` | 干沙：导热最差，热憋在表层（最保温） |
-| 土（`SoilParticle`） | `0.5` | 湿土：导热中等（保温 → 内部温差明显） |
-| 石（`StoneParticle`） | `0.7` | 石头：导热中等偏好 |
+| 沙（`SandParticle`） | `0.5` | 干沙：仍是固体里导热最差，但已调快（原 0.4） |
+| 土（`SoilParticle`） | `0.7` | 湿土：导热中等偏上（原 0.5） |
+| 石（`StoneParticle`） | `0.8` | 石头：固体里导热最快（原 0.7，接近水） |
 | 水（`WaterParticle`） | `0.95` | 水：导热最好，水体内部接近等温 |
 | 大气（`AtmosphereParticle`） | `1.0` | 气体传导最强；须等于 `HeatMap.AirThermalConductivity` |
 | 空气 | `AirThermalConductivity = 1` | typeId 0（空）没有类型条目，可配常量 |
@@ -639,7 +654,7 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 水循环不再由"粒子类型互变"表达，而是**水 ⇌ 湿度场的湿度**：
 
 ```
-水   --(T ≥ WaterParticle.BoilingPoint = 80 或 T ≥ 20 且 1/300 每 tick，
+水   --(T ≥ WaterParticle.BoilingPoint = 80 或 T ≥ 20 且 1/300 每逻辑帧，
         且水面之上的空气湿度 < HumidityField.EvaporationCeiling)--> 水汽（湿度 +1，播撒给本格与气体邻居）
 水汽 --(湿度 ≥ RainThreshold 且 T ≤ HumidityField.DewPoint)---------> 雨（碰并凑够一个整水滴 → Water 粒子）
 ```
@@ -648,7 +663,7 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 `ParticlePixelBuffer` 按湿度把格子染白（`VisibleThreshold` 起淡入），因此云就是湿度场里的一片高值区。
 这对应真实世界：云是空气的一种状态，不是一种有自己运动规则的物体。
 
-**湿度怎么走**（`HumidityField.Step`，每 tick 一次，界内严格守恒）：
+**湿度怎么走**（`HumidityField.Step`，每逻辑帧一次，界内严格守恒）：
 - **扩散**：高湿度 → 低湿度（与热传导同形）。
 - **水平：冷 → 热**（`HorizontalBias`）。同一高度上水汽向更热的格子迁移。
 - **竖直：越热越向上**（`RiseBias`，按 `温度 / RiseTemperatureScale` 归一）。这是一次**上风平流**——
@@ -672,7 +687,7 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 
 **气体不做随机漂移**：大气只按浮力与水平热压流移动，`ParticleRules.TryRandomDrift` 已删除。
 那是数值噪声、不是风，而它搬运整格（含热量与湿度），会给云层注入逐 tick 的可见抖动
-（实测可见度翻转 178 → 57 每 tick，即用户看到的"水汽左右抖动"）；去掉后水循环反而更稳
+（实测可见度翻转 178 → 57 每帧，即用户看到的"水汽左右抖动"）；去掉后水循环反而更稳
 （海水留存 214 → 284/900）。气体的混合由本场的扩散与温度定向平流负责——混合是场的行为。
 
 **降水前先确认收得下**：空气在封闭气泡里饱和时（四周全是液/固），残余湿度无处安放；
@@ -721,53 +736,84 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 
 1. **世界不做合法性判断。** `Swap` 不会阻止你把石头换走，`Set` 不会阻止你覆盖静态格。是否允许替换（比标签、查 `IsStatic`）由类型逻辑自己决定，这正是 `ParticleRegistry.Types[...]` 暴露在外面的原因。注意：共享原语 `ParticleRules.CanDisplace` / `CanFlowThrough` 为方便起见**内置**了静态格拒绝——它们服务常见情况；确实需要置换静态格的类型可以用裸 `Swap` 自行实现。
 2. **前置判断在调用前完成。** 先用 `IsInBounds` / `IsAir` / `GetCell` 判断，再无条件调用写操作。写操作内部的越界检查只是安全网。
-3. **移动之后立刻返回。** 任何会改变自身坐标的写操作（`Swap` / 覆盖自身的 `Set`）之后，`(x, y)` 与 `world.At(x,y)` 立刻失效。同一次 `OnUpdate` 内禁止继续基于旧坐标操作。一个 `OnUpdate` 只做一次决策 + 至多一次移动。
+3. **移动之后立刻返回。** 任何会改变自身坐标的写操作（`Swap` / 覆盖自身的 `Set`）之后，`(x, y)` 与 `world.At(x,y)` 立刻失效。同一次 `OnMotion` 内禁止继续基于旧坐标操作。一个 `OnMotion` 只做一次决策 + 至多一次移动。
 
 `Swap` 会把两个格的 bit0 都写成当前 parity，所以：
 
-- 被换到已扫描位置的粒子本 tick 不再被处理（符合「每格每 tick 至多一次」）；
+- 被换到已扫描位置的粒子本帧不再被处理（符合「每格每帧至多一次」）；
 - 被换到尚未扫描位置的粒子也不会被二次处理（扫描循环先查 bit0）。
 
 这条 bookkeeping 由世界负责，类型代码不能、也不需要手动维护。
 
 ### 步进之外写入网格
 
-`Set` / `Clear` / `Swap` 在两次 `Step()` 之间被调用时（例如鼠标绘制、关卡加载），bit0 会被写成**「下一次 Step 的奇偶取反」**，也就是「未处理」。因此外部新建的粒子必定会在下一个 tick 被处理，不会因为标记而白等一帧。同样由世界负责，类型代码无需关心。
+`Set` / `Clear` / `Swap` 在两次帧之间被调用时（例如鼠标绘制、关卡加载），bit0 会被写成**「下一帧的奇偶取反」**，也就是「未处理」。因此外部新建的粒子必定会在下一帧被处理，不会因为标记而白等一帧。同样由世界负责，类型代码无需关心。
+
+### 随机刻（Minecraft 式）
+
+`world.RandomTicksPerStep` > 0 时，每个**逻辑帧**在**粒子扫描之后、热传导之前**（`StepLogic` 的 ①′ 相位）均匀**有放回**地抽这么多格，命中非空气、非静态的格就调用其类型的 `OnRandomTick`。它模拟 Minecraft 的 random tick：不做全网格扫描，而是每逻辑帧只让极少数格发生「慢过程」——生长、蔓延、渗流、腐化。
+
+- **默认 0（关闭）**：代码默认关闭以保持既有测试契约（与 `HeatMap` 的 `RadiativeLoss` 同一取舍）；生产值由 `ParticleSimulationSettings._randomTicksPerStep` 注入（驱动每帧写回 `world.RandomTicksPerStep`），当前资产配 `48` ≈ Minecraft 的 3 格 / 4096 密度（320×180 ≈ 等效 42）。数量按**逻辑帧**计——逻辑帧 20 Hz 时等效密度是每秒 960 次抽取。
+- **与 `OnMotion` / `OnLogic` 相互独立**：随机刻**不检查、也不写** bit0 处理标记，所以同一格可以在同一次逻辑帧里被抽中多次；反过来，已被扫描处理过的格照样可能被随机刻命中。选择与格内容无关（先抽格、再看格），空气与 `IsStatic` 的格被抽中则跳过。
+- **确定性**：抽取用世界同一条 xorshift32 随机流（`NextUInt`），因此同种子逐格可复现；随机刻的抽取会推进该流。
+- **异常语义与扫描一致**：相位在 `_tick++` 之前、在同一个 `try` 内，`OnRandomTick` 抛异常时 `_tick` 不自增，②③④ 一并跳过（运动帧 `StepMotion` 只做扫描，异常同样使 `_tick` 不自增）。
+- 赋值夹在 `[0, CellCount]`（超过格数无意义）。
+
+```csharp
+// 缓慢蔓延示例——不必每帧扫描，交给随机刻（ParticleIds.Moss 是假想类型，本项目尚未注册）
+public void OnRandomTick(ParticleWorld world, int x, int y)
+{
+    if (world.NextUInt() % 50u == 0u && ParticleRules.IsSolid(world, x, y + 1))
+    {
+        world.SetPhase(x, y, ParticleIds.Moss);
+    }
+}
+```
 
 ---
 
 ## 7. 主循环语义
 
+**两级固定时基**：`ParticleSimulationDriver`（MonoBehaviour）用同一个累加器推进**运动帧**（60 Hz 基本节拍），并把每第 `LogicTicksPerMotionTick` 个运动帧升级为**逻辑帧**。速度改 `ParticleSimulationSettings` 的 `_motionRate` / `_logicRate` 即可。
+
 ```mermaid
 flowchart LR
-    A[driver: 固定步长累加器] --> B[world.Step 一次完整扫描]
-    B --> B1[y 从高到低逐行]
-    B1 --> B2[x 方向按 Tick 奇偶交替]
-    B2 --> B3{typeId==0 或 IsStatic?}
+    A[driver: 固定步长累加器<br/>stepSeconds = 1/MotionRate] --> Q{本帧是否为逻辑帧?<br/>每 round(MotionRate/LogicRate) 个运动帧一次}
+    Q -- 否 --> M1[world.StepMotion]
+    Q -- 是 --> L1[world.StepLogic]
+    M1 --> M2[一次扫描: 只调 OnMotion]
+    L1 --> B[扫描: 每格先 OnLogic<br/>未被相变换走的再 OnMotion]
+    B --> B1[y 从高到低逐行 / x 方向按 Tick 奇偶交替]
+    B1 --> B3{typeId==0 或 IsStatic?}
     B3 -- 是 --> B4[跳过]
-    B3 -- 否 --> B5{bit0 已是本 tick?}
+    B3 -- 否 --> B5{bit0 已是本帧?}
     B5 -- 是 --> B4
-    B5 -- 否 --> B6[标记 bit0 = parity<br/>查表取委托直调 OnUpdate]
-    B6 --> B7[类型内部: 查邻居 -> Swap/Set/Clear]
-    B7 --> C[② HeatMap.Step 全格四邻热传导 + 顶行向虚空散热]
-    C --> D[③ LightController.Step 维护每列云量 + 向每列最上面的非气体粒子施热（按云量衰减）]
+    B5 -- 否 --> B6[标记 bit0 = 本帧奇偶<br/>OnLogic -> 若未换类型再 OnMotion]
+    B6 --> R[①′ 随机刻: 随机抽 RandomTicksPerStep 个格<br/>命中非空气非静态 -> 调 OnRandomTick]
+    R --> C[② HeatMap.Step 全格四邻热传导 + 顶行向虚空散热]
+    C --> C2[③ HumidityField.Step 湿度输送]
+    C2 --> C3[③′ StepRain 降水]
+    C3 --> D[④ LightController.Step 维护每列云量 + 向每列最上面的非气体粒子施热（按云量衰减）]
 ```
 
-一个 tick 分三段：**① 粒子扫描**（各 `OnUpdate` 可读写热图）→ **② 热传导 + 顶行散热**（四邻扩散，最上面一行向界外流失热量）→ **③ 光照**（注入热量）。②③ 在 ① 之后，因此本 tick 光照 / 传导注入的热量会在下一个 tick 被粒子读到、并参与下一轮扩散；某类型 `OnUpdate` 抛异常时整个 `Step` 的 ②③ 一并跳过（`_tick` 也不自增）。
-
-- **固定时间步长**，与渲染帧率解耦：`ParticleSimulationDriver`（MonoBehaviour）用累加器，每帧最多跑 `MaxStepsPerFrame` 次 `Step()`，防止死亡螺旋。
-- 扫描顺序：**行永远从上到下**；**水平方向逐 tick 交替**（偶 tick x 升序、奇 tick x 降序）以消除重力/流动的方向偏置。交替由扫描循环内部完成，类型代码不感知。
-- 空气格与 `IsStatic` 类型**直接跳过**，不进行为调用（静态类型仍会收到 `OnSpawn` / `OnKill`）。
-- 扫描循环在**访问那一刻**从扁平数组读 `typeId` 再取委托，不做跨 tick 缓存。
+- **运动帧 `StepMotion`**：一次全网格扫描，只对每个非空气、非静态且本帧未处理的格调用 `OnMotion`（移动）。**不跑**逻辑、随机刻、热、湿度、降水、光照。
+- **逻辑帧 `StepLogic`**：同一次扫描里每格**先 `OnLogic`**（相变 / 反应 / 邻域写入）——若它把本格换成了别的类型（`Set` / `SetPhase` 已把新格标成已处理），本帧**跳过该格的运动**；否则继续 `OnMotion`。扫描后再依次跑 **①′ 随机刻**（抽 `RandomTicksPerStep` 个格调 `OnRandomTick`，见 §6「随机刻」，按**逻辑帧**计）→ **② 热传导 + 顶行散热** → **③ 湿度输送** → **③′ 降水** → **④ 光照**。因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
+- 两个入口都推进 `world.Tick` 并交替扫描方向（`Parity`）与 bit0 标记，因此**运动帧才是世界的时基**；`Tick` 数 = 运动帧数。
+- **固定时间步长**，与渲染帧率解耦：驱动每帧最多跑 `MaxStepsPerFrame` 个运动帧，防止死亡螺旋。
+- 扫描顺序：**行永远从上到下**；**水平方向逐帧交替**（偶帧 x 升序、奇帧 x 降序）以消除重力/流动的方向偏置。交替由扫描循环内部完成，类型代码不感知。
+- 空气格与 `IsStatic` 类型**直接跳过**，不进行为调用（随机刻抽取同样跳过它们；静态类型仍会收到 `OnSpawn` / `OnKill`）。
+- 扫描循环在**访问那一刻**从扁平数组读 `typeId` 再取委托，不做跨帧缓存。
 - 单线程，主线程。不存在并行扫描。
-- `Step` 用 `try/finally` 恢复写入标记：某个 `OnUpdate` 抛异常时 `_tick` 不自增、`_stamp` 按「旧 tick」恢复，因此异常后新建的粒子仍会在下一次 `Step` 被处理，不会白等一 tick。
+- `StepMotion` / `StepLogic` 都用 `try/finally` 恢复写入标记：某个钩子抛异常时 `_tick` 不自增、`_stamp` 按「旧 tick」恢复，因此异常后新建的粒子仍会在下一帧被处理，不会白等一帧。
 
 ---
 
-## 8. 写 `OnUpdate` 的推荐形态
+## 8. 写 `OnMotion` / `OnLogic` 的推荐形态
+
+**运动帧只写 `OnMotion`**（移动，一次决策 + 至多一次 `Swap` 后立即返回）：
 
 ```csharp
-public void OnUpdate(ParticleWorld world, int x, int y)
+public void OnMotion(ParticleWorld world, int x, int y)
 {
     // 1) 读自己的数据（需要时缓存 ParticleType 到局部变量）
     ParticleType self = ParticleRegistry.Types[world.At(x, y).typeId];
@@ -788,11 +834,24 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 }
 ```
 
+**逻辑帧写 `OnLogic`**（相变 / 反应 / 邻域写入，**不移动**）：把上面样例里的换格 / 写邻居挪进 `OnLogic` 即可；跑完 `OnLogic` 后世界会自动对未被相变换走的格再跑 `OnMotion`，两者共享同一份 bit0 标记。
+
+```csharp
+public void OnLogic(ParticleWorld world, int x, int y)
+{
+    // 只做相变 / 反应 / 把物质写给邻居；不要 Swap 自己。
+    if (world.Heat.GetTemperature(x, y) >= BoilingPoint)
+    {
+        world.SetPhase(x, y, ParticleIds.Atmosphere); // 换成别的类型：本帧运动被跳过
+    }
+}
+```
+
 约定：
 
 - 随机一律用 `world.NextUInt/NextInt/NextByte`，**禁止 `UnityEngine.Random`**（会破坏确定性与可复现回放）。
 - 禁止 `Time.deltaTime` / `Time.time`：时间语义只有 `world.Tick`。
-- 禁止在 `Update`/`OnUpdate` 里 `new`、装箱、捕获局部变量的 lambda、LINQ、字符串拼接。
+- 禁止在 `OnMotion` / `OnLogic` 里 `new`、装箱、捕获局部变量的 lambda、LINQ、字符串拼接。
 - 重复的移动规则（下落、斜落、横流）应抽成**静态无状态帮助方法**（例如 `ParticleRules.*`），而不是继承基类；帮助方法同样只在参数里传 `world`/坐标，不持有每格状态。
 - 标签、最大横流格数等属性从 `ParticleRegistry.Types[id].Info` 读；**这些值在运行期不可变**，任何类型都不得修改注册表条目。
 - **跨类型判断一律走标签**（`ParticleRules.TagRank` / `IsSolid`），不要写 `if (other.Info.DebugName == "Stone")` 这类特判——那会毁掉「新增类型零改动」的性质。
@@ -807,25 +866,27 @@ public void OnUpdate(ParticleWorld world, int x, int y)
 
 | 层 | 职责 | 不知道什么 |
 |---|---|---|
-| `ParticleWorld.Step()` | 只推进模拟、只改 `Cell[]` | **完全不知道渲染存在**（`Simulation` 程序集不引用任何渲染对象） |
+| `ParticleWorld.StepMotion()` / `StepLogic()` | 只推进模拟、只改 `Cell[]` | **完全不知道渲染存在**（`Simulation` 程序集不引用任何渲染对象） |
 | `ParticlePixelBuffer.Fill()` | `Cell[]` → `Color32[]` 的纯数据映射 | 不知道纹理、材质、相机 |
 | `ParticleRenderer.Present()` | 把已有缓冲 `SetPixels32` + `Apply` 上传一次 | 不知道跑了几步、谁是 tick |
-| `ParticleSimulationDriver` | 固定步长推进 + **唯一决定上屏时机的地方** | —— |
+| `ParticleSimulationDriver` | 两级固定步长推进（运动 60 Hz / 逻辑 20 Hz）+ **唯一决定上屏时机的地方** | —— |
 
 驱动侧的循环：
 
 ```csharp
-_world.Step();
+_motionTicks++;
+if (_motionTicks >= logicEvery) { _motionTicks = 0; _world.StepLogic(); }
+else                            { _world.StepMotion(); }
 _stepsSincePresent++;
 if (_stepsSincePresent >= settings.StepsPerPresent) Present();   // 默认 StepsPerPresent = 1
 ```
 
-- **默认 `StepsPerPresent = 1`：每个逻辑帧后调用一次渲染。**
-- 调大即可变成「多个逻辑帧渲染一次」（例如 4 = 4 个逻辑帧只上传一次），**不需要改动模拟或渲染任何代码**。
-- 反过来拖慢 tick 频率、或某一帧累加器没攒够一步（`steps == 0`）时，本帧不做任何上传——画面停留在上一次的结果。
+- **默认 `StepsPerPresent = 1`：每个运动帧后调用一次渲染。**
+- 调大即可变成「多个运动帧渲染一次」（例如 4 = 4 个运动帧只上传一次），**不需要改动模拟或渲染任何代码**。
+- 反过来拖慢运动帧速率、或某一帧累加器没攒够一步（`steps == 0`）时，本帧不做任何上传——画面停留在上一次的结果。
 - `ParticleRenderer` 是可选引用；未指定时驱动照常跑模拟，只是不上屏。
 
-> 注意这是**上屏时机**，不是**模拟正确性**：`Step()` 之间没有隐式上屏，多步之间也不会有中间态泄漏到屏幕。
+> 注意这是**上屏时机**，不是**模拟正确性**：两个 `Step*` 之间没有隐式上屏，多步之间也不会有中间态泄漏到屏幕。
 
 ### 渲染实现
 
@@ -855,18 +916,18 @@ Assets/Scripts/
     TapTap2026.Simulation.asmdef              ← 纯模拟，无渲染引用
     Cell.cs                                   Cell 结构体（唯一真源）
     CellFlags.cs                              flag 位常量 + 读写帮助
-    IParticleType.cs                          IParticleType + 三个委托类型
+    IParticleType.cs                          IParticleType + 五个委托类型（运动/逻辑/随机刻/生成/死亡）
     ParticleTags.cs                           类别标签 Solid / Liquid / Gas
     ParticleTypeInfo.cs                       类型属性结构体
-    ParticleType.cs                           注册表条目（Id + Info + 三委托）
+    ParticleType.cs                           注册表条目（Id + Info + 五委托）
     ParticleRegistry.cs                       全局静态注册表 + Register 校验
     ParticleIds.cs                            类型 id 静态字段（注册时回填）
-    ParticleRegistration.cs                   唯一类型清单（新增类型只改这里）
-    ParticleWorld.cs                          扁平数组、扫描、读写原语、RNG
-    HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每 tick 四邻热传导；T = Q / C
+    ParticleRegistration.cs                   唯一类型清单（新增类型只改这里；顺序只能追加）
+    ParticleWorld.cs                          扁平数组、两级入口（StepMotion / StepLogic）、扫描、读写原语、RNG、随机刻抽取
+    HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每逻辑帧四邻热传导；T = Q / C
     HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上；云 = 湿度高的空气
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（按该列云量 Beer–Lambert 衰减）；另导出 Daylight 供渲染层做昼夜明暗
-    ParticleRules.cs                          无状态共享移动规则
+    ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / IsSolid / BlocksLight）
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
     Particles/
       StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
@@ -877,8 +938,8 @@ Assets/Scripts/
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 缩放整场亮度：白天上限、夜晚下限）
   Driver/
-    ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）
-    ParticleSimulationDriver.cs               MonoBehaviour：固定步长驱动 + 上屏调度
+    ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、热力学系数、随机刻格数
+    ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
     ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（只循环材料类固/液，Gas 中间态不可手刷）、鼠标旁显示当前类型
     ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度接到 world.Light
@@ -886,11 +947,12 @@ Assets/Scripts/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
     SystemProxyGuard.cs                       系统代理无法被 Mono 解析时把 WebRequest.DefaultWebProxy 钉为直连（保 Unity-MCP 连通）
 Assets/Data/
-  ParticleSimulationSettings.asset            实例化后的全局参数资产（320x180 / 60Hz / seed 123456789）
+  ParticleSimulationSettings.asset            实例化后的全局参数资产（320x180 / 运动 60 Hz、逻辑 20 Hz / seed 123456789）
 Assets/Tests/EditMode/
   TapTap2026.Tests.EditMode.asmdef
-  TestParticleFixtures.cs                     测试专用粒子类型
-  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射（含调试热力叠加：越热越红、空气格也叠、满量程 <= 0 失效）/热力学（默认环境热量、逐格读改、越界语义、AddHeat 累加、T = Q / C 换算、按扁平下标读温度、Swap 搬运 Q、Set/Clear 重置 Q、四邻传导与界内热量守恒、界面导热率取两侧 σ 平均、顶行向虚空持续散热 / 内部行不散热 / 关闭即封闭 / 夹紧到稳定上限、辐射只作用于暴露面（顶行 / 上方是气体或空）、空气柱照常全柱辐射、辐射按材料 ε 缩放、空气 ε 可配、辐射功率注入收敛、光照下收敛到稳态温度、热源粒子在 OnUpdate 内查改）与光照（每列最上面的非气体——液体挡光、亮暗占空比循环、关闭 / 零强度不施热） + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/干散材料安息角随摩擦度（1:1/2:1/10:1）/高粘性石头垛远陡于干石对照/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）
+  TestParticleFixtures.cs                     测试专用粒子类型（含两段钩子探针 TestPhaseProbeParticle：分别计数 OnLogic / OnMotion）
+  ParticleWorldTests.cs                       世界/钩子/确定性/像素映射（含调试热力叠加：越热越红、空气格也叠、满量程 <= 0 失效）/热力学（默认环境热量、逐格读改、越界语义、AddHeat 累加、T = Q / C 换算、按扁平下标读温度、Swap 搬运 Q、Set/Clear 重置 Q、四邻传导与界内热量守恒、界面导热率取两侧 σ 平均、顶行向虚空持续散热 / 内部行不散热 / 关闭即封闭 / 夹紧到稳定上限、辐射只作用于暴露面（顶行 / 上方是气体或空）、空气柱照常全柱辐射、辐射按材料 ε 缩放、空气 ε 可配、辐射功率注入收敛、光照下收敛到稳态温度、热源粒子在 OnMotion 内查改）与光照（每列最上面的非气体——液体挡光、亮暗占空比循环、关闭 / 零强度不施热） + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/干散材料安息角随摩擦度（1:1/2:1/10:1）/高粘性石头垛远陡于干石对照/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）+ 随机刻（默认关闭 / 每逻辑帧命中计数 / 跳过空气与静态 / 夹在 [0, CellCount] / 同种子同批次）
+                                               + 分段扫描（运动帧只跑 OnMotion 不跑 OnLogic / 逻辑帧先 OnLogic 再同格 OnMotion / OnLogic 把本格相变后跳过本帧运动）
   SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签 + 摩擦度/粘性断言）+ 安息角剖面（三角堆）测试
   WaterParticleTests.cs                       水：直落/平底摊平成水平面/沙沉穿水置换上浮/同种子确定性 + 生产注册路径（隔离表为主）
   WeatherParticleTests.cs                     气象：浮力方向（热升/冷沉/死区）/水平热压流（直调原语，隔离表）+ 湿度场（蒸发提升附近湿度 / 水平冷→热 / 竖直越热越向上 / 随风平流 / 输送守恒）+ 降雨（碰并凑整、液体不持有湿度）+ 水循环总量守恒 + 云渲染（湿度染白）+ 云遮光（按列 Beer–Lambert 衰减、逐列独立）（生产注册路径——跨类型相变依赖 ParticleIds 回填；云遮光测试用隔离表 + `new ParticleWorld(w,h,seed,types)` 直构）
@@ -931,24 +993,25 @@ Particle Sandbox
 
 ## 11. 新增一个粒子类型的流程
 
-1. 在 `Assets/Scripts/Simulation/Particles/` 新建 `XxxParticle.cs`，`public sealed class XxxParticle : IParticleType`，实现 `Info` / `OnUpdate` / `OnSpawn` / `OnKill`。
+1. 在 `Assets/Scripts/Simulation/Particles/` 新建 `XxxParticle.cs`，`public sealed class XxxParticle : IParticleType`，实现 `Info` / `OnMotion`（运动，60 Hz）/ `OnLogic`（相变反应，20 Hz）/ `OnRandomTick` / `OnSpawn` / `OnKill`。没有对应行为的钩子留空——它们必存在，但可以什么都不做（`OnLogic` 留空是常态）。
 2. 在文件头注释里登记：占用的 flags 私有位、需要的邻居查询范围、与哪些 `ParticleIds` 交互。
 3. 在 `ParticleRegistration.RegisterAll()` 里追加一行 `ParticleIds.Xxx = ParticleRegistry.Register(new XxxParticle());`（**只能追加，不能插队重排**）。
 4. 在 `ParticleIds` 里加对应 `public static ushort Xxx;` 字段。
-5. 自测：EditMode 测试里 `new ParticleWorld(w, h, seed)`，手动 `Set` 若干格，跑 N 次 `Step()`，断言最终 `GetCell` 分布（不依赖渲染、不依赖场景）。
+5. 自测：EditMode 测试里 `new ParticleWorld(w, h, seed)`，手动 `Set` 若干格，跑 N 次 `StepLogic()`（或 `StepMotion()` 隔离运动），断言最终 `GetCell` 分布（不依赖渲染、不依赖场景）。
 
 评审清单：
 
 - [ ] 一个类型一个文件；`sealed`；无基类；非 MonoBehaviour。
-- [ ] `OnUpdate` 内无分配、无 LINQ、无字符串、无 `UnityEngine.Random`、无 `Time.*`。
+- [ ] `OnMotion` / `OnLogic` 内无分配、无 LINQ、无字符串、无 `UnityEngine.Random`、无 `Time.*`；运动只写在 `OnMotion`、相变 / 反应只写在 `OnLogic`，`OnLogic` 不移动粒子。
+- [ ] `OnRandomTick` 只用于「缓慢、按概率发生」的过程（生长 / 蔓延 / 渗流 / 腐化）；没有该行为的类型留空。它同样不许分配、不许读 `Time.*`，随机用 `world.NextUInt()`。
 - [ ] 每个写操作之前都有显式判断；写操作之后**立即 return**。
 - [ ] 没有直接写 `Cell.typeId`（绕过钩子）；没有整体覆盖 `flags`（破坏 bit0）。
 - [ ] 没有把 per-cell 状态放进单例字段。
 - [ ] 越界坐标先经 `IsInBounds` 判断，而不是依赖写操作静默失败。
 - [ ] 调色板 1..256 项，`shade` 语义一致。
-- [ ] `Info.HeatCapacity` 是有限正数（热容，决定同一份热量下的温度）；`Info.ThermalConductivity` 与 `Info.ThermalEmissivity` 都在 `[0, 1]` 内（相对导热率，界面取两侧平均；相对辐射率，只在暴露面生效）；`OnUpdate` 内读温度用 `world.Heat.GetTemperature`、改热量用 `AddHeat` / `SetHeat`，不要自己再做一遍四邻热传导（世界每 tick 已做）。
-- [ ] 固体类型：`Info.Friction` 与 `Info.Stickiness` 都在 `[0, 1]` 内，`OnUpdate` 走 `ParticleRules.StepSolid(world, x, y)`（自行实现则要在注释里说明为何不走共享规则）。
-- [ ] 静态类型的 `OnUpdate` 不会被调用——留空并注明原因，不要往里写逻辑。
+- [ ] `Info.HeatCapacity` 是有限正数（热容，决定同一份热量下的温度）；`Info.ThermalConductivity` 与 `Info.ThermalEmissivity` 都在 `[0, 1]` 内（相对导热率，界面取两侧平均；相对辐射率，只在暴露面生效）；`OnLogic` 内读温度用 `world.Heat.GetTemperature`、改热量用 `AddHeat` / `SetHeat`，不要自己再做一遍四邻热传导（世界每逻辑帧已做）。
+- [ ] 固体类型：`Info.Friction` 与 `Info.Stickiness` 都在 `[0, 1]` 内，`OnMotion` 走 `ParticleRules.StepSolid(world, x, y)`（自行实现则要在注释里说明为何不走共享规则）。
+- [ ] 静态类型的 `OnMotion` / `OnLogic` / `OnRandomTick` 都不会被调用——留空并注明原因，不要往里写逻辑。
 
 ---
 
@@ -970,9 +1033,10 @@ Particle Sandbox
 ## 13. 待定决策（评审时拍板）
 
 1. **`vx` / `vy`**：v1 采用 4 字节 `Cell`（不含速度）；确认何时切到 6 字节。
-2. **tick 频率默认值**：现为 60 Hz、`MaxStepsPerFrame = 4`（放在 `ParticleSimulationSettings` 里，可改）。
-3. **上屏倍数**：`StepsPerPresent` 现为 1（每个逻辑帧渲染一次）。等 tick 频率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
+2. **帧速率默认值**：运动帧 60 Hz（`_motionRate`）、逻辑帧 20 Hz（`_logicRate`，即每 3 个运动帧一次逻辑）、`MaxStepsPerFrame = 4`（按运动帧计；都放在 `ParticleSimulationSettings` 里，可改）。逻辑帧降频后热 / 湿度 / 降水 / 光照与昼夜相位都按 20 Hz 推进——昼夜周期相应变长约 3 倍（见 §2 比例约定），光照冷却速率若观感变化需另调系数。
+3. **上屏倍数**：`StepsPerPresent` 现为 1（每个运动帧渲染一次）。等帧速率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
 4. **`ParticleRules` 共享帮助方法的边界**：已提供 `StepSolid`（固体的标准运动：正下 → 按 `Info.Friction` / `Info.Stickiness` 斜落）/ `TryCohesiveFall`（带粘性的斜落）/ `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，`<= 0` = 不斜滑）/ `TryFlowHorizontal` / `CanDisplace` / `CanGasEnter`（气体换位的密度次序判据：`自己.Density >= 目标.Density` 才可换入）/ `IsGasOrEmpty`（纯目标判据，看格不看发起者）/ `SlideClearance`（Friction [+ Stickiness] → 净空档位）。当前三个固体都只写 `StepSolid` 一行：沙（摩擦 0 / 粘性 0，1:1）、土（摩擦 0.5 / 粘性 0.5，约 3:1）、石（摩擦 0.9 / 粘性 0.9，孤立时 10:1、粘住时 19:1）；两个参数都是**类型属性**（`ParticleTypeInfo`），同一类型所有粒子相同——若将来需要同一堆里混不同摩擦 / 粘性，再考虑把这两个值下沉到 `Cell`。「粘住」的判据目前只看**同一行**的反侧邻居；要不要把上一行（`y+1`）的对角邻居也算作可粘住的邻居，等实际玩法反馈。`TryFlowHorizontal` 的「同 rank 穿行」已限制为**仅流体**（Liquid / Gas），固体不会横穿同类固体。确认还有哪些特化规则值得提升为共享原语。
 5. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
 6. **存档格式**：`Cell[]` 直接按 4 字节/格序列化 + 版本号，还是 RLE。v1 不做存档，但 id 顺序策略按「不可重排」执行。
-7. **热力学（`HeatMap` + `LightController`）**：模型为「每格存 Q、T = Q / C、热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）+ 每 tick 全格四邻扩散 + 两条散热路（顶行向虚空 `VoidHeatLoss`、**只作用于暴露面**的辐射 `RadiativeLoss`）+ 光照打到每列最上面的非气体粒子（液体挡光）」。三系数均在 `ParticleSimulationSettings` 资产（现配 0.24 / 0.12 / 0.05），另有空气导热率 `_airThermalConductivity`（现配 1）与空气辐射率 `_airThermalEmissivity`（现配 0.1）。辐射率已按材料区分（`ParticleTypeInfo.ThermalEmissivity`：大气 0.1、其余 1.0，见 §6 辐射率表），这是把「空气热铺得高」与「地表温度」解耦的旋钮。待定：虚空散热仍只看**网格顶行**，是否要一并改成「暴露面」（与辐射同一判据）；导热率已按材料区分（`ThermalConductivity`，界面取两侧平均），后续可考虑改几何平均；是否要给固/液/气之外的维度再分辐射率（目前按材料区分，大气 0.1、其余 1.0）；空气热容 `AirHeatCapacity` 是否也要可配；`LightController` 是否要方向性 / 距离衰减（目前垂直、无衰减，但不再穿过液体；云遮光已按列做了 Beer–Lambert 衰减，`CloudExtinction` 目前是代码常量 + Inspector 字段）；`float` 精度是否需要改成定点以利存档与回放比对。「Q 由物质携带」「温度是导出量 T = Q / C」「传导与散热由世界每 tick 自动做一次」这三条已是契约，不随上述决策改变。相变阈值（沸点 80 / 慢蒸发 20 / 露点 30）与湿度场系数（`Diffusion` / `HorizontalBias` / `RiseBias` / `RiseStopHumidity` / `RainThreshold` / `RainRate` / `EvaporationCeiling` / `VisibleThreshold` / `CloudFullHumidity`）都还是代码常量；**水循环尚未做最终配平**——去掉大气随机漂移后，100×100 水盆在 30000 tick 后稳定在海水 284/900、湿度 616（总量 900 守恒），剖面单调上密下疏（顶带 0.094、低带 0.002），已是可玩状态；若要进一步提高海水留存，动「蒸发节流 / 降水阈值 / 水平辐合」时须重测云层厚度。待定：要不要把「沸点」也做成可配项。
+7. **随机刻密度**：`RandomTicksPerStep` 生产值取 48（≈ Minecraft 的 3 格 / 4096 密度）。等出现真实随机刻行为（生长 / 蔓延）后按观感重调；是否要改成按格数归一（密度而非绝对计数）也一并拍板。
+8. **热力学（`HeatMap` + `LightController`）**：模型为「每格存 Q、T = Q / C、热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）+ 每逻辑帧全格四邻扩散 + 两条散热路（顶行向虚空 `VoidHeatLoss`、**只作用于暴露面**的辐射 `RadiativeLoss`）+ 光照打到每列最上面的非气体粒子（液体挡光）」。三系数均在 `ParticleSimulationSettings` 资产（现配 0.24 / 0.12 / 0.05），另有空气导热率 `_airThermalConductivity`（现配 1）与空气辐射率 `_airThermalEmissivity`（现配 0.1）。辐射率已按材料区分（`ParticleTypeInfo.ThermalEmissivity`：大气 0.1、其余 1.0，见 §6 辐射率表），这是把「空气热铺得高」与「地表温度」解耦的旋钮。待定：虚空散热仍只看**网格顶行**，是否要一并改成「暴露面」（与辐射同一判据）；导热率已按材料区分（`ThermalConductivity`，界面取两侧平均），后续可考虑改几何平均；是否要给固/液/气之外的维度再分辐射率（目前按材料区分，大气 0.1、其余 1.0）；空气热容 `AirHeatCapacity` 是否也要可配；`LightController` 是否要方向性 / 距离衰减（目前垂直、无衰减，但不再穿过液体；云遮光已按列做了 Beer–Lambert 衰减，`CloudExtinction` 目前是代码常量 + Inspector 字段）；`float` 精度是否需要改成定点以利存档与回放比对。「Q 由物质携带」「温度是导出量 T = Q / C」「传导与散热由世界每逻辑帧自动做一次」这三条已是契约，不随上述决策改变。相变阈值（沸点 80 / 慢蒸发 20 / 露点 30）与湿度场系数（`Diffusion` / `HorizontalBias` / `RiseBias` / `RiseStopHumidity` / `RainThreshold` / `RainRate` / `EvaporationCeiling` / `VisibleThreshold` / `CloudFullHumidity`）都还是代码常量；**水循环尚未做最终配平**——去掉大气随机漂移后，100×100 水盆在 30000 tick 后稳定在海水 284/900、湿度 616（总量 900 守恒），剖面单调上密下疏（顶带 0.094、低带 0.002），已是可玩状态；若要进一步提高海水留存，动「蒸发节流 / 降水阈值 / 水平辐合」时须重测云层厚度。待定：要不要把「沸点」也做成可配项。

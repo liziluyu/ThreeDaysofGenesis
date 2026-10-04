@@ -134,13 +134,13 @@ namespace TapTap2026.Tests
                 world.Set(centerX, world.Height - 1, Sand);
                 for (int i = 0; i < 40; i++)
                 {
-                    world.Step();
+                    world.StepLogic();
                 }
             }
 
             for (int i = 0; i < 200; i++)
             {
-                world.Step();
+                world.StepLogic();
             }
 
             Assert.AreEqual(grains, CountType(world, Sand), "沙粒总数应守恒");

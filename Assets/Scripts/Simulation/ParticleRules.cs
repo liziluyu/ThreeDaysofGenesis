@@ -1,7 +1,7 @@
 namespace TapTap2026.Simulation
 {
     /// <summary>
-    /// 无状态的共享移动规则。粒子类型在自己的 <c>OnUpdate</c> 里按需调用，不持有任何每格状态。
+    /// 无状态的共享移动规则。粒子类型在自己的 <c>OnMotion</c> 里按需调用，不持有任何每格状态。
     /// 写操作型方法（<c>Try*</c>）遵循：先判断、后无条件执行、成功即返回 true（调用方应立刻 return）；
     /// 纯换算 <see cref="SlideClearance"/> 与整段固体运动 <see cref="StepSolid"/> 见各自的注释。
     /// </summary>
@@ -42,6 +42,7 @@ namespace TapTap2026.Simulation
 
             return AirRank;
         }
+
 
         /// <summary>(x,y) 上的粒子是否带 <see cref="ParticleTags.Solid"/> 标签。越界与空气均为 false。</summary>
         public static bool IsSolid(ParticleWorld world, int x, int y)
@@ -162,7 +163,7 @@ namespace TapTap2026.Simulation
         /// 摩擦度决定安息角，粘性在「斜滑方向的反侧同一行有固体邻居」时把安息角抬得更高。
         /// </summary>
         /// <remarks>
-        /// 每个固体类型的 <c>OnUpdate</c> 都应当是这一行；两个参数都从注册表读，类型无需自己抄常量。
+        /// 每个固体类型的 <c>OnMotion</c> 都应当是这一行；两个参数都从注册表读，类型无需自己抄常量。
         /// 两条规则的区别：摩擦度是材料自身的静摩擦（孤立一颗也生效），粘性靠邻居（旁边有固体才生效）。
         /// </remarks>
         public static void StepSolid(ParticleWorld world, int x, int y)

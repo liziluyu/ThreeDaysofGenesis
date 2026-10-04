@@ -1,7 +1,7 @@
 namespace TapTap2026.Simulation
 {
     /// <summary>
-    /// 注册表条目：类型属性 + 三个已提取的委托。由 <see cref="ParticleRegistry"/> 在启动时构造，之后不可变。
+    /// 注册表条目：类型属性 + 已提取的委托。由 <see cref="ParticleRegistry"/> 在启动时构造，之后不可变。
     /// 运行期按 <c>typeId</c> 数组寻址拿到本对象，直接调用其委托字段；
     /// <see cref="ParticleWorld"/> 与渲染层只认识这个类型，不认识 <see cref="IParticleType"/>。
     /// </summary>
@@ -13,8 +13,14 @@ namespace TapTap2026.Simulation
         /// <summary>类型属性。</summary>
         public readonly ParticleTypeInfo Info;
 
-        /// <summary>更新委托，提取自注册时的行为单例。</summary>
-        public readonly ParticleUpdateDelegate OnUpdate;
+        /// <summary>运动帧（60 Hz）委托，提取自注册时的行为单例。</summary>
+        public readonly ParticleMotionDelegate OnMotion;
+
+        /// <summary>逻辑帧（20 Hz）委托，提取自注册时的行为单例。</summary>
+        public readonly ParticleLogicDelegate OnLogic;
+
+        /// <summary>随机刻委托，提取自注册时的行为单例。</summary>
+        public readonly ParticleRandomTickDelegate OnRandomTick;
 
         /// <summary>生成委托。</summary>
         public readonly ParticleSpawnDelegate OnSpawn;
@@ -25,13 +31,17 @@ namespace TapTap2026.Simulation
         public ParticleType(
             ushort id,
             ParticleTypeInfo info,
-            ParticleUpdateDelegate onUpdate,
+            ParticleMotionDelegate onMotion,
+            ParticleLogicDelegate onLogic,
+            ParticleRandomTickDelegate onRandomTick,
             ParticleSpawnDelegate onSpawn,
             ParticleKillDelegate onKill)
         {
             Id = id;
             Info = info;
-            OnUpdate = onUpdate;
+            OnMotion = onMotion;
+            OnLogic = onLogic;
+            OnRandomTick = onRandomTick;
             OnSpawn = onSpawn;
             OnKill = onKill;
         }

@@ -35,6 +35,7 @@ namespace TapTap2026.Simulation
 
         private int _tick;
         private uint _rng;
+        private int _randomTicksPerStep;
         private byte _stamp;
         private Cell _outside;
         private bool _unknownTypeReported;
@@ -117,7 +118,7 @@ namespace TapTap2026.Simulation
         /// 与网格同形的热图（每格一个热量 Q），世界持有并随世界重建。
         /// 热量**由物质携带**：<see cref="Swap"/> 会把 Q 一起搬走；<see cref="Set"/> / <see cref="Clear"/>
         /// 换上的是新物质，其热量重置为环境值。温度是导出量（<c>T = Q / C</c>）。
-        /// 每 tick 由 <see cref="Step"/> 做一次全格四邻热传导；粒子类型通过它查询 / 修改任意位置的温度与热量。
+        /// 每逻辑帧由 <see cref="StepLogic"/> 做一次全格四邻热传导；粒子类型通过它查询 / 修改任意位置的温度与热量。
         /// </summary>
         public HeatMap Heat
         {
@@ -138,7 +139,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 光照控制器：按时序通断，照亮时向每列最上面的非气体粒子（固体或液体——光打到水面就停）注入热量。
-        /// 每 tick 由 <see cref="Step"/> 驱动；游戏侧通过 <c>world.Light.Enabled</c> 等属性配置。
+        /// 每逻辑帧由 <see cref="StepLogic"/> 驱动；游戏侧通过 <c>world.Light.Enabled</c> 等属性配置。
         /// </summary>
         public LightController Light
         {
@@ -169,10 +170,36 @@ namespace TapTap2026.Simulation
             get { return _tick; }
         }
 
-        /// <summary>下一次（或正在进行的）<see cref="Step"/> 的扫描方向奇偶：false = x 升序，true = x 降序。</summary>
+        /// <summary>下一次（或正在进行的）<see cref="StepLogic"/> 的扫描方向奇偶：false = x 升序，true = x 降序。</summary>
         public bool Parity
         {
             get { return (_tick & 1) != 0; }
+        }
+
+        /// <summary>
+        /// 每逻辑帧随机抽取并触发随机刻的格数（0 = 关闭，默认）。类似 Minecraft 的 random tick：
+        /// 不是全网格扫描，而是每逻辑帧只随机挑这么多格，命中非空气、非静态的格就调用其类型的
+        /// <c>OnRandomTick</c>。适合「缓慢、按概率发生」的过程（生长、蔓延、渗流、腐化）。
+        /// </summary>
+        /// <remarks>
+        /// 抽取**有放回**（同一格可能在同一 tick 被抽中多次），且用的是世界同一条确定性随机流，
+        /// 因此计数与普通粒子规则的随机序列共享。赋值夹在 <c>[0, CellCount]</c>。
+        /// </remarks>
+        public int RandomTicksPerStep
+        {
+            get { return _randomTicksPerStep; }
+            set
+            {
+                int max = _cells.Length;
+                if (value < 0)
+                {
+                    _randomTicksPerStep = 0;
+                }
+                else
+                {
+                    _randomTicksPerStep = value > max ? max : value;
+                }
+            }
         }
 
         /// <summary>
@@ -406,7 +433,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 降水：温度低于露点的饱和空气（湿度 ≥ <see cref="HumidityField.RainThreshold"/>）
-        /// 按 <c>湿度 × RainRate</c> 的概率凝结成雨。由 <see cref="Step"/> 每 tick 调用一次。
+        /// 按 <c>湿度 × RainRate</c> 的概率凝结成雨。由 <see cref="StepLogic"/> 每逻辑帧调用一次。
         /// </summary>
         /// <remarks>
         /// 湿度越高掉得越快，这是让云量收敛的负反馈（否则水汽会一路攒成满天薄雾）。
@@ -605,18 +632,78 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 驱动一次完整网格扫描。与渲染解耦：本方法不接触任何渲染资源，
-        /// 由上层决定跑完几次 Step 之后才上屏一次。
+        /// 推进一个**运动帧**（60 Hz 的基本节拍）：只做一次全网格扫描，对每个粒子调用其
+        /// <see cref="ParticleType.OnMotion"/>。**不跑相变、热传导、湿度、降水、光照或随机刻**——
+        /// 那些都属于逻辑帧，见 <see cref="StepLogic"/>。
         /// </summary>
         /// <remarks>
-        /// 一个 tick 分四段：<b>①粒子扫描</b>（各 <c>OnUpdate</c> 可读写热图与凝结物场）→
+        /// 与渲染解耦：本方法不接触任何渲染资源，由上层决定跑完几次之后才上屏一次。
+        /// 运动帧是世界的唯一时基：<see cref="Tick"/> 无论走哪一个入口都每帧自增一次，
+        /// 扫描方向与 bit0 处理标记也随之交替。
+        /// </remarks>
+        public void StepMotion()
+        {
+            try
+            {
+                Scan(logic: false);
+                _tick++;
+            }
+            finally
+            {
+                // 某个 OnMotion 抛异常时 _tick 未自增，此处按「旧 tick」恢复写入标记，
+                // 使异常后新建的粒子仍会被下一帧处理；正常路径则按自增后的 tick 恢复。
+                _stamp = OutsideStamp;
+            }
+        }
+
+        /// <summary>
+        /// 推进一个**逻辑帧**（20 Hz）：在照常做一次运动扫描的基础上，先对每个粒子调用其
+        /// <see cref="ParticleType.OnLogic"/>（相变 / 反应），扫描后再推进随机刻与整场的
+        /// 热传导、湿度输送、降水与光照。
+        /// </summary>
+        /// <remarks>
+        /// 分段：<b>①粒子扫描</b>（每格先 <c>OnLogic</c>、未被相变换走的再 <c>OnMotion</c>）→
+        /// <b>①′随机刻</b>（随机抽 <see cref="RandomTicksPerStep"/> 个格，命中非空气非静态的格就调 <c>OnRandomTick</c>）→
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
         /// <b>③湿度输送</b>（<see cref="HumidityField.Step"/>：扩散 + 水平冷→热 + 竖直越热越向上）→
         /// <b>③′降水</b>（温度低于露点的饱和空气凝结成雨）→
         /// <b>④光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
-        /// 因此光照 / 传导注入的热量会在下一个 tick 被粒子读到、并参与下一轮扩散。
+        /// 因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
+        /// 上层应让逻辑帧落在运动帧的节拍上——每 3 个运动帧跑一次本方法，即 60 Hz 运动 / 20 Hz 逻辑。
         /// </remarks>
-        public void Step()
+        public void StepLogic()
+        {
+            try
+            {
+                Scan(logic: true);
+
+                // ①′ 随机刻：与扫描同属「块行为」，因此放在 _tick 自增之前、
+                // 让 OnRandomTick 读到的 world.Tick 与 OnLogic / OnMotion 一致；热/湿度/光照仍在其后。
+                RunRandomTicks();
+
+                _tick++;
+
+                // 网格扫描之后：先做一次全格四邻热传导（含辐射/虚空散热），再让光照向每列最上面的非气体粒子施热。
+                // 全程在 try 内，异常（如某类型钩子抛出）时本帧的 _tick 不自增，
+                // 传导 / 湿度 / 降水 / 光照一并不生效，与「异常后粒子仍会在下一帧被处理」的约定一致。
+                _heat.Step();
+                _humidity.Step(this);
+                StepRain();
+                _light.Step(this);
+            }
+            finally
+            {
+                // 某个钩子抛异常时 _tick 未自增，此处按「旧 tick」恢复写入标记，
+                // 使异常后新建的粒子仍会被下一帧处理；正常路径则按自增后的 tick 恢复。
+                _stamp = OutsideStamp;
+            }
+        }
+
+        /// <summary>
+        /// 一次全网格扫描，世界的唯一处理入口。行从高到低、x 方向按 <see cref="Tick"/> 奇偶交替；
+        /// <paramref name="logic"/> 为 true 时每格先跑一次逻辑钩子。
+        /// </summary>
+        private void Scan(bool logic)
         {
             byte stamp = (byte)(_tick & 1);
             _stamp = stamp;
@@ -627,46 +714,65 @@ namespace TapTap2026.Simulation
             int height = _height;
             bool reversed = (_tick & 1) != 0;
 
-            try
+            for (int y = height - 1; y >= 0; y--)
             {
-                for (int y = height - 1; y >= 0; y--)
+                int rowBase = y * width;
+                if (reversed)
                 {
-                    int rowBase = y * width;
-                    if (reversed)
+                    for (int x = width - 1; x >= 0; x--)
                     {
-                        for (int x = width - 1; x >= 0; x--)
-                        {
-                            ProcessCell(x, y, rowBase + x, stamp, cells, types);
-                        }
-                    }
-                    else
-                    {
-                        for (int x = 0; x < width; x++)
-                        {
-                            ProcessCell(x, y, rowBase + x, stamp, cells, types);
-                        }
+                        ProcessCell(x, y, rowBase + x, stamp, logic, cells, types);
                     }
                 }
-
-                _tick++;
-
-                // 网格扫描之后：先做一次全格四邻热传导（含辐射/虚空散热），再让光照向每列最上面的非气体粒子施热。
-                // 两步都在 try 内，异常（如某类型 OnUpdate 抛出）时本 tick 的 _tick 不自增，
-                // 传导 / 光照一并不生效，与「异常后 particle 仍会在下一次 Step 被处理」的约定一致。
-                _heat.Step();
-                _humidity.Step(this);
-                StepRain();
-                _light.Step(this);
-            }
-            finally
-            {
-                // 某个 OnUpdate 抛异常时 _tick 未自增，此处按「旧 tick」恢复写入标记，
-                // 使异常后新建的粒子仍会被下一次 Step 处理；正常路径则按自增后的 tick 恢复。
-                _stamp = OutsideStamp;
+                else
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        ProcessCell(x, y, rowBase + x, stamp, logic, cells, types);
+                    }
+                }
             }
         }
 
-        private void ProcessCell(int x, int y, int index, byte stamp, Cell[] cells, ParticleType[] types)
+        /// <summary>
+        /// ①′ 随机刻：均匀有放回地抽 <see cref="RandomTicksPerStep"/> 个格，命中非空气、非静态的格就调其类型委托。
+        /// 不看、也不写 bit0 处理标记——随机刻独立于扫描，同一格可以在同一次 <see cref="StepLogic"/> 里被抽中多次。
+        /// </summary>
+        private void RunRandomTicks()
+        {
+            int picks = _randomTicksPerStep;
+            if (picks <= 0)
+            {
+                return;
+            }
+
+            Cell[] cells = _cells;
+            ParticleType[] types = _types;
+            int width = _width;
+            int count = cells.Length;
+
+            for (int i = 0; i < picks; i++)
+            {
+                int index = (int)(NextUInt() % (uint)count);
+                ushort id = cells[index].typeId;
+                if (id == ParticleRegistry.AirTypeId || id >= types.Length)
+                {
+                    continue;
+                }
+
+                ParticleType type = types[id];
+                if (type == null || type.Info.IsStatic)
+                {
+                    continue;
+                }
+
+                int y = index / width;
+                type.OnRandomTick(this, index - y * width, y);
+            }
+        }
+
+        private void ProcessCell(
+            int x, int y, int index, byte stamp, bool logic, Cell[] cells, ParticleType[] types)
         {
             ushort id = cells[index].typeId;
             if (id == ParticleRegistry.AirTypeId || id >= types.Length)
@@ -686,7 +792,19 @@ namespace TapTap2026.Simulation
             }
 
             cells[index].flags = CellFlags.WithProcessed(cells[index].flags, stamp);
-            type.OnUpdate(this, x, y);
+
+            if (logic)
+            {
+                // 逻辑钩子先跑（相变 / 反应）。它若把本格换成了别的类型，说明这一格本帧已经「用掉」了：
+                // 新格已由 Set / SetPhase 标成已处理，旧类型的运动规则也不再适用于新物质——本帧跳过运动。
+                type.OnLogic(this, x, y);
+                if (cells[index].typeId != id)
+                {
+                    return;
+                }
+            }
+
+            type.OnMotion(this, x, y);
         }
 
         private void ReportUnknownType(ushort typeId)
