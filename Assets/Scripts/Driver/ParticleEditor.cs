@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using TapTap2026.Rendering;
 using TapTap2026.Simulation;
@@ -37,18 +38,36 @@ namespace TapTap2026.Game
         [Tooltip("暂停热键：按一下停掉所有帧（运动帧与逻辑帧），再按一下继续。设为 None 关闭热键。")]
         [SerializeField] private KeyCode _pauseKey = KeyCode.Space;
 
+        [Header("投放白名单")]
+        [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
+                 "草、湿土、腐殖质、腐殖土只能由模拟产生，默认已列入。")]
+        [SerializeField] private string[] _unplaceableTypes =
+        {
+            "GrassParticle", "WetSoilParticle", "HumusParticle", "HumusSoilParticle",
+        };
+
+        [Tooltip("「单颗投放」白名单（按 DebugName 或类名匹配）：右键切到这些类型时，无论笔刷半径多大，" +
+                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认只有草种子，将来可追加。")]
+        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle" };
+
+        private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
+        private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();
         private ushort[] _placeable = new ushort[0];
         private int _cursor;
         private ushort _typeId;
         private string _hudText;
         private Color _hudColor;
         private string _probeText;
+        private float _lastSinglePlacementTime = float.NegativeInfinity;
 
         /// <summary>笔刷半径下限（格）。</summary>
         public const int MinBrushRadius = 1;
 
         /// <summary>笔刷半径上限（格）。</summary>
         public const int MaxBrushRadius = 10;
+
+        /// <summary>「单颗投放」白名单类型的投放冷却（秒）。</summary>
+        public const float SinglePlacementCooldownSeconds = 0.5f;
 
         /// <summary>当前笔刷半径（格）。</summary>
         public int BrushRadius
@@ -86,6 +105,10 @@ namespace TapTap2026.Game
             }
 
             // 注册表由 ParticleRegistration 的 BeforeSceneLoad 钩子填充，因此这里读得到全部类型。
+            // 两个白名单按名字解析成 typeId：不可投放集合决定右键循环里有哪些类型，
+            // 单颗投放集合决定哪些类型走「单颗 + 冷却」而不是圆形笔刷。
+            ResolveTypeNames(_unplaceableTypes, _unplaceable);
+            ResolveTypeNames(_singlePlacementTypes, _singlePlacement);
             _placeable = CollectPlaceableTypes();
             if (_placeable.Length == 0)
             {
@@ -213,11 +236,18 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 用当前粒子填满以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆。
+        /// 投放当前粒子。普通类型填满以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆；
+        /// **单颗投放白名单**里的类型（见 <see cref="_singlePlacementTypes"/>）无论半径多大都只在中心落一颗，
+        /// 且两次投放之间共享 <see cref="SinglePlacementCooldownSeconds"/> 的冷却。
         /// </summary>
-        /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）。</returns>
+        /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0。</returns>
         public int Paint(ParticleWorld world, int cx, int cy)
         {
+            if (_singlePlacement.Contains(_typeId))
+            {
+                return PaintSingle(world, cx, cy);
+            }
+
             int radiusSquared = BrushRadius * BrushRadius;
             int written = 0;
 
@@ -238,6 +268,27 @@ namespace TapTap2026.Game
             }
 
             return written;
+        }
+
+        /// <summary>
+        /// 单颗投放：只在 (cx, cy) 落一颗。冷却未到时什么都不做（返回 0），因此按住左键也只会每
+        /// <see cref="SinglePlacementCooldownSeconds"/> 落一颗，而不是每帧一颗。
+        /// </summary>
+        private int PaintSingle(ParticleWorld world, int cx, int cy)
+        {
+            // unscaledTime：冷却按真实时间流逝，暂停（Simulate = false）时也照常计时。
+            if (Time.unscaledTime - _lastSinglePlacementTime < SinglePlacementCooldownSeconds)
+            {
+                return 0;
+            }
+
+            if (!world.Set(cx, cy, _typeId))
+            {
+                return 0;
+            }
+
+            _lastSinglePlacementTime = Time.unscaledTime;
+            return 1;
         }
 
         private void OnGUI()
@@ -303,16 +354,17 @@ namespace TapTap2026.Game
                 x, y, name, temperature, heat, humidity);
         }
 
-        /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、以及所有 Gas 类型——
-        /// 蒸汽/云/大气是水循环的中间态，只能由相变产生，不该能用手刷出来。</summary>
-        private static ushort[] CollectPlaceableTypes()
+        /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、所有 Gas 类型
+        /// （蒸汽/云/大气是水循环的中间态，只能由相变产生），以及 <see cref="_unplaceableTypes"/> 里的类型
+        /// （草与湿土只能由模拟产生）。</summary>
+        private ushort[] CollectPlaceableTypes()
         {
             ParticleType[] types = ParticleRegistry.Types;
 
             int count = 0;
             for (int i = 1; i < types.Length; i++)
             {
-                if (IsPlaceable(types[i]))
+                if (IsPlaceable(types[i], i))
                 {
                     count++;
                 }
@@ -322,7 +374,7 @@ namespace TapTap2026.Game
             int index = 0;
             for (int i = 1; i < types.Length; i++)
             {
-                if (IsPlaceable(types[i]))
+                if (IsPlaceable(types[i], i))
                 {
                     placeable[index++] = (ushort)i;
                 }
@@ -331,9 +383,57 @@ namespace TapTap2026.Game
             return placeable;
         }
 
-        private static bool IsPlaceable(ParticleType type)
+        private bool IsPlaceable(ParticleType type, int typeId)
         {
-            return type != null && (type.Info.Tags & ParticleTags.Gas) == 0;
+            return type != null
+                && (type.Info.Tags & ParticleTags.Gas) == 0
+                && !_unplaceable.Contains((ushort)typeId);
+        }
+
+        /// <summary>
+        /// 把 Inspector 上的类型名列表解析成 typeId 集合：按 <see cref="ParticleTypeInfo.DebugName"/> 或类名匹配
+        /// 注册表里的每一个类型。找不到的名字记一条警告并跳过（拼错类型名不会静默失效）。
+        /// 注册表由 <c>BeforeSceneLoad</c> 钩子填充，本方法只在 <c>Awake</c> 里调用，因此读得到全部类型。
+        /// </summary>
+        private static void ResolveTypeNames(string[] names, HashSet<ushort> destination)
+        {
+            if (names == null)
+            {
+                return;
+            }
+
+            ParticleType[] types = ParticleRegistry.Types;
+            for (int n = 0; n < names.Length; n++)
+            {
+                string name = names[n];
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                bool found = false;
+                for (int i = 1; i < types.Length; i++)
+                {
+                    ParticleType type = types[i];
+                    if (type == null)
+                    {
+                        continue;
+                    }
+
+                    if (type.Info.DebugName == name || type.GetType().Name == name)
+                    {
+                        destination.Add((ushort)i);
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    Debug.LogWarning(
+                        $"[ParticleEditor] 白名单里的类型名 \"{name}\" 未在注册表中找到，已忽略。");
+                }
+            }
         }
 
         /// <summary>选中第 <paramref name="index"/> 个可投放类型，并重建 HUD 文本。</summary>
@@ -351,7 +451,8 @@ namespace TapTap2026.Game
             ParticleTypeInfo info = type.Info;
 
             _hudColor = info.Palette[0];
-            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{_placeable.Length}  r={BrushRadius}";
+            string brush = _singlePlacement.Contains(_typeId) ? "单颗" : $"r={BrushRadius}";
+            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{_placeable.Length}  {brush}";
         }
 
         /// <summary>类型的显示名：优先 <see cref="ParticleTypeInfo.DebugName"/>，没填则回退类名。</summary>
