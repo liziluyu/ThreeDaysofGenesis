@@ -9,6 +9,7 @@ namespace TapTap2026.Game
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
     /// **右键**在可投放类型间循环切换（只含材料类：固/液；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
+    /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度。
     /// </summary>
     /// <remarks>
@@ -31,6 +32,9 @@ namespace TapTap2026.Game
 
         [Tooltip("显示鼠标旁的当前粒子/半径，以及左上角光标格的读数。")]
         [SerializeField] private bool _drawHud = true;
+
+        [Tooltip("暂停热键：按一下停掉所有帧（运动帧与逻辑帧），再按一下继续。设为 None 关闭热键。")]
+        [SerializeField] private KeyCode _pauseKey = KeyCode.Space;
 
         private ushort[] _placeable = new ushort[0];
         private int _cursor;
@@ -103,6 +107,20 @@ namespace TapTap2026.Game
             if (world == null)
             {
                 return;
+            }
+
+            // 暂停热键：这里只负责「按下了就切一下」，
+            // 具体冻结/恢复由驱动暴露的 Pause()/Resume() 执行（驱动不认识输入）。
+            if (_pauseKey != KeyCode.None && Input.GetKeyDown(_pauseKey))
+            {
+                if (_driver.Paused)
+                {
+                    _driver.Resume();
+                }
+                else
+                {
+                    _driver.Pause();
+                }
             }
 
             ProbeCell(world, Input.mousePosition);

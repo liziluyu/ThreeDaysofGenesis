@@ -449,6 +449,7 @@ MonoBehaviour:
   _camera: {fileID: 0}
   _brushRadius: 3
   _drawHud: 1
+  _pauseKey: 32
 --- !u!114 &1926363754
 MonoBehaviour:
   m_ObjectHideFlags: 0
