@@ -70,8 +70,9 @@ namespace TapTap2026.Simulation
 
         /// <summary>渲染满白：湿度达到它即纯白。取 <see cref="VisibleThreshold"/> 与
         /// <see cref="RiseStopHumidity"/> 之间的一个"厚云"参考值——若沿用 1.0，
-        /// 天空里实际能达到的湿度（~0.2 封顶）永远渲成近乎透明，"高空的云看不见"就是这么来的。</summary>
-        public const float CloudFullHumidity = 0.12f;
+        /// 天空里实际能达到的湿度（~0.1~0.2 封顶）永远渲成近乎透明，"高空的云看不见"就是这么来的；
+        /// 取太小又会满屏惨白（实测：0.12 时近纯白格 1866 个，0.16 时降到 52 个而云层依旧清楚）。</summary>
+        public const float CloudFullHumidity = 0.16f;
 
         /// <summary>降水速率（每 tick、每单位湿度凝结成雨的概率）：湿度越高掉得越快（负反馈，云量因此稳定）。</summary>
         public const float RainRate = 0.4f;
@@ -216,6 +217,44 @@ namespace TapTap2026.Simulation
             }
 
             return total;
+        }
+
+        /// <summary>
+        /// 把每列湿度总量写进 <paramref name="destination"/>（长度须 ≥ <see cref="Width"/>），
+        /// 即**每列的云层厚度**——光竖直穿过的整条路径上的云量（只有非固非液格持有湿度，
+        /// 而光路上的格恰好都是气体/空，故整列求和就是光程上的云量）。
+        /// 由 <see cref="LightController"/> 每 tick 维护、用来决定该列地表能收到多少光。
+        /// </summary>
+        /// <exception cref="ArgumentNullException">目标缓冲为 null。</exception>
+        /// <exception cref="ArgumentException">目标缓冲短于场宽。</exception>
+        public void ColumnSums(float[] destination)
+        {
+            if (destination == null)
+            {
+                throw new ArgumentNullException(nameof(destination));
+            }
+
+            if (destination.Length < _width)
+            {
+                throw new ArgumentException(
+                    $"目标缓冲长度 {destination.Length} 小于场宽 {_width}。", nameof(destination));
+            }
+
+            int width = _width;
+            int height = _height;
+            for (int x = 0; x < width; x++)
+            {
+                destination[x] = _humidity[x];
+            }
+
+            for (int y = 1; y < height; y++)
+            {
+                int row = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    destination[x] += _humidity[row + x];
+                }
+            }
         }
 
         /// <summary>

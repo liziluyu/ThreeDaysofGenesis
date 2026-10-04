@@ -36,6 +36,10 @@ namespace TapTap2026.Game
         [Tooltip("昼夜过渡刻数：白天开始与结束各用这么多刻从暗平滑到亮（反之亦然），其余时间恒定在上限 / 下限。")]
         [SerializeField, Min(0)] private int _transitionTicks = 60;
 
+        [Tooltip("云层消光系数：每列湿度总量越大，到达地表的光照越弱（透过率 = exp(-系数 × 列湿度总量)）。" +
+                 "0 = 云不遮光。列湿度总量量级为个位数，0.05 时厚云柱透过率约 0.7、0.1 时约 0.55。")]
+        [SerializeField, Min(0f)] private float _cloudExtinction = LightController.DefaultCloudExtinction;
+
         /// <summary>当前生效的光照开关（Inspector 值）。</summary>
         public bool Enabled
         {
@@ -64,6 +68,12 @@ namespace TapTap2026.Game
         public int TransitionTicks
         {
             get { return _transitionTicks; }
+        }
+
+        /// <summary>当前生效的云层消光系数。</summary>
+        public float CloudExtinction
+        {
+            get { return _cloudExtinction; }
         }
 
         private void Awake()
@@ -107,6 +117,7 @@ namespace TapTap2026.Game
             light.DarkTicks = _darkTicks;
             light.Intensity = _intensity;
             light.TransitionTicks = _transitionTicks;
+            light.CloudExtinction = _cloudExtinction;
         }
     }
 }

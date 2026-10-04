@@ -8,10 +8,14 @@ namespace TapTap2026.Simulation
     // 邻居查询范围：四邻（浮力比温）、上下/斜向各 1 格、同行左右各 1 格
     // 交互的 ParticleIds：无 —— 只比温度，不特判类型
     //
-    // 行为：浮力（比四邻热 → 升，冷 → 沉）→ 水平热压流（流向暖侧）→ 随机漂移。
+    // 行为：浮力（比四邻热 → 升，冷 → 沉）→ 水平热压流（流向暖侧）。
     //       热由物质携带：空气 Swap 时热量跟着走，这就是对流；低空冷空气流向暖的陆地 = 海风。
     //       世界初始化时由 ParticleSimulationDriver 把所有空格填成大气，因此 typeId 0
     //       在运行中的世界里只作为「被抹除后留下的真空」短暂出现，行为规则同样允许气体换入。
+    //
+    //       这里**故意不做随机漂移**：那是数值噪声、不是风，而它搬运的是整格（含热量与湿度），
+    //       会给云层注入逐 tick 的可见抖动（实测可见度翻转 178 → 57 每 tick）。气体的混合改由
+    //       HumidityField 的扩散与温度定向平流负责——真实的混合是场的行为，不是随机换位。
     //
     // 湿度：云不存在于此类型里，也不存在于任何粒子类型里——云是**湿度场**（HumidityField）里的高值区。
     //       空气 Swap 时湿度跟着走（见 ParticleWorld.Swap），于是云随风平移、被湍流混合、自然连片；
@@ -60,8 +64,6 @@ namespace TapTap2026.Simulation
             {
                 return;
             }
-
-            ParticleRules.TryRandomDrift(world, x, y);
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

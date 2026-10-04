@@ -255,6 +255,9 @@ namespace TapTap2026.Simulation
             _cells[a] = _cells[b];
             _cells[b] = swap;
             _heat.SwapHeat(a, b);
+
+            // 湿度跟着物质走：云因此随风平移。固/液永远持有 0 湿度（不变量），
+            // 所以水与气体换位时搬过去的是气体那侧的湿度，水不会把水汽带走。
             _humidity.Swap(a, b);
 
             byte stamp = _stamp;
@@ -461,6 +464,14 @@ namespace TapTap2026.Simulation
                         continue;
                     }
 
+                    // 本格剩下的水汽（湿度高于一个水滴时）马上要变成液体，而固/液不持有湿度——
+                    // 若四周全是液/固（封闭气泡），残余无处安放，降这一滴就会把水汽永久困在水里。
+                    // 所以先确认收得下，收不下就这一 tick 不降（而不是降完再漏）。
+                    if (_humidity.GetAt(i) - HumidityField.Unit > 0f && CountMoistReceivers(x, y) == 0)
+                    {
+                        continue;
+                    }
+
                     // 本格优先，再从气体邻居补足。
                     float need = HumidityField.Unit;
                     float self = _humidity.GetAt(i);
@@ -522,17 +533,9 @@ namespace TapTap2026.Simulation
             return total;
         }
 
-        /// <summary>把 (x,y) 残留的湿度**全部**推给周围的气体邻居（推不动的部分留在原地）。
-        /// 用于「气体 → 固/液」的相变：固/液不持有湿度——若留下残余，等它日后蒸发时会与新增的水汽
-        /// 叠加，凭空造水（实测：每 4000 tick 多出 0.3 个水格）。</summary>
-        private void EvacuateHumidity(int x, int y, int index)
+        /// <summary>(x,y) 四邻中能接收湿度的气体格数（0 = 封闭：残余湿度无处安放）。</summary>
+        private int CountMoistReceivers(int x, int y)
         {
-            float residual = _humidity.GetAt(index);
-            if (residual <= 0f)
-            {
-                return;
-            }
-
             int receivers = 0;
             for (int k = 0; k < 4; k++)
             {
@@ -544,9 +547,24 @@ namespace TapTap2026.Simulation
                 }
             }
 
+            return receivers;
+        }
+
+        /// <summary>把 (x,y) 残留的湿度**全部**推给周围的气体邻居（推不动的部分留在原地）。
+        /// 用于「气体 → 固/液」的相变：固/液不持有湿度——若留下残余，等它日后蒸发时会与新增的水汽
+        /// 叠加，凭空造水（实测：每 4000 tick 多出 0.3 个水格）。</summary>
+        private void EvacuateHumidity(int x, int y, int index)
+        {
+            float residual = _humidity.GetAt(index);
+            if (residual <= 0f)
+            {
+                return;
+            }
+
+            int receivers = CountMoistReceivers(x, y);
             if (receivers == 0)
             {
-                return; // 四面都不是气体：无处可去，只能留在原地
+                return; // 四面都不是气体：无处可去，只能留在原地（调用方须先确认收得下）
             }
 
             float share = residual / receivers;

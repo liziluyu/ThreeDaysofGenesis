@@ -532,15 +532,6 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        /// <summary>随机水平漂移：向左或右（随机序）换一格可换入的格（<see cref="CanGasEnter"/>，气体按密度次序）。云的漂移、气体的混合用它。</summary>
-        public static bool TryRandomDrift(ParticleWorld world, int x, int y)
-        {
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
-            return leftFirst
-                ? TryDriftSide(world, x, y, -1) || TryDriftSide(world, x, y, 1)
-                : TryDriftSide(world, x, y, 1) || TryDriftSide(world, x, y, -1);
-        }
-
         private static bool TryRiseSide(ParticleWorld world, int x, int y, int deltaX)
         {
             int targetX = x + deltaX;
@@ -567,16 +558,5 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        private static bool TryDriftSide(ParticleWorld world, int x, int y, int direction)
-        {
-            int targetX = x + direction;
-            if (!CanGasEnter(world, x, y, targetX, y))
-            {
-                return false;
-            }
-
-            world.Swap(x, y, targetX, y);
-            return true;
-        }
     }
 }

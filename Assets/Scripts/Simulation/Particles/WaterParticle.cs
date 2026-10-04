@@ -8,7 +8,12 @@ namespace TapTap2026.Simulation
     // 邻居查询范围：正下、左下/右下、同行左右各 MaxFlowSpread 格（横流扫描）
     // 交互的 ParticleIds：无 —— 蒸发把水汽交给湿度场（HumidityField），水汽不以粒子形式存在
     //
-    // 行为：开头先查温度做相变（达到阈值 → 蒸发成水汽、提升附近湿度），然后才是液体运动。运动为三段固定优先级，成功即 return：
+    // 行为：开头先查温度做相变，然后才是液体运动。相变分两条路：
+    //         · 沸腾（T ≥ 沸点）：把 1 份水汽**集中**在原地一小片 → 每格浓度高 → 渲染成可见的白色汽团；
+    //         · 慢蒸发（T ≥ 常温阈值、按概率、且**正上方是气体**）：把同样 1 份水汽**摊到 7×7 一大片** →
+    //           每格低于可见阈值 → 看不见，只让湿度稳步升高。
+    //       这就是"水蒸气只在沸腾时出现"：可见的水汽只由沸腾产生，慢蒸发是隐形的。
+    //       运动为三段固定优先级，成功即 return：
     //         1. TryFall：正下能进（空气 / 气体）就下落一格；同类水与固体都挡住；
     //         2. TryDiagonalFall（clearance 1）：正下被挡就沿坡斜滑——液体无安息角；
     //         3. TryFlowHorizontal：左右随机序逐格扫描，移动到范围内第一个空气格，
@@ -44,6 +49,18 @@ namespace TapTap2026.Simulation
         /// <summary>常温蒸发概率分母（1/N 每 tick）。</summary>
         public const int SlowEvaporationDenominator = 300;
 
+        /// <summary>剧烈蒸发（沸腾）的播撒半径：1 = 3×3 一小片，每格浓度高 → 渲染成**可见**的白色汽团。</summary>
+        private const int BoilingSpreadRadius = 1;
+
+        /// <summary>慢蒸发的播撒半径：4 = 9×9 一大片，每格只分到 ~0.027 → 远低于可见阈值。</summary>
+        private const int SlowSpreadRadius = 4;
+
+        /// <summary>慢蒸发的湿度上限：撒播范围内**任一格**达到它就不再慢蒸发。
+        /// 取 0.02，使"最湿的一格 + 本次份额（~0.027）"仍低于 <see cref="HumidityField.VisibleThreshold"/>（0.06）——
+        /// 慢蒸发因此**永远不可见**。沸腾不受此限：它刻意把水汽集中到完全可见。
+        /// 这也顺带是"饱和水汽压"的物理节流：边界层湿了就蒸发不动，等输送把水汽带走再继续。</summary>
+        private const float SlowSpreadHumidityCap = 0.02f;
+
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Liquid,
             density: 1.0f,
@@ -59,42 +76,71 @@ namespace TapTap2026.Simulation
             debugName: nameof(WaterParticle));
 
         /// <summary>
-        /// 水蒸发：**提升附近的湿度**（本格 + 周围的气体邻居，总量一个水格 = <see cref="HumidityField.Unit"/>），
-        /// 本格变成大气。湿度场随后按「扩散 + 水平冷→热 + 竖直越热越向上」把水汽输送走。
+        /// 水蒸发：**提升附近的湿度**（以本格为中心、半径 <paramref name="radius"/> 的气体/空格，总量与
+        /// <see cref="HumidityField.Unit"/> 相等），本格变成大气。湿度场随后按「扩散 + 水平冷→热 + 竖直越热越向上」把水汽输送走。
         /// 水汽没有粒子形态（现实里水汽本来就不可见）——云是湿度场里的高值区，见 <see cref="HumidityField"/>。
         /// </summary>
-        private static void Evaporate(ParticleWorld world, int x, int y)
+        /// <param name="radius">播撒半径：1 = 3×3（每格浓度高，<b>看得见</b>）；越大摊得越薄（每格低于可见阈值，<b>看不见</b>）。</param>
+        private static void Evaporate(ParticleWorld world, int x, int y, int radius)
         {
             // 先把本格变成大气，再播撒湿度：本格此时已是气体，可以一起参与承载。
             world.SetPhase(x, y, ParticleIds.Atmosphere);
 
-            // 只播撒给**界内且是气体/空**的邻居；份额按实际能接收的格数均分，总量恰好一个水格（守恒）。
-            int receivers = 1;
-            for (int k = 0; k < 4; k++)
+            // 只播撒给**界内且是气体/空**的格子；份额按实际能接收的格数均分，总量恰好一个水格（守恒）。
+            // 本格刚变成大气，所以 receivers 至少为 1。
+            int receivers = 0;
+            for (int dy = -radius; dy <= radius; dy++)
             {
-                int nx = x + NeighbourX[k];
-                int ny = y + NeighbourY[k];
-                if (world.IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(world, nx, ny))
+                for (int dx = -radius; dx <= radius; dx++)
                 {
-                    receivers++;
+                    if (world.IsInBounds(x + dx, y + dy) && ParticleRules.IsGasOrEmpty(world, x + dx, y + dy))
+                    {
+                        receivers++;
+                    }
                 }
             }
 
             float share = HumidityField.Unit / receivers;
-            world.Humidity.Add(x, y, share);
-            for (int k = 0; k < 4; k++)
+            for (int dy = -radius; dy <= radius; dy++)
             {
-                int nx = x + NeighbourX[k];
-                int ny = y + NeighbourY[k];
-                if (world.IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(world, nx, ny))
+                for (int dx = -radius; dx <= radius; dx++)
                 {
-                    world.Humidity.Add(nx, ny, share);
+                    if (world.IsInBounds(x + dx, y + dy) && ParticleRules.IsGasOrEmpty(world, x + dx, y + dy))
+                    {
+                        world.Humidity.Add(x + dx, y + dy, share);
+                    }
                 }
             }
         }
 
-        private static readonly int[] NeighbourX = { -1, 1, 0, 0 };
-        private static readonly int[] NeighbourY = { 0, 0, -1, 1 };
+        /// <summary>
+        /// 慢蒸发能不能发生：正上方必须是气体/空（**只在液面蒸发**，水下的水不会凭空变成气泡），
+        /// 且撒播范围内所有气体格都还够干（低于 <see cref="SlowSpreadHumidityCap"/>）。
+        /// 后者是"慢蒸发不可见"的保证：加完这一次的份额，最湿的一格仍低于可见阈值。
+        /// </summary>
+        private static bool CanEvaporateSlowly(ParticleWorld world, int x, int y)
+        {
+            if (!ParticleRules.IsGasOrEmpty(world, x, y + 1))
+            {
+                return false;
+            }
+
+            for (int dy = -SlowSpreadRadius; dy <= SlowSpreadRadius; dy++)
+            {
+                for (int dx = -SlowSpreadRadius; dx <= SlowSpreadRadius; dx++)
+                {
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (world.IsInBounds(nx, ny) && ParticleRules.IsGasOrEmpty(world, nx, ny)
+                        && world.Humidity.Get(nx, ny) >= SlowSpreadHumidityCap)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
 
         public void OnUpdate(ParticleWorld world, int x, int y)
         {
@@ -102,24 +148,32 @@ namespace TapTap2026.Simulation
             // 水热容 4.2、大气 1，同一份热让湿空气更烫，浮力把它往上推。
             float temperature = world.Heat.GetTemperature(x, y);
 
-            // 剧烈蒸发：达到沸点必定蒸发。
-            // 常温蒸发：不到沸点但够暖时以低概率蒸发——现实里水在任何温度都蒸发，
-            //           海洋不用被烤沸也在持续向大气供水。
-            bool evaporates = temperature >= BoilingPoint
-                || (temperature >= SlowEvaporationTemperature
-                    && world.NextUInt() % SlowEvaporationDenominator == 0u);
+            // 剧烈蒸发：达到沸点必定蒸发（沸腾是唯一会产生**可见**水汽的路径）。
+            bool boiling = temperature >= BoilingPoint;
 
-            // 空气已经吸饱了就不能再蒸发（饱和水汽压的等效表达）：否则海洋会一路蒸干、
-            // 水汽摊成满天薄雾，永远达不到降水阈值。
-            // 看的是**水面之上的空气**——液体格按不变量永远持有 0 湿度，查自己等于没查。
-            if (evaporates && world.Humidity.Get(x, y + 1) >= HumidityField.EvaporationCeiling)
+            // 常温蒸发：不到沸点但够暖时以低概率蒸发——现实里水在任何温度都蒸发，海洋不用被烤沸也在供水。
+            bool slow = !boiling
+                && temperature >= SlowEvaporationTemperature
+                && world.NextUInt() % SlowEvaporationDenominator == 0u;
+
+            // 慢蒸发只在**水面**、且周围空气还够干时发生（见 CanEvaporateSlowly）——
+            // 这是"慢蒸发不可见"的保证。
+            if (slow && !CanEvaporateSlowly(world, x, y))
             {
-                evaporates = false;
+                slow = false;
             }
 
-            if (evaporates)
+            // 沸腾也要看空气吸饱没有（饱和水汽压）：吸饱了就等输送把水汽带走再继续。
+            // 看的是**水面之上的空气**——液体格按不变量永远持有 0 湿度，查自己等于没查。
+            if (boiling && world.Humidity.Get(x, y + 1) >= HumidityField.EvaporationCeiling)
             {
-                Evaporate(world, x, y);
+                boiling = false;
+            }
+
+            if (boiling || slow)
+            {
+                // 沸腾：水汽集中原地 → 可见汽团；慢蒸发：摊成一大片 → 看不见，只让湿度稳步升高。
+                Evaporate(world, x, y, boiling ? BoilingSpreadRadius : SlowSpreadRadius);
                 return;
             }
 

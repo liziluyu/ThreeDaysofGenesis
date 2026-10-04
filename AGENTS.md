@@ -9,7 +9,7 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 ## Architecture & Data Flow
 
 - **分层**（程序集边界即架构边界）：
-  - `TapTap2026.Simulation`（`Assets/Scripts/Simulation/`）：纯模拟，**不引用任何渲染对象**。扁平 `Cell[]`（4 字节/格）+ `(x,y)` 直接寻址；类型行为经全局静态注册表（`ParticleRegistry`）以 `typeId → 委托` 直调，热路径零分配、零虚分派。世界另持两张与网格同形的场：热图 `HeatMap`（每格存热量 Q）与**湿度场** `HumidityField`（每格存水汽，只有非固非液的格持有；云 = 湿度高的空气，不是粒子），外加光照控制器 `LightController`。湿度像热量一样传播，但带温度定向——水平冷→热、竖直越热越向上；水蒸发往湿度场加水汽，低温饱和处凝结成雨。温度是导出量 `T = Q / 类型热容`；热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）；`Step` 每 tick 在粒子扫描后自动做一次全格四邻热传导（传导界内守恒）+ 两条散热路（顶行向虚空 `VoidHeatLoss`、**只作用于暴露面**并按材料辐射率 ε 缩放的辐射 `RadiativeLoss`）+ 湿度输送（扩散 + 温度定向）与降雨，再由光照向「每列最上面的非气体粒子（固体或液体——光打到水面就停）」施热——持续受热的暴露格就近收敛到 `T ≈ 输入功率 / (RadiativeLoss · 该材料 ε)`。粒子经 `world.Heat.GetTemperature/GetHeat/AddHeat` 查改温度。
+  - `TapTap2026.Simulation`（`Assets/Scripts/Simulation/`）：纯模拟，**不引用任何渲染对象**。扁平 `Cell[]`（4 字节/格）+ `(x,y)` 直接寻址；类型行为经全局静态注册表（`ParticleRegistry`）以 `typeId → 委托` 直调，热路径零分配、零虚分派。世界另持两张与网格同形的场：热图 `HeatMap`（每格存热量 Q）与**湿度场** `HumidityField`（每格存水汽，只有非固非液的格持有；云 = 湿度高的空气，不是粒子），外加光照控制器 `LightController`。湿度像热量一样传播，但带温度定向——水平冷→热、竖直越热越向上；水**沸腾**时把水汽集中成一小片（可见白汽），**平时慢蒸发**只把水汽摊薄进空气（不可见，且只在液面）——所以可见的水蒸气只在沸腾时出现；低温饱和处凝结成雨。温度是导出量 `T = Q / 类型热容`；热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 重置 Q）；`Step` 每 tick 在粒子扫描后自动做一次全格四邻热传导（传导界内守恒）+ 两条散热路（顶行向虚空 `VoidHeatLoss`、**只作用于暴露面**并按材料辐射率 ε 缩放的辐射 `RadiativeLoss`）+ 湿度输送（扩散 + 温度定向）与降雨，再由光照向「每列最上面的非气体粒子（固体或液体——光打到水面就停）」施热，且**按该列云量（整列湿度之和）做 Beer–Lambert 衰减**——云越厚，地表越晒不到——持续受热的暴露格就近收敛到 `T ≈ 输入功率 / (RadiativeLoss · 该材料 ε)`。粒子经 `world.Heat.GetTemperature/GetHeat/AddHeat` 查改温度。
   - `TapTap2026.Game`（`Assets/Scripts/Driver/` + `Assets/Scripts/Rendering/`）：引用 Simulation。`ParticleSimulationDriver`（MonoBehaviour）用固定步长累加器推进 `Step()`，并唯一决定上屏时机；`ParticleRenderer` 把 `Cell[]` 经 `ParticlePixelBuffer.Fill` 映射成一张 `Texture2D`，整个网格只有 1 个渲染对象。
   - `TapTap2026.Editor`（`Assets/Scripts/Editor/`，仅 Editor 平台）：编辑器工具，当前只有 `SystemProxyGuard`——系统代理 Mono 解析失败时把 `WebRequest.DefaultWebProxy` 钉为直连（见 MCP 一节）。
 - **跨类型规则只看标签不看 typeId**：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。新增粒子类型 = 一个文件 + `ParticleRegistration.RegisterAll()` 追加一行 + `ParticleIds` 加一个字段（只能追加，顺序是存档兼容性的一部分）。当前类型：石头 / 沙 / 土 / 水 / 大气（蒸汽与云已并入**湿度场**，不再是粒子）。流程与评审清单见文档 §11。
@@ -22,11 +22,11 @@ TapTap2026 is a **Unity 2022.3.62f1** project using **URP 14.0.12 with the 2D Re
 |---|---|
 |`Assets/Scenes/SampleScene.unity`|唯一的场景；唯一启用的 build 场景。|
 |`Assets/Scripts/Simulation/`|模拟内核 + 粒子类型（`Particles/`）。`TapTap2026.Simulation.asmdef`。|
-|`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 显式 `Reseed()` 搭演示容器、`ParticleEditor` 左键刷当前粒子、滚轮调半径 1..10、右键切换类型、鼠标旁显示当前类型与半径、`ParticleLightDriver` 把光照的开关/亮暗刻数/强度接到 `world.Light`）。|
+|`Assets/Scripts/Driver/`|固定步长驱动 + `ParticleSimulationSettings`（ScriptableObject）+ 沙箱演示/调试组件（`ParticleSandboxSeeder` 显式 `Reseed()` 搭演示容器、`ParticleEditor` 左键刷当前粒子、滚轮调半径 1..10、右键切换类型、鼠标旁显示当前类型与半径、屏幕左上角显示光标格的粒子名/温度/热量/湿度、`ParticleLightDriver` 把光照的开关/亮暗刻数/强度接到 `world.Light`）。|
 |`Assets/Scripts/Rendering/`|`ParticleRenderer`（Color32 缓冲 + Texture2D + quad）。|
 |`Assets/Scripts/Editor/`|仅编辑器程序集 `TapTap2026.Editor`：`SystemProxyGuard`（系统代理自愈，保 Unity-MCP 连通）。|
 |`Assets/Data/`|实例化的配置资产：`ParticleSimulationSettings.asset`（场景驱动引用；含网格尺寸、tick 频率、`_conductivity`/`_voidHeatLoss`/`_radiativeLoss`/`_airThermalConductivity`/`_airThermalEmissivity` 热力学参数）。|
-|`Assets/Tests/EditMode/`|EditMode 测试（95 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）+ `WaterParticleTests` / `WeatherParticleTests`（水、湿度场与气象）。|
+|`Assets/Tests/EditMode/`|EditMode 测试（98 个）：`ParticleWorldTests`（隔离类型表）+ `SandStoneParticleTests`（生产注册路径）+ `WaterParticleTests` / `WeatherParticleTests`（水、湿度场与气象）。|
 |`docs/`|设计文档（`ParticleTypeInterface.md`）。在 `Assets/` 之外，Unity 不导入，无需 `.meta`。|
 |`Assets/Settings/`|URP 配置：`UniversalRP.asset`、`Renderer2D.asset` 等。|
 |`Assets/Plugins/NuGet/`|MCP 插件的 NuGet 依赖 DLL（LFS 跟踪），由插件安装器生成，**不要手改**。|
@@ -90,7 +90,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 
 ## Testing & QA
 
-- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **95 个测试**（`ParticleWorldTests` 72 + `SandStoneParticleTests` 2 + `WaterParticleTests` 6 + `WeatherParticleTests` 15）。
+- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **98 个测试**（`ParticleWorldTests` 72 + `SandStoneParticleTests` 2 + `WaterParticleTests` 6 + `WeatherParticleTests` 18）。
 - 约定：测试用**隔离类型表**（`new ParticleWorld(w, h, seed, types)` 四参构造 + 测试专用 `ParticleType[]`），不污染全局注册表；生产注册路径的测试（`RegisterAll` 回填）集中在 `SandStoneParticleTests` 与 `WeatherParticleTests`（跨类型相变依赖 `ParticleIds` 回填，必须走生产表）。
 - **运行方式**（按可用性排序）：MCP `tests-run`（编辑器在线）→ Test Runner 窗口 → 批处理命令（编辑器离线）。
 - PlayMode：`testables` 未配置、`playModeTestRunnerEnabled: 0`，暂不支持。

@@ -128,6 +128,8 @@ namespace TapTap2026.Tests
             Assert.AreEqual(HumidityField.Unit, world.Humidity.Sum(), 1e-3f, "一个水格应蒸发出一个水格的湿度");
             Assert.Greater(world.Humidity.Get(4, 4), 0f, "本格湿度升高");
             Assert.Greater(world.Humidity.Get(5, 4), 0f, "邻近格子也被提高（附近的湿度）");
+            Assert.GreaterOrEqual(world.Humidity.Get(4, 4), HumidityField.VisibleThreshold,
+                "沸腾的水汽集中在原地，必须**看得见**（这正是「水蒸气只在沸腾时出现」里「出现」的那一半）");
             Assert.AreEqual(WaterParticle.BoilingPoint * capacity, world.Heat.GetHeat(4, 4), 1e-3f, "相变携带热量");
         }
 
@@ -143,6 +145,76 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 3).typeId, "水正常下落");
             Assert.AreEqual(0f, world.Humidity.Sum(), 1e-3f, "不产生湿度");
+        }
+
+        /// <summary>
+        /// 慢蒸发**不可见**、且只在液面发生：一整盆水保持在慢蒸发温区（20 ≤ T &lt; 80）跑够久，
+        /// 头顶那片（很小、又关掉输送的）空气也不得被湿度染到可见阈值；水里也不得出现气泡。
+        /// 天空刻意做小、输送全关，好让"累积"成为唯一变数——这正是 <c>SlowSpreadHumidityCap</c> 的把关点：
+        /// 没有它，反复慢蒸发会把空气越攒越湿，很快就现出白汽。
+        /// </summary>
+        [Test]
+        public void SlowEvaporation_IsInvisible_AndHappensOnlyAtTheSurface()
+        {
+            const int width = 40;
+            const int height = 34; // 水 y=0..23，空气 y=24..33（天很小，累积很快）
+            ParticleWorld world = new ParticleWorld(width, height, 7u);
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0f;
+            world.Light.Enabled = false;
+            world.Humidity.Diffusion = 0f;
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f; // 关掉一切输送：只看"慢蒸发会不会攒出可见水汽"
+
+            float capacity = ParticleRegistry.Types[ParticleIds.Water].Info.HeatCapacity;
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (y < 24)
+                    {
+                        world.Set(x, y, ParticleIds.Water);
+                        world.Heat.SetHeat(x, y, 30f * capacity); // T = 30，慢蒸发温区
+                    }
+                    else
+                    {
+                        world.Set(x, y, ParticleIds.Atmosphere);
+                    }
+                }
+            }
+
+            for (int t = 0; t < 8000; t++)
+            {
+                world.Step();
+            }
+
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                ushort id = world.Cells[i].typeId;
+                if (id == ParticleRegistry.AirTypeId || id == ParticleIds.Atmosphere)
+                {
+                    Assert.Less(world.Humidity.GetAt(i), HumidityField.VisibleThreshold,
+                        "慢蒸发不得产生可见水汽（下标 " + i + "）");
+                }
+            }
+
+            for (int x = 0; x < width; x++)
+            {
+                bool sawGas = false;
+                for (int y = 0; y < height; y++)
+                {
+                    ushort id = world.GetCell(x, y).typeId;
+                    if (id == ParticleIds.Atmosphere)
+                    {
+                        sawGas = true;
+                    }
+                    else if (id == ParticleIds.Water)
+                    {
+                        Assert.IsFalse(sawGas, "水下方不得出现气泡（慢蒸发只在液面，列 " + x + "）");
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -362,6 +434,90 @@ namespace TapTap2026.Tests
             Assert.Greater(pixels[1].r, background.r, "满湿的格子被染白");
             Assert.Greater(pixels[1].r, pixels[2].r, "越湿越白");
             Assert.Greater(pixels[2].r, background.r, "淡云也比背景亮");
+        }
+
+        /// <summary>云遮光：每列的云层厚度（该列湿度之和）越大，传到该列地表的能量越少（Beer–Lambert）。</summary>
+        [Test]
+        public void Light_CloudCoverAttenuatesTheHeatReachingTheSurface()
+        {
+            ParticleWorld clear = LightingColumn(0f);
+            ParticleWorld thin = LightingColumn(0.25f);
+            ParticleWorld thick = LightingColumn(1f);
+
+            clear.Step();
+            thin.Step();
+            thick.Step();
+
+            float cloudless = clear.Heat.GetHeat(0, 0);
+            float thinHeat = thin.Heat.GetHeat(0, 0);
+            float thickHeat = thick.Heat.GetHeat(0, 0);
+
+            Assert.AreEqual(ColumnLightIntensity, cloudless, 1e-3f, "无云时地表拿满光照");
+            Assert.Less(thinHeat, cloudless, "有云就比无云弱");
+            Assert.Less(thickHeat, thinHeat, "云越厚，传到地表的光照越弱");
+
+            float expected = ColumnLightIntensity
+                * (float)System.Math.Exp(-LightController.DefaultCloudExtinction * 0.5f);
+            Assert.AreEqual(expected, thinHeat, 1e-3f, "透过率 = exp(-CloudExtinction × 列湿度总量)");
+            Assert.AreEqual(0.5f, thin.Light.GetCloudThickness(0), 1e-3f, "云层厚度 = 该列湿度之和");
+        }
+
+        /// <summary>云遮光是**逐列**的：一列有云不会连累旁边那列（云层厚度按列维护，不是全局平均）。</summary>
+        [Test]
+        public void Light_CloudCoverIsPerColumn()
+        {
+            ParticleType[] types = TestTables.Build(new AtmosphereParticle(), new TestStaticParticle());
+            var world = new ParticleWorld(2, 3, 7u, types);
+            for (int x = 0; x < 2; x++)
+            {
+                world.Set(x, 0, 2); // 地表
+                world.Set(x, 1, 1); // 空气
+                world.Set(x, 2, 1);
+            }
+
+            world.Humidity.Set(1, 1, 0.25f); // 只有右列有云
+            world.Humidity.Set(1, 2, 0.25f);
+            IsolateLighting(world);
+
+            world.Step();
+
+            Assert.AreEqual(ColumnLightIntensity, world.Heat.GetHeat(0, 0), 1e-3f, "无云的那一列照常拿满光照");
+            Assert.Less(world.Heat.GetHeat(1, 0), ColumnLightIntensity, "有云的那一列地表被削弱");
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-3f, "左列无云");
+            Assert.AreEqual(0.5f, world.Light.GetCloudThickness(1), 1e-3f, "右列云层厚度 = 0.25 + 0.25");
+        }
+
+        private const float ColumnLightIntensity = 5f;
+
+        /// <summary>1 列 3 高的受光世界：底格是地表（静态固体、热容 1），上面两格空气；两格空气各含湿度 humidityPerAirCell。</summary>
+        private static ParticleWorld LightingColumn(float humidityPerAirCell)
+        {
+            ParticleType[] types = TestTables.Build(new AtmosphereParticle(), new TestStaticParticle());
+            var world = new ParticleWorld(1, 3, 7u, types);
+            world.Set(0, 0, 2); // 地表（TestStaticParticle）
+            world.Set(0, 1, 1); // 大气
+            world.Set(0, 2, 1);
+            world.Humidity.Set(0, 1, humidityPerAirCell);
+            world.Humidity.Set(0, 2, humidityPerAirCell);
+            IsolateLighting(world);
+            return world;
+        }
+
+        /// <summary>关掉除光照以外的一切热量/湿度输运，让断言只反映「光照 × 云层透过率」。</summary>
+        private static void IsolateLighting(ParticleWorld world)
+        {
+            HeatMap heat = world.Heat;
+            heat.Conductivity = 0f;
+            heat.VoidHeatLoss = 0f;
+            heat.RadiativeLoss = 0f;
+            heat.AirThermalConductivity = 0f;
+            world.Humidity.Diffusion = 0f;
+            world.Humidity.HorizontalBias = 0f;
+            world.Humidity.RiseBias = 0f;
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 100000;
+            world.Light.DarkTicks = 0;
+            world.Light.Intensity = ColumnLightIntensity;
         }
     }
 }
