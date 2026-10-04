@@ -5,6 +5,7 @@ namespace TapTap2026.Tests
 {
     /// <summary>
     /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿、确定性、
+    /// 孤立水滴静止不抖动（平地 / 世界底行）、
     /// 液体热对流（暖水换位 / 死区 / 不抢下落 / 夜间海面反超陆面的涌现回归），
     /// 以及蒸发（慢蒸发不可见 / 沸腾可见 / 潜热吸热）与生产注册路径的回填与标签。
     /// </summary>
@@ -170,6 +171,47 @@ namespace TapTap2026.Tests
             Assert.AreEqual(width, RowCount(world, WaterId, 2), "第二层应铺满全宽");
             Assert.AreEqual(0, RowCount(world, WaterId, 3), "第三层应全空（表面严格水平）");
         }
+
+        /// <summary>
+        /// 观感回归：孤立水滴躺在平地（下面是石头、两侧是空气）上必须**静止**——
+        /// 往哪边流都不会更低。旧的横流「见空格就跳」，水滴会以 60 Hz 在原地左右瞬移抖动。
+        /// 逐 tick 断言位置，抓瞬时离位而不是只看终点。
+        /// </summary>
+        [Test]
+        public void Water_RestsAlone_OnFlatFloor()
+        {
+            ParticleWorld world = CreateWorld(16, 8);
+            FillRow(world, 0, StoneId);
+            world.Set(8, 1, WaterId);
+
+            for (int i = 0; i < 120; i++)
+            {
+                world.StepLogic();
+                Assert.AreEqual(WaterId, world.GetCell(8, 1).typeId,
+                    $"第 {i} tick：孤立水滴不该离开原地（原地抖动回归）");
+                Assert.AreEqual(1, CountType(world, WaterId), "水量守恒");
+            }
+        }
+
+        /// <summary>
+        /// 同上，但水滴直接躺在**世界底行**（正下方越界）上：
+        /// 落差视野不得把越界当成「还能继续落」，否则底行水滴会永远往两侧流。
+        /// </summary>
+        [Test]
+        public void Water_RestsAlone_OnWorldBottomRow()
+        {
+            ParticleWorld world = CreateWorld(16, 8);
+            world.Set(8, 0, WaterId);
+
+            for (int i = 0; i < 120; i++)
+            {
+                world.StepLogic();
+                Assert.AreEqual(WaterId, world.GetCell(8, 0).typeId,
+                    $"第 {i} tick：底行上的孤立水滴不该离开原地（越界当落差回归）");
+                Assert.AreEqual(1, CountType(world, WaterId), "水量守恒");
+            }
+        }
+
 
         /// <summary>
         /// rank 规则的集成验证：沙（Solid，rank 3）从水柱上方落下，沉穿水到底；

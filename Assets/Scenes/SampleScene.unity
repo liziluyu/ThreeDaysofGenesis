@@ -397,7 +397,7 @@ MonoBehaviour:
   _widthOverride: 200
   _heightOverride: 100
   _heatDebugOverlay: 0
-  _heatDebugFullScale: 10
+  _heatDebugFullScale: 100
 --- !u!114 &1926363751
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -450,6 +450,13 @@ MonoBehaviour:
   _brushRadius: 3
   _drawHud: 1
   _pauseKey: 32
+  _unplaceableTypes:
+  - GrassParticle
+  - WetSoilParticle
+  - HumusParticle
+  - HumusSoilParticle
+  _singlePlacementTypes:
+  - GrassSeedParticle
 --- !u!114 &1926363754
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -467,7 +474,8 @@ MonoBehaviour:
   _litTicks: 600
   _darkTicks: 600
   _intensity: 10
-  _transitionTicks: 60
+  _transitionTicks: 2
+  _cloudExtinction: 0.05
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

@@ -333,7 +333,7 @@ namespace TapTap2026.Simulation
         /// 同 rank 只对**流体**（Liquid / Gas）放行——固体穿过同类固体等于凭空钻过去，
         /// 被穿过的格子原地不动，会破坏「同类互不置换 ⇒ 沙堆成形」的直觉。
         /// </summary>
-        private static bool CanFlowThrough(ParticleWorld world, int fromX, int fromY, int toX, int toY)
+        public static bool CanFlowThrough(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
             ushort otherId = world.GetCell(toX, toY).typeId;
             if (otherId == ParticleRegistry.AirTypeId)

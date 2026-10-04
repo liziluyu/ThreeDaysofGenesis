@@ -7,7 +7,8 @@ namespace TapTap2026.Simulation
     /// 因此新增一种固体不需要改任何已有类型的代码。
     /// </summary>
     /// <remarks>
-    /// <para>目前只有三个标签：<see cref="Solid"/> / <see cref="Liquid"/> / <see cref="Gas"/>。
+    /// <para>三个**类别**标签 <see cref="Solid"/> / <see cref="Liquid"/> / <see cref="Gas"/> 决定 rank 次序；
+    /// 另有 <see cref="Organic"/> 这类**属性**标签（不参与 rank，只供具体规则判断，例如「有机物死亡留下腐殖质」）。
     /// 空气（<c>typeId == 0</c>）不属于任何标签，rank 视为 0。</para>
     /// <para>类别之间存在固定的「轻重」次序，用于判断谁能让开谁：</para>
     /// <code>Solid(3) &gt; Liquid(2) &gt; Gas(1) &gt; 空气(0)</code>
@@ -28,5 +29,13 @@ namespace TapTap2026.Simulation
 
         /// <summary>气体：可被固体/液体置换，通常自行向上升腾。</summary>
         Gas = 1 << 2,
+
+        /// <summary>
+        /// 有机物（属性标签，**不参与 rank**）：草、草种子等生物来源的物质。
+        /// 携带它的格被覆盖 / 抹除时，由 <see cref="ParticleWorld"/> 按
+        /// <see cref="ParticleWorld.OrganicDecayDenominator"/> 的概率就地留下腐殖质（<see cref="ParticleIds.Humus"/>）。
+        /// 必须与至少一个类别标签（Solid / Liquid / Gas）同时使用。
+        /// </summary>
+        Organic = 1 << 3,
     }
 }

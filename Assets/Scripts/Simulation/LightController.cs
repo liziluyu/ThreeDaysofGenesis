@@ -18,6 +18,9 @@ namespace TapTap2026.Simulation
     /// <see cref="ParticleTags.Liquid"/> 标签的格，就往那格加 <see cref="Intensity"/> 的热量 Q
     /// （不是温度——升温多少还取决于该物质的热容）。光只穿过气体：海洋是表面被晒热、表面蒸发，
     /// 而不是被穿透过热海底。</para>
+    /// <para>**材料光照吸收率**：到达格子的能量还要乘上该材料的光照吸收率
+    /// <see cref="ParticleTypeInfo.LightAbsorption"/> ∈ [0,1]（1 = 完全吸收；0 = 全反射、光照不升温）。
+    /// 用来表达「浅色 / 反光的表面（如草）在阳光下升温更慢」——草取 0.8（略减弱）。</para>
     /// <para>**云会遮光**：施热时自顶向下逐格累加**光路上**的湿度（遇第一个固/液格即止），
     /// 按 Beer–Lambert 衰减，到达地表的能量是
     /// <c>Intensity × exp(-<see cref="CloudExtinction"/> × 光路湿度)</c>（即 <see cref="GetCloudTransmittance"/>）。
@@ -252,6 +255,27 @@ namespace TapTap2026.Simulation
             _elapsed++;
         }
 
+        /// <summary>
+        /// (x,y) 材料的光照吸收率（<see cref="ParticleTypeInfo.LightAbsorption"/>）：光照注入本格时按它缩放。
+        /// 空气 / 越界 / 空槽一律返回 1（空气不是光程终点，正常不会走到这里）。
+        /// </summary>
+        private static float LightAbsorptionAt(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            if (id == ParticleRegistry.AirTypeId)
+            {
+                return 1f;
+            }
+
+            ParticleType[] types = world.Types;
+            if (id >= types.Length || types[id] == null)
+            {
+                return 1f;
+            }
+
+            return types[id].Info.LightAbsorption;
+        }
+
         private void ApplyHeat(ParticleWorld world, float amount)
         {
             HeatMap heat = world.Heat;
@@ -269,7 +293,8 @@ namespace TapTap2026.Simulation
                 {
                     if (ParticleRules.BlocksLight(world, x, y))
                     {
-                        float reach = amount * CloudTransmittance(thickness);
+                        // 按本格材料的光照吸收率缩放（浅色 / 反光表面升温更慢；草用 0.8）。
+                        float reach = amount * CloudTransmittance(thickness) * LightAbsorptionAt(world, x, y);
                         if (reach > 0f)
                         {
                             heat.AddHeat(x, y, reach);

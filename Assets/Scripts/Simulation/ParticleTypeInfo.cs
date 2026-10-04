@@ -8,8 +8,8 @@ namespace TapTap2026.Simulation
     public readonly struct ParticleTypeInfo
     {
         /// <summary>
-        /// 类别标签（Solid / Liquid / Gas）。跨类型的通用规则只看它，不看具体类型。
-        /// 至少应带一个标签。
+        /// 类别标签（Solid / Liquid / Gas）与属性标签（<see cref="ParticleTags.Organic"/>）。跨类型的通用规则只看它，不看具体类型。
+        /// 至少应带一个**类别**标签（Solid / Liquid / Gas）；<see cref="ParticleTags.Organic"/> 是属性标签，不参与 rank，可与类别标签并用。
         /// </summary>
         public readonly ParticleTags Tags;
 
@@ -56,7 +56,7 @@ namespace TapTap2026.Simulation
         /// <summary>静态类型（墙体等）。扫描时直接跳过，永不进入 <c>OnMotion</c> / <c>OnLogic</c>。</summary>
         public readonly bool IsStatic;
 
-        /// <summary>最大横流格数：单 tick 内单侧最多蔓延多少格。</summary>
+        /// <summary>最大横流格数：单 tick 内单侧最多蔓延多少格。水的带闸门横流（<see cref="WaterParticle"/>）只横移 1 格，把它用作「落差视野」的扫描范围。</summary>
         public readonly byte MaxFlowSpread;
 
         /// <summary>
@@ -85,6 +85,14 @@ namespace TapTap2026.Simulation
         /// </remarks>
         public readonly float Stickiness;
 
+        /// <summary>
+        /// 光照吸收率 ∈ [0, 1]：光照向本格注入热量时按它缩放（1 = 完全吸收、按 <see cref="LightController"/>
+        /// 的强度升温；0 = 全反射、光照不升温）。只被 <see cref="LightController"/> 读取：
+        /// 到达的每刻热量 = <c>Intensity × 云透过率 × LightAbsorption</c>。用来表达「浅色 / 反光的表面
+        /// （如草）在阳光下升温更慢」。**不影响热传导与辐射**（那两个各有 σ / ε）。
+        /// </summary>
+        public readonly float LightAbsorption;
+
         /// <summary>调色板，长度 1..256。<see cref="Cell.shade"/> 直接作为下标。</summary>
         public readonly Color32[] Palette;
 
@@ -103,7 +111,8 @@ namespace TapTap2026.Simulation
             float friction,
             float stickiness,
             Color32[] palette,
-            string debugName)
+            string debugName,
+            float lightAbsorption = 1f)
         {
             Tags = tags;
             Density = density;
@@ -117,6 +126,7 @@ namespace TapTap2026.Simulation
             Stickiness = stickiness;
             Palette = palette;
             DebugName = debugName;
+            LightAbsorption = lightAbsorption;
         }
     }
 }

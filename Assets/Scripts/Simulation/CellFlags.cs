@@ -54,6 +54,21 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="DriftDirectionMask"/> 在 <c>flags</c> 里的右移位数。</summary>
         public const int DriftDirectionShift = 3;
 
+        /// <summary>
+        /// bit5-6：**草种子私有**（<see cref="GrassSeedParticle"/>）——「被随机刻命中但没有发芽条件」的
+        /// 连续计数（0..<see cref="GrassSeedParticle.MaxStrikesBeforeHumus"/>）。与
+        /// <see cref="DriftDirectionMask"/> 同一写法：读取用本掩码、清除用
+        /// <see cref="SeedStrikeClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（尤其保留 bit0）。
+        /// 草种子在自身文件头部登记了该占用。
+        /// </summary>
+        public const byte SeedStrikeMask = 0x60;
+
+        /// <summary><see cref="SeedStrikeMask"/> 的清除掩码（<c>~0x60 &amp; 0xFF</c>）。</summary>
+        public const byte SeedStrikeClearMask = 0x9F;
+
+        /// <summary><see cref="SeedStrikeMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int SeedStrikeShift = 5;
+
         /// <summary>风向记忆：无（尚未漂移，或记忆已被浮力等非水平运动清除）。</summary>
         public const byte DriftDirectionNone = 0;
 

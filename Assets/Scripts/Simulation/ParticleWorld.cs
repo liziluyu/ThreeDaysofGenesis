@@ -19,6 +19,13 @@ namespace TapTap2026.Simulation
         /// <summary>单边最大格数。</summary>
         public const int MaxSide = 4096;
 
+        /// <summary>
+        /// 有机物衰变概率的分母：带 <see cref="ParticleTags.Organic"/> 标签的格被覆盖 / 抹除时，
+        /// 有 <c>1 / 本值 = 1/5 = 20%</c> 的概率就地把该格变成腐殖质（<see cref="ParticleIds.Humus"/>）。
+        /// 判据只看标签不看 typeId；每次有机物死亡都会摇一次骰（消耗一个随机数，保持确定性）。
+        /// </summary>
+        public const uint OrganicDecayDenominator = 5u;
+
         private const uint DefaultSeed = 0x9E3779B9u;
 
         /// <summary>四邻偏移（<see cref="EvacuateHumidity"/> 用；提成静态数组避免每次降雨都分配）。</summary>
@@ -414,6 +421,7 @@ namespace TapTap2026.Simulation
             if (typeId == ParticleRegistry.AirTypeId)
             {
                 cell.shade = 0;
+                MaybeLeaveHumus(previousId, typeId, x, y);
                 return true;
             }
 
@@ -421,7 +429,54 @@ namespace TapTap2026.Simulation
             Color32[] palette = type.Info.Palette;
             cell.shade = (byte)(NextUInt() % (uint)palette.Length);
             type.OnSpawn(this, x, y);
+            MaybeLeaveHumus(previousId, typeId, x, y);
             return true;
+        }
+
+        /// <summary>
+        /// 有机物死亡的衰变：<paramref name="previousId"/> 带 <see cref="ParticleTags.Organic"/> 标签、
+        /// 且新类型不带该标签时，有 <c>1/<see cref="OrganicDecayDenominator"/></c>（20%）的概率把这一格
+        /// 就地变成腐殖质（<see cref="ParticleIds.Humus"/>）。
+        /// </summary>
+        /// <remarks>
+        /// 为什么放在世界里而不是类型的 <c>OnKill</c>：<c>OnKill</c> 在写入新格**之前**调用，
+        /// 它对自身格的写入会被随后写入的新格覆盖（见 ParticleTypeInterface.md §6）。要让「死掉的有机体
+        /// 变成腐殖质」真正落到这一格，只能在写完新格之后改判——与 <see cref="StepRain"/> 直接引用
+        /// <see cref="ParticleIds.Water"/> 同理，是世界的**通用过程**（判据只看标签，产物是固定的腐殖质）。
+        /// 摇骰只对「有机物被非有机物替换」发生，因此普通死亡路径的随机流不受影响、依旧可复现。
+        /// </remarks>
+        private void MaybeLeaveHumus(ushort previousId, ushort newId, int x, int y)
+        {
+            if (!IsOrganic(previousId) || IsOrganic(newId))
+            {
+                return;
+            }
+
+            if (NextUInt() % OrganicDecayDenominator != 0u)
+            {
+                return;
+            }
+
+            // OnSpawn 可能已把本格改成别的类型（相变链）；只在仍是刚写入的类型时才留下腐殖质。
+            if (_cells[y * _width + x].typeId != newId)
+            {
+                return;
+            }
+
+            // 走 SetPhase：腐殖质是新物质从环境热量开始，且再触发不了本规则（新类型非有机）。
+            SetPhase(x, y, ParticleIds.Humus);
+        }
+
+        /// <summary>(x,y) 上的粒子是否带 <see cref="ParticleTags.Organic"/> 标签。空气 / 越界 / 空槽一律 false。</summary>
+        private bool IsOrganic(ushort typeId)
+        {
+            if (typeId == ParticleRegistry.AirTypeId || typeId >= _types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = _types[typeId];
+            return type != null && (type.Info.Tags & ParticleTags.Organic) != 0;
         }
 
         /// <summary>抹除 (x,y)：等价于 <c>Set(x, y, AirTypeId)</c>，会触发原类型的 <c>OnKill(world, x, y, 0)</c>。</summary>
@@ -504,6 +559,7 @@ namespace TapTap2026.Simulation
                 _types[typeId].OnSpawn(this, x, y);
             }
 
+            MaybeLeaveHumus(previousId, typeId, x, y);
             return true;
         }
 

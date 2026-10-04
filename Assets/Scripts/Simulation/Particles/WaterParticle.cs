@@ -5,7 +5,7 @@ namespace TapTap2026.Simulation
     // WaterParticle —— 水（液体标签，摩擦度/粘性不读，填 0；热容 6.5，约为固体的 7~10 倍）
     //
     // flags 私有位：无（bit3-7 全部空闲）
-    // 邻居查询范围：正下、左下/右下、同行左右各 MaxFlowSpread 格（横流扫描）
+    // 邻居查询范围：正下、左下/右下、同行左右邻格、左右各 MaxFlowSpread 格（落差视野扫描）
     // 交互的 ParticleIds：无 —— 蒸发把水汽交给湿度场（HumidityField），水汽不以粒子形式存在
     //
     // 行为：开头先查温度做相变，然后才是液体运动。相变分两条路：
@@ -20,8 +20,13 @@ namespace TapTap2026.Simulation
     //       运动为四段固定优先级，成功即 return：
     //         1. TryFall：正下能进（空气 / 气体）就下落一格；同类水与固体都挡住；
     //         2. TryDiagonalFall（clearance 1）：正下被挡就沿坡斜滑——液体无安息角；
-    //         3. TryFlowHorizontal：左右随机序逐格扫描，移动到范围内第一个空气格，
-    //            单 tick 最多横跳 MaxFlowSpread 格——水因此在平地上摊成水平面；
+    //         3. TryFlow：每 tick 只横移 1 格（60 Hz 下足够快，不像多格瞬移那样刺眼），
+    //            左右随机序，且必须过两道闸门之一——(a) 身后有推：反侧同行邻格是液体，
+    //            连片水体把多余的水送往两侧、让低于水面的洞被逐格填平（摊平全靠它）；
+    //            (b) 落差视野：本侧 MaxFlowSpread 格内存在「正下方还能继续落」的格，
+    //            往低处 / 洞口铺（越界不算落差，底行上的水滴也能停住）。
+    //            两闸都不满足 = 往哪边流都不会更低（孤立水滴躺在平地 / 满水面上）→ 静止。
+    //            旧的「见空格就跳」让平地水滴以 60 Hz 原地随机瞬移、永不静止（观感回归）；
     //         4. TryLiquidConvect：前三段都动不了时，试一次液体热对流——比正上方暖 ε
     //            （LiquidConvectionEpsilon）就上浮一格（海洋翻转：白天顶加热是稳定分层、不翻转，
     //            热靠传导存进水柱；夜晚表面冷、深处暖，暖水持续上浮把存的热带回表面，
@@ -29,6 +34,9 @@ namespace TapTap2026.Simulation
     //       四段都走不通则本 tick 静止（比如躺在水底）。
     //       跨类型交互全部由标签 rank 产生：固体（rank 3）沉穿水，水被置换上浮；
     //       同类水互不置换但横流时可互相穿过（CanFlowThrough 对流体放行同 rank）。
+    //
+    //       随机刻（OnRandomTick）：冲刷——把半径 SandifyingRadius（2）格圆盘内的**第一个**土壤 / 湿土 /
+    //       腐殖土 SetPhase 成沙（固定扫描序 y 升序、同行 x 升序）。随机刻默认关闭，生产值由 Settings 注入。
     public sealed class WaterParticle : IParticleType
     {
         private static readonly Color32[] Palette =
@@ -217,18 +225,100 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // 前三段都走不动（竖直与横向都被同类 / 固体挡住，如躺在水底）时试一次热对流：
-            // 横流返回 bool，用 || 短路——流动成功就不再对流，优先级严格保持在下落 / 斜落 / 横流之后。
-            if (ParticleRules.TryFlowHorizontal(world, x, y, Info.MaxFlowSpread)
+            // 竖直都走不动时先试横流，再试热对流：横流返回 bool，用 || 短路——
+            // 流动成功就不再对流，优先级严格保持在下落 / 斜落 / 横流之后。
+            if (TryFlow(world, x, y)
                 || ParticleRules.TryLiquidConvect(world, x, y, LiquidConvectionEpsilon))
             {
                 return;
             }
         }
 
+        /// <summary>
+        /// 横流：每 tick 只横移 1 格，左右顺序随机以消除方向偏置。
+        /// 两道闸门（见类注释 stage 3）都不满足时静止——孤立水滴躺在平地 / 满水面上时
+        /// 往哪边流都不会更低，流动只会带来原地抖动。
+        /// </summary>
+        private bool TryFlow(ParticleWorld world, int x, int y)
+        {
+            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            return leftFirst
+                ? TryFlowSide(world, x, y, -1) || TryFlowSide(world, x, y, 1)
+                : TryFlowSide(world, x, y, 1) || TryFlowSide(world, x, y, -1);
+        }
+
+        private bool TryFlowSide(ParticleWorld world, int x, int y, int direction)
+        {
+            int targetX = x + direction;
+            if (!ParticleRules.CanDisplace(world, x, y, targetX, y))
+            {
+                return false;
+            }
+
+            // 闸门一「身后有推」：反侧同行邻格是液体 → 被推着走。
+            // 跨类型判断只走标签 rank，不特判 typeId。
+            if (ParticleRules.TagRank(ParticleRules.TagsAt(world, x - direction, y)) == ParticleRules.LiquidRank)
+            {
+                world.Swap(x, y, targetX, y);
+                return true;
+            }
+
+            // 闸门二「落差视野」：本侧同行 MaxFlowSpread 格内存在「正下方还能继续落
+            // （气体 / 空）」的格 → 往低处铺。视野途中被穿不过的格（固体）阻断即停。
+            // 正下方越界不算落差（IsGasOrEmpty 把越界当空气，见 CanEvaporateSlowly 的审计 B3），
+            // 否则躺在世界底行上的水滴会永远往两侧流。
+            for (int step = 1; step <= Info.MaxFlowSpread; step++)
+            {
+                int scanX = x + direction * step;
+                if (!world.IsInBounds(scanX, y) || !ParticleRules.CanFlowThrough(world, x, y, scanX, y))
+                {
+                    return false;
+                }
+
+                if (world.IsInBounds(scanX, y - 1) && ParticleRules.IsGasOrEmpty(world, scanX, y - 1))
+                {
+                    world.Swap(x, y, targetX, y);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>把附近土变成沙的搜索半径（格，欧氏距离）：只处理 dx²+dy² ≤ 半径² 的格。</summary>
+        public const int SandifyingRadius = 2;
+
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 水暂无随机刻行为：蒸发是每个逻辑帧的概率过程，已在 OnLogic 内按温度与概率处理。
+            // 冲刷：把半径 SandifyingRadius 格圆盘内的**第一个**土壤 / 湿土 / 腐殖土冲刷成沙。
+            // 固定扫描序（y 升序、同一行 x 升序）保证确定性（同种子逐格可复现）。
+            for (int dy = -SandifyingRadius; dy <= SandifyingRadius; dy++)
+            {
+                for (int dx = -SandifyingRadius; dx <= SandifyingRadius; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    if (dx * dx + dy * dy > SandifyingRadius * SandifyingRadius)
+                    {
+                        continue;
+                    }
+
+                    ushort targetId = world.GetCell(x + dx, y + dy).typeId;
+                    if (targetId != ParticleIds.Soil
+                        && targetId != ParticleIds.WetSoil
+                        && targetId != ParticleIds.HumusSoil)
+                    {
+                        continue;
+                    }
+
+                    // 同一份物质换形态：土壤 / 湿土 / 腐殖土 → 沙，热量 Q 留在该格。
+                    world.SetPhase(x + dx, y + dy, ParticleIds.Sand);
+                    return;
+                }
+            }
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
