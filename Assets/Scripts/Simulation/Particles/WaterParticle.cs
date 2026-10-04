@@ -45,7 +45,7 @@ namespace TapTap2026.Simulation
         /// 这也是水循环的主要供料路径——剧烈蒸发只在真正过热时补充。</summary>
         public const float SlowEvaporationTemperature = 20f;
 
-        /// <summary>常温蒸发概率分母（1/N 每 tick）。</summary>
+        /// <summary>常温蒸发概率分母（1/N 每逻辑帧；逻辑帧频率低于运动帧，等效速率按逻辑帧算）。</summary>
         public const int SlowEvaporationDenominator = 300;
 
         /// <summary>剧烈蒸发（沸腾）的播撒半径：1 = 3×3 一小片，每格浓度高 → 渲染成**可见**的白色汽团。</summary>

@@ -69,7 +69,7 @@ namespace TapTap2026.Simulation
                 brightness = 0f;
             }
 
-            // 云：湿度从 VisibleThreshold 到 RainThreshold 之间淡入到纯白。
+            // 云：湿度从 VisibleThreshold 到 CloudFullHumidity 之间淡入到纯白（RainThreshold 是降雨阈值，与渲染无关）。
             // 低于阈值完全不显示——否则近海面那种常年偏湿的空气会给整片天空蒙一层灰。
             float visibleSpan = HumidityField.CloudFullHumidity - HumidityField.VisibleThreshold;
 
