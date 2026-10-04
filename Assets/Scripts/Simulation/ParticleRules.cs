@@ -553,7 +553,8 @@ namespace TapTap2026.Simulation
         /// 格子会确定性逐帧往返（标记位置 5,4,5,4…），任何温差阈值都挡不住同幅反向。本方法因此用
         /// <c>flags</c> 的 <see cref="CellFlags.DriftDirectionMask"/> 记住本粒子上次的漂移方向：
         /// <list type="bullet">
-        /// <item>本帧可漂且方向与记忆**相反** → 不走、记忆保留（禁反向，走廊里最多走一格即停）；</item>
+        /// <item>本帧可漂且方向与记忆**相反** → 默认不走（禁反向回声）；但 wanted 侧的热**连片**
+        ///       （再前一格不比它冷）时放行并改写记忆——回声余温只有一格会被挡，真实的梯度反转是成片的；</item>
         /// <item>可漂且方向与记忆相同、或无记忆 → 漂移一格并写入该方向（顺梯度持续前进 = 净输运）；</item>
         /// <item>本帧没有任何可漂方向（梯度穿过死区 / 被挡）→ 清记忆（换向时梯度必经死区，记忆自然复位）。</item>
         /// </list>
@@ -577,11 +578,17 @@ namespace TapTap2026.Simulation
             byte wanted = leftWarmer ? CellFlags.DriftDirectionLeft : CellFlags.DriftDirectionRight;
             byte remembered = (byte)((world.At(x, y).flags & CellFlags.DriftDirectionMask) >> CellFlags.DriftDirectionShift);
 
-            // 与记忆相反：无条件禁反向，记忆保留，等待梯度穿过死区自然复位。
-            // 顺记忆方向或无记忆则继续漂移（净输运 / 建立记忆）。
+            // 与记忆相反：默认禁反向（抗回声）。但「梯度真的反转了」要放行——判据是 wanted 侧的
+            // 热**连片**：再往前一格不比它冷（回声的余温只有一格，是换位伙伴留下的单格热点；
+            // 真实反转——潜热释放、水体注入、大范围日照——是成片的）。不连片继续挡，等死区复位。
             if (remembered != CellFlags.DriftDirectionNone && remembered != wanted)
             {
-                return false;
+                float targetSide = heat.GetTemperature(x + direction, y);
+                float beyond = heat.GetTemperature(x + direction * 2, y);
+                if (beyond < targetSide - epsilon)
+                {
+                    return false;
+                }
             }
 
             if (!CanGasEnter(world, x, y, x + direction, y))

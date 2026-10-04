@@ -179,5 +179,31 @@ namespace TapTap2026.Tests
             Assert.AreEqual(4, FindX(world, ColdId), "原地未动");
             Assert.AreEqual(CellFlags.DriftDirectionLeft, DirectionOf(world, 4, 4), "记忆应保留");
         }
+
+        /// <summary>
+        /// 审计 N4 回归：反向不再一刀切。记忆已建立后，wanted 侧只有单格热点（回声余温）仍被挡；
+        /// wanted 侧的热**连片**（再前一格也不更冷）时放行并改写记忆——离散梯度反转（潜热 / 大范围加热）
+        /// 不再被永久锁死。
+        /// </summary>
+        [Test]
+        public void ThermalDrift_ReversalRequiresExtendedWarmth()
+        {
+            ParticleWorld world = NewCorridor(20f, 30f);
+
+            // 建立记忆：冷粒子顺梯度向右漂一格（x4 → x5），记忆 = Right。
+            Assert.IsTrue(ParticleRules.TryThermalDrift(world, 4, 4, Epsilon));
+            Assert.AreEqual(CellFlags.DriftDirectionRight, DirectionOf(world, 5, 4));
+
+            // 回声 / 单格热点：wanted 侧只有交换伙伴那一格热，extent 不足 → 仍被挡。
+            Assert.IsFalse(ParticleRules.TryThermalDrift(world, 5, 4, Epsilon), "单格余温不得引发反向");
+            Assert.AreEqual(5, FindX(world, ColdId), "粒子原地未动");
+
+            // 梯度真的反转：wanted 侧连片加热（x3 也热），extent 满足 → 放行并改写记忆。
+            world.Heat.SetHeat(3, 4, 80f);
+            world.Heat.SetHeat(4, 4, 80f);
+            Assert.IsTrue(ParticleRules.TryThermalDrift(world, 5, 4, Epsilon), "连片热反转应放行");
+            Assert.AreEqual(4, FindX(world, ColdId), "冷粒子回迁 x4");
+            Assert.AreEqual(CellFlags.DriftDirectionLeft, DirectionOf(world, 4, 4), "记忆应改写为新方向");
+        }
     }
 }
