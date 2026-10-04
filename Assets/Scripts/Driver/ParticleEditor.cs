@@ -1,3 +1,4 @@
+using System.Globalization;
 using TapTap2026.Rendering;
 using TapTap2026.Simulation;
 using UnityEngine;
@@ -7,7 +8,8 @@ namespace TapTap2026.Game
     /// <summary>
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
-    /// **右键**在可投放类型间循环切换（只含材料类：固/液；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大。
+    /// **右键**在可投放类型间循环切换（只含材料类：固/液；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
+    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
@@ -27,7 +29,7 @@ namespace TapTap2026.Game
         [Tooltip("笔刷半径（格）。运行期可用鼠标滚轮调整。")]
         [SerializeField, Range(MinBrushRadius, MaxBrushRadius)] private int _brushRadius = 3;
 
-        [Tooltip("鼠标旁显示当前粒子与半径：色块 + 类型名 + 序号 + r。")]
+        [Tooltip("显示鼠标旁的当前粒子/半径，以及左上角光标格的读数。")]
         [SerializeField] private bool _drawHud = true;
 
         private ushort[] _placeable = new ushort[0];
@@ -35,6 +37,7 @@ namespace TapTap2026.Game
         private ushort _typeId;
         private string _hudText;
         private Color _hudColor;
+        private string _probeText;
 
         /// <summary>笔刷半径下限（格）。</summary>
         public const int MinBrushRadius = 1;
@@ -101,6 +104,8 @@ namespace TapTap2026.Game
             {
                 return;
             }
+
+            ProbeCell(world, Input.mousePosition);
 
             if (Input.GetMouseButtonDown(1))
             {
@@ -177,7 +182,17 @@ namespace TapTap2026.Game
 
         private void OnGUI()
         {
-            if (!_drawHud || _hudText == null)
+            if (!_drawHud)
+            {
+                return;
+            }
+
+            if (_probeText != null)
+            {
+                GUI.Label(new Rect(6f, 4f, 420f, 20f), _probeText);
+            }
+
+            if (_hudText == null)
             {
                 return;
             }
@@ -191,6 +206,38 @@ namespace TapTap2026.Game
             GUI.DrawTexture(new Rect(x, y, 12f, 12f), Texture2D.whiteTexture);
             GUI.color = Color.white;
             GUI.Label(new Rect(x + 16f, y - 3f, 200f, 20f), _hudText);
+        }
+
+        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」。</summary>
+        private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
+        {
+            _probeText = TryGetCell(screenPosition, world, out int x, out int y)
+                ? DescribeCell(world, x, y)
+                : "视口外";
+        }
+
+        /// <summary>
+        /// (x,y) 的读数行：坐标 + 粒子名 + 温度 + 热量 + 湿度。
+        /// 温度是导出量 <c>T = Q / 热容</c>，热量是格子里存的那份 Q，湿度对这一格而言（固/液恒为 0）。
+        /// 数值固定用不变文化格式化，免得跟着系统区域设置漂出逗号小数点。
+        /// </summary>
+        public static string DescribeCell(ParticleWorld world, int x, int y)
+        {
+            ushort typeId = world.GetCell(x, y).typeId;
+            ParticleType[] types = world.Types;
+
+            string name = typeId != ParticleRegistry.AirTypeId && typeId < types.Length && types[typeId] != null
+                ? DisplayName(types[typeId])
+                : "空气";
+
+            float temperature = world.Heat.GetTemperature(x, y);
+            float heat = world.Heat.GetHeat(x, y);
+            float humidity = world.Humidity.Get(x, y);
+
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "({0},{1})  {2}  T={3:0.0}  Q={4:0.00}  湿度={5:0.000}",
+                x, y, name, temperature, heat, humidity);
         }
 
         /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、以及所有 Gas 类型——
@@ -239,10 +286,16 @@ namespace TapTap2026.Game
         {
             ParticleType type = ParticleRegistry.Types[_typeId];
             ParticleTypeInfo info = type.Info;
-            string debugName = string.IsNullOrEmpty(info.DebugName) ? type.GetType().Name : info.DebugName;
 
             _hudColor = info.Palette[0];
-            _hudText = $"{debugName}  {_cursor + 1}/{_placeable.Length}  r={BrushRadius}";
+            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{_placeable.Length}  r={BrushRadius}";
+        }
+
+        /// <summary>类型的显示名：优先 <see cref="ParticleTypeInfo.DebugName"/>，没填则回退类名。</summary>
+        private static string DisplayName(ParticleType type)
+        {
+            ParticleTypeInfo info = type.Info;
+            return string.IsNullOrEmpty(info.DebugName) ? type.GetType().Name : info.DebugName;
         }
 
         /// <summary>屏幕坐标（像素，原点左下）→ 格子坐标。射线打到 z=0 平面，再换算到渲染器局部坐标取整。</summary>
