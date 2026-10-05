@@ -240,7 +240,7 @@ public readonly struct ParticleTypeInfo
 - ① **被压死**：正上方是**固体且非同类**时被压死——死亡**沿竖直向下**清掉下面整段连续植物。**液体（水）上方是「沉水」常态、不算压**（与草相反：草把液体也算压）。
 - ② **失去扎根**：正下方不是**软底** `{Sand, Soil, WetSoil, HumusSoil}`（也不是同株下段）→ 死亡**沿竖直向上**清掉上面整段。
 - ③ **脱水致死**：本格**八邻内没有任何液体**（冒出水面 / 水被排空）→ 只清这一格；死亡从顶端一格格涌现，水下部分（八邻仍有液体）存活。**已知代价**：1 格宽的水道里左右是井壁而非水，会被误判成脱水、整株死。
-- ④ **温度致死**：`T > LethalHeatTemperature`（50）或 `T < LethalColdTemperature`（3）→ 只清这一格（与草同值）。
+- ④ **温度致死**：`T > LethalHeatTemperature`（50）或 `T < LethalColdTemperature`（**0**，非草的 3）→ 只清这一格。取 0 是因为模拟里环境热量为 0、水下无光——未被加热的水温就是 `T = 0`，用 3 会让水草一挨到未受热的水就冻死。
 - ⑤ **撒种（10%）**：在半径 `SeedSpawnRadius`（=2）的**圆盘**内找第一个「**非持水基质** `{Sand, Soil, HumusSoil}`、**正上方是液体**、**正下方是软底**」的格，`SetPhase` 成**水生态种子**。覆盖的是不计入守恒的基质格，所以水守恒不受影响。
 
 **水生态种子**是受重力的固体粉末（摩擦 / 粘性 0.5，走 `ParticleRules.StepSolid`），沉到水底基质上后由**随机刻**驱动：命中时先判「**正上方是液体**（被淹没）**且正下方是软底**」——满足才发芽：摇出高度 `1..MaxGrowthHeight`（=3），自身 `SetPhase` 成植物（原为基质格、不涉及水），再自下而上**位移式抽茎**；否则累计一次「空转」命中（计数存本格 `flags` 的 bit5-6，**与草种子共用同一组位**——一格同时只属一个类型，互不冲突），连续 `MaxStrikesBeforeHumus`（=3）次都无发芽条件就 `SetPhase` 成腐殖质，且**不消耗随机数**。
@@ -1045,7 +1045,7 @@ Assets/Scripts/
       HumusParticle.cs                        腐殖质（固体；有机物死亡时按 20% 概率就地生成。每逻辑帧在八邻内找第一个土壤 SetPhase 成腐殖土，然后自己 Clear 消失；八邻无土则保持不动。不可在编辑器中选择）
       HumusSoilParticle.cs                    腐殖土（固体；土壤被腐殖质改良后的黑色形态，与干土同款粉末运动，稳定无变化。不可在编辑器中选择）
       AquaticSeedParticle.cs                  水生态种子（固体粉末，摩擦 / 粘性 0.5；flags bit5-6 与草种子共用 = 无发芽条件计数。随机刻命中且「正上方是液体 + 正下方是软底」时发芽成水生植物，自下而上**位移式抽茎** 1-3 格——把连续水柱顶端之上的气体格 Set 成水、目标格变植物，水只是被顶上去、不销毁；连续 3 次无发芽条件则变成腐殖质。不可在右键循环，但可单颗投放）
-      AquaticPlantParticle.cs                 水生植物（固体 + Organic，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**随机刻**里按顺序：① 正上方是固体（非同类）时被压死、死亡向下清整段（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙}（或同株下段）时失去扎根、死亡向上清整段；③ 八邻无液体时脱水、单格死；④ 温度 > 50 或 < 3 死；⑤ 10% 概率在半径 2 格圆盘内把第一个「非持水基质 {沙/干土/腐殖土}、正上方是液体、正下方是软底」的格 SetPhase 成水生态种子。不可在编辑器中选择）
+      AquaticPlantParticle.cs                 水生植物（固体 + Organic，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**随机刻**里按顺序：① 正上方是固体（非同类）时被压死、死亡向下清整段（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙}（或同株下段）时失去扎根、死亡向上清整段；③ 八邻无液体时脱水、单格死；④ 温度 > 50 或 < 0 死；⑤ 10% 概率在半径 2 格圆盘内把第一个「非持水基质 {沙/干土/腐殖土}、正上方是液体、正下方是软底」的格 SetPhase 成水生态种子。不可在编辑器中选择）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 缩放整场亮度：白天上限、夜晚下限）
   Driver/
@@ -1069,10 +1069,10 @@ Assets/Tests/EditMode/
   WetSoilParticleTests.cs                     土 ⇄ 湿土：水被土喝掉（含热量并进湿土）/ **有压才渗**（孤立湿土永久持水不沉底 / 被水压着才下渗且锋面身后保持湿润）/ 被挡侧渗 / 下渗温度门（T < 60）/ 上行 50% 概率门 / 换格水带热 T(源)×1.2 两侧温度不跳 / 受热上行润湿上方干土 / 受热在空气下蒸发（播撒不可见 + 带走潜热）/ 空气吸饱则不蒸发 / 无干土可接则保持湿 / 常温不蒸发 / 湿土照样下落 / 调色板逐档更深 / 生产注册路径
   WeatherParticleTests.cs                     气象：浮力方向（热升/冷沉/死区，含绝热直减降温）/水平热压流（直调原语，隔离表）+ 湿度场（蒸发提升附近湿度 / 水平冷→热 / 竖直越热越向上 / 随风平流 / 输送守恒 / 凝结释放潜热）+ 降雨（碰并凑整、液体不持有湿度）+ 水循环总量守恒 + 云渲染（湿度染白）+ 云遮光（按列 Beer–Lambert 衰减、逐列独立）（生产注册路径——跨类型相变依赖 ParticleIds 回填；云遮光测试用隔离表 + `new ParticleWorld(w,h,seed,types)` 直构）
   ThermalDriftTests.cs                        大气水平热压流的风向记忆（隔离类型表，直接调 TryThermalDrift / OnMotion）：两格走廊不再逐帧往返（B1 回归）/ 大温差净输运保留 / 梯度消失即清记忆允许新方向 / 写记忆不破坏 bit0 处理标记 / 浮力换行清记忆 / 反向漂移被挡且记忆保留
-  AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
+  AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 环境低温（T=0）不冻死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
 ```
 
-测试总数 **170**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 15。
+测试总数 **171**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 

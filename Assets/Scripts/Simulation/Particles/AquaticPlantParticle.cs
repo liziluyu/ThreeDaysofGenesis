@@ -20,7 +20,7 @@ namespace TapTap2026.Simulation
     //       ③ **脱水致死**：本格**八邻内没有任何液体**（冒出水面 / 水被排空）→ 只清这一格。死亡因此从顶端
     //          一格格涌现，水下的部分（八邻仍有液体）留在原地。已知代价：1 格宽的水道里左右是井壁而非水，
     //          会被误判成脱水、整株死。
-    //       ④ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）→ 只清这一格。
+    //       ④ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（0）→ 只清这一格。
     //       ⑤ **撒种（10% 概率）**：每次命中都摇骰（消耗 1 个随机数，保证确定性）；命中才在半径 2 格圆盘内找
     //          第一个「**非持水基质** {Sand, Soil, HumusSoil}、且正上方是液体、且正下方是软底」的格，
     //          把它 SetPhase 成 AquaticSeed。播撒不消耗水（覆盖的是不计入守恒的基质格），水守恒不受影响。
@@ -36,8 +36,10 @@ namespace TapTap2026.Simulation
         /// <summary>致死高温（温度严格**高于**它即死）。温度是导出量 <c>T = Q / 热容</c>；与草同值。</summary>
         public const float LethalHeatTemperature = 50f;
 
-        /// <summary>致死低温（温度严格**低于**它即死）；与草同值。</summary>
-        public const float LethalColdTemperature = 3f;
+        /// <summary>致死低温（温度严格**低于**它即死）。**取 0 而非草的 3**：模拟里环境热量为 0，未被加热的水 / 水下温度就是
+        /// <c>T = 0</c>，且水下无光（光停在水面）——取 3 会让水草一挨到未受热的水就冻死。取 0 则只有被主动冷却到
+        /// <c>T &lt; 0</c> 的水（模拟里几乎不出现）才会冻死。</summary>
+        public const float LethalColdTemperature = 0f;
 
         /// <summary>光照吸收率：水下收不到光（光停在水面），取值无实际影响，仅与草保持一致的量级。</summary>
         public const float LightAbsorptionFactor = 0.8f;

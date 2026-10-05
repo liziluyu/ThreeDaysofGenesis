@@ -233,11 +233,25 @@ namespace TapTap2026.Tests
             world.Set(1, 0, SandId);
             world.Set(1, 1, PlantId);
             world.Set(1, 2, WaterId); // 上方是液体：沉水常态，不算压。
-            world.Heat.SetHeat(1, 1, 8f); // T = 10，落在 [3, 50] 内（否则环境 T = 0 会先被温度致死）。
+            world.Heat.SetHeat(1, 1, 8f); // T = 10：隔离温度路径，专测"液体不算压"。
 
             RandomTick(world, PlantId, 1, 1);
 
             Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId, "上方是液体不应算压");
+        }
+
+        [Test]
+        public void Plant_SurvivesAtAmbientCold()
+        {
+            // 致死低温取 0（非草的 3）：环境热量为 0 → T = 0 不应冻死水草。
+            ParticleWorld world = new ParticleWorld(5, 5, SeedValue);
+            world.Set(1, 0, SandId);
+            world.Set(1, 1, PlantId);
+            world.Set(1, 2, WaterId); // 有液体邻格，排除脱水路径。
+
+            RandomTick(world, PlantId, 1, 1);
+
+            Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId, "环境 T = 0 不应冻死水草（致死低温为 0，非草的 3）");
         }
 
         [Test]
@@ -298,7 +312,7 @@ namespace TapTap2026.Tests
             world.Set(4, 0, SandId);
             world.Set(4, 1, SandId);
             world.Set(4, 2, WaterId);
-            world.Heat.SetHeat(2, 1, 8f); // 植物存活所需温度（T = 10 ∈ [3, 50]）。
+            world.Heat.SetHeat(2, 1, 8f); // T = 10：隔离温度路径。
 
             for (int i = 0; i < 300 && CountType(world, SeedId) == 0; i++)
             {
