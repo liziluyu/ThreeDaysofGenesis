@@ -1,25 +1,31 @@
+using TapTap2026.Rendering;
 using TapTap2026.Simulation;
 using UnityEngine;
 
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 把光照参数从 Inspector 接到世界：光照总开关、亮相位刻数、暗相位刻数、强度、云层消光系数。
+    /// 把光照参数从 Inspector 接到世界与渲染器：光照总开关、亮相位刻数、暗相位刻数、强度、云层消光系数，
+    /// 以及昼夜天空色与夜晚亮度。
     /// 光照逻辑本身住在 <see cref="ParticleWorld.Light"/>（纯 C#、每 tick 由 <see cref="ParticleWorld.Step"/> 驱动），
     /// 本组件只做配置与接线，不参与模拟。
     /// </summary>
     /// <remarks>
-    /// <para>每帧把字段写回 <c>world.Light</c>：运行时在 Inspector 改参数即时生效；
-    /// 世界因改尺寸被重建（<see cref="ParticleSimulationDriver.Resize"/>）后也会自动重新应用。</para>
+    /// <para>每帧把字段写回 <c>world.Light</c>、并把昼夜参数推给 <see cref="ParticleRenderer"/>：运行时在 Inspector
+    /// 改参数即时生效；世界因改尺寸被重建（<see cref="ParticleSimulationDriver.Resize"/>）后也会自动重新应用。</para>
     /// <para>通断是占空比循环：亮 <see cref="LitTicks"/> 刻 → 暗 <see cref="DarkTicks"/> 刻 → 循环。
     /// 亮的每一刻向每一列最上面的非气体粒子（固体或液体——光打到水面就停）注入 <see cref="Intensity"/> 的热量。</para>
-    /// <para>画面明暗不需要接线：过渡长度由 <see cref="LightController.Daylight"/> 自动给出
-    /// （= 下一时段长度的 1/<see cref="LightController.DaylightFadeDivisor"/>），渲染器据此取天空色与亮度。</para>
+    /// <para>过渡长度不需要接线：由 <see cref="LightController.Daylight"/> 自动给出
+    /// （= 下一时段长度的 1/<see cref="LightController.DaylightFadeDivisor"/>），渲染器据此在
+    /// <see cref="DayBackground"/> / <see cref="NightBackground"/> 之间取色、并把粒子与云按
+    /// <see cref="NightBrightness"/> 变暗。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleLightDriver : MonoBehaviour
     {
         [SerializeField] private ParticleSimulationDriver _driver;
+
+        [SerializeField] private ParticleRenderer _renderer;
 
         [Tooltip("是否光照。关闭时不注入热量，相位也不推进。")]
         [SerializeField] private bool _enabled = true;
@@ -36,6 +42,16 @@ namespace TapTap2026.Game
         [Tooltip("云层消光系数：每列湿度总量越大，到达地表的光照越弱（透过率 = exp(-系数 × 列湿度总量)）。" +
                  "0 = 云不遮光。列湿度总量量级为个位数，0.05 时厚云柱透过率约 0.7、0.1 时约 0.55。")]
         [SerializeField, Min(0f)] private float _cloudExtinction = LightController.DefaultCloudExtinction;
+
+        [Header("昼夜天空色（渲染表现）")]
+        [Tooltip("白天天空色（背景）。")]
+        [SerializeField] private Color32 _dayBackground = ParticleRenderer.DefaultDayBackground;
+
+        [Tooltip("夜晚天空色（背景）。")]
+        [SerializeField] private Color32 _nightBackground = ParticleRenderer.DefaultNightBackground;
+
+        [Tooltip("夜晚亮度倍率 0..1。白天恒为 1（现在的正常亮度），夜晚取本值；1 = 不随昼夜变暗。")]
+        [SerializeField, Range(0f, 1f)] private float _nightBrightness = ParticleRenderer.DefaultNightBrightness;
 
         /// <summary>当前生效的光照开关（Inspector 值）。</summary>
         public bool Enabled
@@ -67,6 +83,24 @@ namespace TapTap2026.Game
             get { return _cloudExtinction; }
         }
 
+        /// <summary>当前生效的白天天空色。</summary>
+        public Color32 DayBackground
+        {
+            get { return _dayBackground; }
+        }
+
+        /// <summary>当前生效的夜晚天空色。</summary>
+        public Color32 NightBackground
+        {
+            get { return _nightBackground; }
+        }
+
+        /// <summary>当前生效的夜晚亮度倍率。</summary>
+        public float NightBrightness
+        {
+            get { return _nightBrightness; }
+        }
+
         private void Awake()
         {
             if (_driver == null)
@@ -78,10 +112,23 @@ namespace TapTap2026.Game
             {
                 _driver = FindObjectOfType<ParticleSimulationDriver>();
             }
+
+            if (_renderer == null)
+            {
+                _renderer = GetComponent<ParticleRenderer>();
+            }
+
+            if (_renderer == null)
+            {
+                _renderer = FindObjectOfType<ParticleRenderer>();
+            }
         }
 
         private void Update()
         {
+            // 昼夜表现与光照相位无关，先推给渲染器（驱动器 / 世界尚未就绪时也要生效）。
+            ApplyRenderer();
+
             if (_driver == null)
             {
                 return;
@@ -94,6 +141,19 @@ namespace TapTap2026.Game
             }
 
             Apply(world.Light);
+        }
+
+        /// <summary>把昼夜天空色与夜晚亮度推给渲染器；未接线（或没有渲染器）时是空操作。</summary>
+        private void ApplyRenderer()
+        {
+            if (_renderer == null)
+            {
+                return;
+            }
+
+            _renderer.DayBackground = _dayBackground;
+            _renderer.NightBackground = _nightBackground;
+            _renderer.NightBrightness = _nightBrightness;
         }
 
         private void Apply(LightController light)

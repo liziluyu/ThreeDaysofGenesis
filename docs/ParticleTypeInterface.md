@@ -633,8 +633,9 @@ public sealed class LightController
 - **材料光照吸收率 `LightAbsorption` ∈ [0,1]**（可选，默认 1）：到达格子的能量再乘上该材料的吸收率——1 = 完全吸收（升温最快）、0 = 全反射（光照不升温）。表达「浅色 / 反光表面在阳光下升温更慢」；**草取 0.8**（`GrassParticle.LightAbsorptionFactor`，略减弱 20%）。只影响光照注入，不影响热传导（σ）与辐射（ε）。
 - 简化：光是**垂直、一次性、全网格**的，没有方向、没有距离/角度衰减——但不再穿过液体：水面即光程终点。需要阴影 / 衰减再另行扩展。
 - **视觉表现：昼夜（天空配色 + 整场明暗）**。光照系统本身只注入热量，画面上由 `ParticleRenderer` 把光照周期映射成两层表现：
-  1. **天空色**在 `_nightBackground`（默认 `#2A223A`）/ `_dayBackground`（默认 `#CCE5FF`）之间按 `Daylight` 取色；
-  2. **粒子与云**的亮度按 `Mathf.Lerp(_nightBrightness, 1, Daylight)` 缩放（`_nightBrightness` 默认 0.5 = 夜晚半亮；1 = 不随昼夜变暗）。
+  1. **天空色**在夜晚色（默认 `#2A223A`）/ 白天色（默认 `#CCE5FF`）之间按 `Daylight` 取色；
+  2. **粒子与云**的亮度按 `Mathf.Lerp(夜晚亮度, 1, Daylight)` 缩放（默认 0.5 = 夜晚半亮；1 = 不随昼夜变暗）。
+  三个参数**都在 `ParticleLightDriver` 上配置**（`_dayBackground` / `_nightBackground` / `_nightBrightness`），由它每帧推给 `ParticleRenderer`（同 `ParticleSimulationDriver` 把热力学参数写回世界）；渲染器只保留同名代码默认值，好在没有光源驱动器时也能上屏。
   两者都交给 `ParticlePixelBuffer.Fill(world, pixels, background, brightness)`；**背景色不参与亮度缩放**（夜晚色本身就是深色，再乘一遍就不是作者指定的颜色了），只有真正画了粒子 / 云的像素才变暗。
 - **过渡长度是自动的**：`Daylight` 在破晓 / 黄昏各用「**下一时段**长度的 1/`DaylightFadeDivisor`」刻平滑过渡，其余时间恒定在 1 / 0。例：亮 600 / 暗 600 ⇒ 破晓 60 刻（下一段是白天 600）、黄昏 60 刻（下一段是黑夜 600）；亮 600 / 暗 60 ⇒ 破晓 60、黄昏 6。黄昏的坡道会夹到 `LitTicks / 2` 以内，避免「夜远长于昼」时坡道吞掉整个白天。天空色、亮度、以及光照施热各自独立，都由同一份 `Daylight` / `IsLit` 读数驱动。
 
@@ -1024,11 +1025,11 @@ if (_simulate)   // Pause()/Resume() 翻转它
   - 空气、未注册 id、`null` 槽位一律写背景色；`shade` 越界时回退 `palette[0]`。
   - 这个方法是纯函数、无引擎依赖，因此**可以在 EditMode 测试里直接断言**，不需要 GPU。
 - **昼夜就在这一步表现**：`ParticleRenderer.Present` 按 `world.Light.Daylight` 算出天空色与亮度——
-  `background = Color32.Lerp(_nightBackground, _dayBackground, daylight)`、
-  `brightness = Mathf.Lerp(_nightBrightness, 1, daylight)`，再调 4 参重载
+  `background = Color32.Lerp(NightBackground, DayBackground, daylight)`、
+  `brightness = Mathf.Lerp(NightBrightness, 1, daylight)`，再调 4 参重载
   `ParticlePixelBuffer.Fill(world, _pixels, background, brightness)`。**亮度只作用于粒子与云**，
-  天空走作者指定的颜色（`#2A223A` / `#CCE5FF`）。纯映射、可脱离 GPU 断言；
-  `_nightBrightness = 1` 且昼夜色相同即等价于「不做昼夜表现」。
+  天空走配置的颜色（默认 `#2A223A` / `#CCE5FF`）。纯映射、可脱离 GPU 断言；
+  `NightBrightness = 1` 且昼夜色相同即等价于「不做昼夜表现」。
 - 目标对象：**1 个 quad**。运行时用代码建一个 4 顶点 mesh（不是 `GameObject.CreatePrimitive`，避免附带 Collider），挂在子物体上，顶点范围就是 `(0,0)`–`(Width, Height)` 世界单位，1 cell = 1 unit。
 - 材质：优先 `Universal Render Pipeline/2D/Sprite-Unlit-Default`，回退 `Sprites/Default`；都找不到时报错并**停止上屏**（不再每帧刷日志）。可在 Inspector 覆盖。**发布包要注意 shader 剥离**，届时把该 shader 加入 Always Included Shaders 或直接指定材质资产。
   - Inspector 指定的 `_material` 是共享资产：运行期一律 `new Material(_material)` 取副本，**绝不改写资产本身**；销毁/重建纹理前先把 `mainTexture` 置 null，避免材质持有 Missing 引用。
@@ -1077,13 +1078,13 @@ Assets/Scripts/
       AquaticPlantParticle.cs                 水生植物（固体 + Organic，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**随机刻**里按顺序：① 正上方是固体（非同类）时被压死、死亡向下清整段（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙}（或同株下段）时失去扎根、死亡向上清整段；③ 八邻无液体时脱水、单格死；④ 温度 > 50 或 < 0 死；⑤ 10% 概率在半径 2 格圆盘内把第一个「非持水基质 {沙/干土/腐殖土}、正上方是液体、正下方是软底」的格 SetPhase 成水生态种子。不可在编辑器中选择）
       FireParticle.cs                         火（气体，第一个粒子级热源；v2 角色模型——每逻辑帧按八邻重判**附着火 / 游离火**。附着火定在原地：接触点燃邻接的草（八邻固定序，1/20 每逻辑帧；有草且不贴淬熄物时不摇熄灭骰）、**本格火温 ≥ 60° 才**烤干邻接湿土并按湿土→干土热容差 **−1.2T** 结算潜热（水汽走湿度场守恒）、格温 < 400 注热 250（烤热贴着的沙/石）、正上方是气体且 T ≥ 200 时 1/10 抛射火舌；游离火不注热，在 OnLogic 末尾按 (x,y,Tick) 哈希上升/摇曳（50% 正上、25% 左上、25% 右上，被挡不下降；OnMotion 留空）。熄灭每帧恰一骰、档位互斥：正下方石头/沙/液体压顶立灭 > 贴液体 1/5 > 贴石头/沙/湿土 1/20（干土与腐殖类不参与淬熄）> 游离火 T<40 立灭 > 游离火 1/8 > 附着无燃料 1/120。shade 是温度分档派生量（≥300 亮黄…<40 暗红，+哈希 ±1，不消耗随机流）。投放资格 CanPlaceAt：不覆盖实体、需锚点不浮空（投放锚点含火链——圆刷贴地可铺满整团火；物理附着不含火）；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质。显式行为：火无法停留在石头/沙/水面上）
   Rendering/
-    ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 取昼夜天空色：夜 #2A223A / 昼 #CCE5FF，粒子与云按 1 → _nightBrightness 变暗）
+    ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 取昼夜天空色、粒子与云按 1 → 夜晚亮度变暗；昼夜参数由 ParticleLightDriver 推送）
   Driver/
     ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、热力学系数、随机刻格数
     ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度；`_simulate`（关 = 暂停全部帧），暴露 `Pause()` / `Resume()` / `Paused`（无输入判断）
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
     ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、鼠标旁显示当前类型；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却 / Gas 可手刷例外）
-    ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度接到 world.Light
+    ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度 / 云层消光接到 world.Light，并把昼夜天空色与夜晚亮度推给 ParticleRenderer
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
     SystemProxyGuard.cs                       系统代理无法被 Mono 解析时把 WebRequest.DefaultWebProxy 钉为直连（保 Unity-MCP 连通）
@@ -1112,8 +1113,7 @@ Assets/Tests/EditMode/
 ```
 Particle Sandbox
 ├─ ParticleRenderer            (无外部引用，材质运行期自建；_fitCameraOnInitialize=1)
-│                              _dayBackground=#CCE5FF / _nightBackground=#2A223A（昼夜天空色，随 Daylight 过渡）
-│                              _nightBrightness=0.5（夜晚粒子亮度倍率；1 = 不随昼夜变暗）
+│                              （昼夜天空色 / 夜晚亮度由 ParticleLightDriver 每帧推送，本组件不配置）
 ├─ ParticleSimulationDriver    _renderer → 上面的 ParticleRenderer
 │                              _settings → Assets/Data/ParticleSimulationSettings.asset
 │                              _simulate=1（暂停走 Pause()/Resume()，见 §7；空格热键在 ParticleEditor）
@@ -1125,8 +1125,10 @@ Particle Sandbox
 │                              _renderer → 上面的 ParticleRenderer（屏幕→格子的换算基准）
 │                              _drawHud=1 / _pauseKey=Space（空格暂停/恢复，调驱动 Pause()/Resume()，见 §7）
 └─ ParticleLightDriver         _driver   → 上面的 ParticleSimulationDriver
+                                _renderer → 上面的 ParticleRenderer
                                 _enabled=1 / _litTicks=600 / _darkTicks=600 / _intensity=10 / _cloudExtinction=0.05
-                                （每帧写回 world.Light，重建世界后自动重新应用；昼夜过渡长度由周期自动推出）
+                                _dayBackground=#CCE5FF / _nightBackground=#2A223A / _nightBrightness=0.5
+                                （每帧写回 world.Light、并把昼夜参数推给渲染器；过渡长度由周期自动推出）
 ```
 
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。
@@ -1138,7 +1140,7 @@ Particle Sandbox
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 - **热力学参数（`ParticleSimulationSettings` 资产）**：`_conductivity`（资产 0.24）、`_voidHeatLoss`（资产 0.12）、`_radiativeLoss`（资产 0.05）、`_adiabaticLapse`（资产 0.1，气体竖直位移的绝热直减率）、`_airThermalConductivity`（资产 1）与 `_airThermalEmissivity`（资产 0.1），驱动每帧写回 `world.Heat`。改这几个值即可调「竖直温差的陡峭度」（`_conductivity` 越大热量摊得越平、越不会有光照热点）、「热在空气里能铺多高」（`_airThermalEmissivity` 越小铺得越高、整柱越暖，见 §6）与「整体冷热」，无需改代码。**`_airThermalEmissivity` 是调「热铺多高」的首选旋钮**：它只动空气、不动固/液，因此不会连带改地表温度（对比：全局降 `_radiativeLoss` 会把地表一起改热，且必须同步调光度）。
-- **光照（`ParticleLightDriver`）**：四个字段（是否光照 / 亮相位刻数 / 暗相位刻数 / 强度）加云层消光系数每帧写回 `world.Light`。**昼夜表现**由渲染器的 `_dayBackground` / `_nightBackground` / `_nightBrightness` 与 `LightController.Daylight` 共同决定：天空色在夜 / 昼两色间取色、粒子与云按 1 → `_nightBrightness` 变暗，过渡长度**自动**取「下一时段长度的 1/10」（亮 600 / 暗 600 ⇒ 各 60 刻），无需接线。想在编辑器里看到热，把 `ParticleSimulationDriver` 的 `_heatDebugOverlay` 勾上（叠加是整场的、越热越红）；`_heatDebugFullScale` 决定满量程温度，量纲由玩法约定，默认 10。两个字段默认关闭，不影响正式观感。
+- **光照与昼夜（`ParticleLightDriver`）**：六个字段（是否光照 / 亮相位刻数 / 暗相位刻数 / 强度 / 云层消光系数）每帧写回 `world.Light`；另三个字段 **`_dayBackground` / `_nightBackground` / `_nightBrightness`** 是昼夜表现的**唯一配置面**，每帧推给渲染器（`_renderer`，同名在 `ParticleRenderer` 上只作为无光源驱动器时的代码默认值）。天空色在夜 / 昼两色间按 `Daylight` 取色、粒子与云按 1 → `_nightBrightness` 变暗，过渡长度**自动**取「下一时段长度的 1/10」（亮 600 / 暗 600 ⇒ 各 60 刻），无需接线。想在编辑器里看到热，把 `ParticleSimulationDriver` 的 `_heatDebugOverlay` 勾上（叠加是整场的、越热越红）；`_heatDebugFullScale` 决定满量程温度，量纲由玩法约定，默认 10。两个字段默认关闭，不影响正式观感。
 
 ---
 

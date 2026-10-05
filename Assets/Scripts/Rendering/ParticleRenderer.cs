@@ -11,9 +11,12 @@ namespace TapTap2026.Rendering
     /// <remarks>
     /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步。
     /// 上屏时机完全由调用方（<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
-    /// <para>上屏前按 <see cref="LightController.Daylight"/> 做昼夜表现：天空色在 <c>_nightBackground</c> /
-    /// <c>_dayBackground</c> 之间取色，粒子与云按 <c>Lerp(_nightBrightness, 1, Daylight)</c> 整体变暗。
-    /// 过渡长度由光照周期自动给出（下一时段长度的 1/10）。</para>
+    /// <para>上屏前按 <see cref="LightController.Daylight"/> 做昼夜表现：天空色在
+    /// <see cref="NightBackground"/> / <see cref="DayBackground"/> 之间取色，粒子与云按
+    /// <c>Lerp(NightBrightness, 1, Daylight)</c> 整体变暗。过渡长度由光照周期自动给出（下一时段长度的 1/10）。</para>
+    /// <para>这三个昼夜参数**不在本组件上配置**：它们的唯一配置面是 <c>ParticleLightDriver</c>，
+    /// 由它每帧推送过来（同 <c>ParticleSimulationDriver</c> 把热力学参数写回世界）。这里只保留代码默认值，
+    /// 好在没有光源驱动器时也能正常上屏。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleRenderer : MonoBehaviour
@@ -24,15 +27,18 @@ namespace TapTap2026.Rendering
             "Sprites/Default",
         };
 
-        [Header("昼夜（光照系统的可见表现）")]
-        [Tooltip("白天天空色（背景）。")]
-        [SerializeField] private Color32 _dayBackground = new Color32(0xCC, 0xE5, 0xFF, 255);
+        /// <summary>白天天空色的代码默认值（配置面在 <c>ParticleLightDriver</c>）。</summary>
+        public static readonly Color32 DefaultDayBackground = new Color32(0xCC, 0xE5, 0xFF, 255);
 
-        [Tooltip("夜晚天空色（背景）。")]
-        [SerializeField] private Color32 _nightBackground = new Color32(0x2A, 0x22, 0x3A, 255);
+        /// <summary>夜晚天空色的代码默认值（配置面在 <c>ParticleLightDriver</c>）。</summary>
+        public static readonly Color32 DefaultNightBackground = new Color32(0x2A, 0x22, 0x3A, 255);
 
-        [Tooltip("夜晚亮度倍率 0..1。白天恒为 1（现在的正常亮度），夜晚取本值；1 = 不随昼夜变暗。")]
-        [SerializeField, Range(0f, 1f)] private float _nightBrightness = 0.5f;
+        /// <summary>夜晚亮度倍率的代码默认值（配置面在 <c>ParticleLightDriver</c>）。</summary>
+        public const float DefaultNightBrightness = 0.5f;
+
+        private Color32 _dayBackground = DefaultDayBackground;
+        private Color32 _nightBackground = DefaultNightBackground;
+        private float _nightBrightness = DefaultNightBrightness;
 
         [Tooltip("留空则运行时用 URP 2D 的无光照 sprite 着色器创建。运行期一律实例化副本，不会改写本资产。")]
         [SerializeField] private Material _material;
@@ -55,6 +61,27 @@ namespace TapTap2026.Rendering
         public Texture2D Texture
         {
             get { return _texture; }
+        }
+
+        /// <summary>白天天空色（背景）。配置面在 <c>ParticleLightDriver</c>，由它推送。</summary>
+        public Color32 DayBackground
+        {
+            get { return _dayBackground; }
+            set { _dayBackground = value; }
+        }
+
+        /// <summary>夜晚天空色（背景）。配置面在 <c>ParticleLightDriver</c>，由它推送。</summary>
+        public Color32 NightBackground
+        {
+            get { return _nightBackground; }
+            set { _nightBackground = value; }
+        }
+
+        /// <summary>夜晚亮度倍率，夹在 [0, 1]；1 = 不随昼夜变暗。配置面在 <c>ParticleLightDriver</c>，由它推送。</summary>
+        public float NightBrightness
+        {
+            get { return _nightBrightness; }
+            set { _nightBrightness = Mathf.Clamp01(value); }
         }
 
         /// <summary>把 <paramref name="world"/> 的当前状态填进像素缓冲并上传一次。同一帧调用多次即上传多次。</summary>
