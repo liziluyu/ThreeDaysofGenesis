@@ -256,6 +256,17 @@ public readonly struct ParticleTypeInfo
 
 两种新粒子都**不可在编辑器中画出**（只能由模拟产生）——`ParticleEditor._unplaceableTypes` 默认已列入 `HumusParticle` / `HumusSoilParticle`。
 
+**火（`FireParticle`）**：气体（密度 0.6，比大气重——大气推不动它），**第一个粒子级热源**。行为全部在逻辑帧 `OnLogic`（20 Hz）里，随机刻留空（随机刻密度随世界大小变稀，蔓延节奏会漂移）：
+
+- **放热**：本格温度低于 `FireParticle.PeakTemperature`（400）时向本格 `AddHeat(FireHeatPerTick = 250)`——热由世界每逻辑帧自动四邻传导（火不做传导）。单格火平衡温度约 250 度、四邻被显著抬温：**紧贴的沙 / 石会被烤热**（热容小、导热快，几帧就到上百度）、紧邻的草会被「烤」到草致死线（50）附近、紧邻的水趋近沸腾点（80）。上限只封整片火的内部（四邻等温、传导≈0），防止恒定注入把它推到数千度。
+- **燃料判定与蔓延**：每逻辑帧先读一遍**八邻**（固定序：左 → 右 → 下 → 上 → 左下 → 右下 → 左上 → 右上）找**第一格草**；有草则以 `1 / IgnitionDenominator`（**1/20**）的概率点燃它（`Set` 成火——新火有**全新寿命**，不继承年龄）。无温度门，接触即点燃。
+- **遇到湿土：先烤干、同时加速熄灭**：八邻里的湿土先被 `SetPhase` 烤成干土（`WetSoil → Soil`）——**水汽走湿度场的不可见播撒**（与湿土自身受热蒸发的口径完全一致：先确认摊得出去才变干，水不凭空消失）；随后火按**快熄骰**（见下）结算。每帧最多烤干一格（八邻固定序里的第一格湿土）。
+- **熄灭（三分支）**：① 八邻有**液体**（水）或**湿土** → 快熄骰 `1 / QuenchDenominator`（**1/20**，期望约 **1 秒**）——水火相遇，火死得快；② 仅燃料烧尽（八邻无草、无水火）→ 普通熄灭骰 `1 / BurnoutDenominator`（**1/120**，期望约 **6 秒**，几何分布）。③ 有草且不贴水火 → **不摇熄灭骰**——保证邻接的燃料必被逐格吃掉（否则火线会随机断代，而烧过的格变成空气、火不能穿过空气回头补烧，草地上就留下烧不掉的零星残株——离线模拟复现过）。每帧随机消耗：贴水火 1 个骰（若还带草再加 1 个点燃骰）、裸火 1 个、只烧草 1 个。
+- **投放资格（`FireParticle.CanPlaceAt`，`ParticleEditor` 手刷走它）**：① 目标必须是空气 / 气体格——**不覆盖、不替换任何实体方块 / 粒子**（固、液都不行；大气是可替换的环境气）；② 八邻内必须有**附着物**（固 / 液的一格，或另一格火）——**不许浮空投放**。这是**投放**规则、不是生成规则：点燃草与火链蔓延不受约束；圆刷时不合格的格被跳过（部分投放）。
+- **烧过的草地按 20% 概率留下腐殖质残迹**：点火走 `Set`（草 → 火），草带 Organic 标签，自然触发上文「有机物的衰变」世界规则——零额外代码（甚至刚点着的火可能当场被腐殖质顶替）。
+- **水浇灭火是涌现的**：火不写灭火代码；固体 / 液体按 rank 规则置换火（水横流换进火格、沙沉穿火），火被覆盖即经 `OnKill` 消失；贴水 / 贴湿土的加速熄灭写在火自己的熄灭骰里（见上）。火当前**不移动**（浮力上腾留给将来的迭代）。
+- 火是**唯一可手刷的 Gas**：`ParticleEditor._placeableGasTypes` 白名单默认放行火（且受上述投放资格约束），方便点燃试验；其余 Gas 仍不可手刷。
+
 
 ```csharp
 // Assets/Scripts/Simulation/ParticleType.cs —— 注册表条目（不可变）
@@ -697,6 +708,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 | 石（`StoneParticle`） | `0.8` | 石头：调小到 0.8，升温更快 |
 | 水（`WaterParticle`） | `6.5` | 水：热容最大，升温最慢——海陆温差（海风）与水面昼夜惰性的根源 |
 | 大气（`AtmosphereParticle`） | `1.0` | 必须等于 `AirHeatCapacity`：空气格与大气粒子的温度口径一致 |
+| 火（`FireParticle`） | `1.0` | 与大气同档：火焰的热惯性按空气算（热源强度是 `FireHeatPerTick` 常量，不靠热容） |
 | 空气 | `AirHeatCapacity = 1` | typeId 0（空）没有类型条目，固定常量 |
 
 #### 当前生产类型的导热率 σ
@@ -709,6 +721,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 | 石（`StoneParticle`） | `0.8` | 石头：固体里导热最快（原 0.7，接近水） |
 | 水（`WaterParticle`） | `0.95` | 水：导热最好，水体内部接近等温 |
 | 大气（`AtmosphereParticle`） | `1.0` | 气体传导最强；须等于 `HeatMap.AirThermalConductivity` |
+| 火（`FireParticle`） | `1.0` | 气体传导最强一档（与大气一致）：火的热迅速摊给四邻 |
 | 空气 | `AirThermalConductivity = 1` | typeId 0（空）没有类型条目，可配常量 |
 
 #### 当前生产类型的辐射率 ε
@@ -720,6 +733,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 | 沙 / 土 / 湿土 / 石（固） | `1.0` | 沙/岩/土/湿土都是近黑体，与旧行为一致 |
 | 水（`WaterParticle`） | `1.0` | 水是近黑体（红外吸收极强），水面照常散热 |
 | 大气（`AtmosphereParticle`） | `0.1` | **N₂/O₂ 对红外透明**：气柱不逐格漏热，地表的热才能铺到网格顶 |
+| 火（`FireParticle`） | `1.0` | 近黑体：暴露的火焰面照常辐射散热（火的温度靠注入上限封顶，不靠 ε） |
 | 空气 | `AirThermalEmissivity = 1`（代码默认）/ 资产 `0.1` | typeId 0（空）没有类型条目，可配常量 |
 
 > **ε 的取法只看一件事：这份物质发出去的红外，有多少真的逸出到太空。**
@@ -731,7 +745,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 
 气体不再是「永远向上」：`ParticleRules.TryBuoyantStep` 把本格温度与四邻均温比较——**热升、冷沉、死区（±1°）内不动**；`TryThermalDrift` 让气体水平流向更暖的一侧（低空海风的微观规则）——它带**风向记忆抗振荡**：唯一的更热侧若与上次漂移方向**相同**（或**无记忆**）才漂移并记下该方向，方向**相反**则无条件不走（记忆保留），本帧没有可漂方向才清记忆（记忆存在空气 flags 的 bit3-4，见 `CellFlags.DriftDirectionMask`）；浮力换行也清记忆。决策完全确定、不消耗随机数。没有它，`Swap` 互换温度后梯度对刚移动的格子同幅反向，任何温差阈值都挡不住乒乓（审计 B1 的位置 5,4,5,4…）。`TryRise`/`TryDiagonalRise`/`TrySink`/`TryDiagonalSink` 是它们的换位原语（同 rank 气体互换 = 混合，不走 rank 置换规则）。
 
-**气体按密度次序换位（`ParticleRules.CanGasEnter`）**：rank 只决定**类别**能否换位（`CanDisplace`），同类内部再由 `Density` 排序——气体换位的落点判据是 `自己.Density >= 目标.Density`，因此**重的气体沉穿轻的、轻的气体挤不动重的**，同密度（同类之间）照常混合。当前只有大气一种气体（密度 `0.5`），该规则为将来的气体类型保留次序语义。`IsGasOrEmpty` 仍是**纯目标判据**（看格不看发起者），保留给视线 / 通用查询。
+**气体按密度次序换位（`ParticleRules.CanGasEnter`）**：rank 只决定**类别**能否换位（`CanDisplace`），同类内部再由 `Density` 排序——气体换位的落点判据是 `自己.Density >= 目标.Density`，因此**重的气体沉穿轻的、轻的气体挤不动重的**，同密度（同类之间）照常混合。当前有大气（密度 `0.5`）与火（密度 `0.6`）两种气体：**大气推不动火**（`0.5 < 0.6`），火在将来自行运动时可换进大气格。`IsGasOrEmpty` 仍是**纯目标判据**（看格不看发起者），保留给视线 / 通用查询。
 
 水循环不再由"粒子类型互变"表达，而是**水 ⇌ 湿度场的湿度**：
 
@@ -1046,13 +1060,14 @@ Assets/Scripts/
       HumusSoilParticle.cs                    腐殖土（固体；土壤被腐殖质改良后的黑色形态，与干土同款粉末运动，稳定无变化。不可在编辑器中选择）
       AquaticSeedParticle.cs                  水生态种子（固体粉末，摩擦 / 粘性 0.5；flags bit5-6 与草种子共用 = 无发芽条件计数。随机刻命中且「正上方是液体 + 正下方是软底」时发芽成水生植物，自下而上**位移式抽茎** 1-3 格——把连续水柱顶端之上的气体格 Set 成水、目标格变植物，水只是被顶上去、不销毁；连续 3 次无发芽条件则变成腐殖质。不可在右键循环，但可单颗投放）
       AquaticPlantParticle.cs                 水生植物（固体 + Organic，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**随机刻**里按顺序：① 正上方是固体（非同类）时被压死、死亡向下清整段（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙}（或同株下段）时失去扎根、死亡向上清整段；③ 八邻无液体时脱水、单格死；④ 温度 > 50 或 < 0 死；⑤ 10% 概率在半径 2 格圆盘内把第一个「非持水基质 {沙/干土/腐殖土}、正上方是液体、正下方是软底」的格 SetPhase 成水生态种子。不可在编辑器中选择）
+      FireParticle.cs                         火（气体；接触点燃邻接的草（八邻固定序，1/20 每逻辑帧；有草时不摇熄灭骰）、接触烤干邻接湿土（先烤干、水汽走湿度场守恒，随后走快熄骰）、贴水/湿土快熄骰 1/20（遇水火死得快）、裸火 1/120 自然熄灭（期望约 6 秒）、每逻辑帧向本格注入热量 250（格温 < 400 才注入，烤热贴着的沙/石）；投放资格 CanPlaceAt：不覆盖实体、需附着物不浮空；不移动；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 缩放整场亮度：白天上限、夜晚下限）
   Driver/
     ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、热力学系数、随机刻格数
     ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度；`_simulate`（关 = 暂停全部帧），暴露 `Pause()` / `Resume()` / `Paused`（无输入判断）
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
-    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（只循环材料类固/液，Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、鼠标旁显示当前类型；`_unplaceableTypes` / `_singlePlacementTypes` 两个按类型名配置的白名单（单颗投放 + 500ms 冷却）
+    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、鼠标旁显示当前类型；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却 / Gas 可手刷例外）
     ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度接到 world.Light
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
@@ -1070,9 +1085,10 @@ Assets/Tests/EditMode/
   WeatherParticleTests.cs                     气象：浮力方向（热升/冷沉/死区，含绝热直减降温）/水平热压流（直调原语，隔离表）+ 湿度场（蒸发提升附近湿度 / 水平冷→热 / 竖直越热越向上 / 随风平流 / 输送守恒 / 凝结释放潜热）+ 降雨（碰并凑整、液体不持有湿度）+ 水循环总量守恒 + 云渲染（湿度染白）+ 云遮光（按列 Beer–Lambert 衰减、逐列独立）（生产注册路径——跨类型相变依赖 ParticleIds 回填；云遮光测试用隔离表 + `new ParticleWorld(w,h,seed,types)` 直构）
   ThermalDriftTests.cs                        大气水平热压流的风向记忆（隔离类型表，直接调 TryThermalDrift / OnMotion）：两格走廊不再逐帧往返（B1 回归）/ 大温差净输运保留 / 梯度消失即清记忆允许新方向 / 写记忆不破坏 bit0 处理标记 / 浮力换行清记忆 / 反向漂移被挡且记忆保留
   AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 环境低温（T=0）不冻死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
+  FireParticleTests.cs                        火：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在腐殖土与水生植物之后）+ 无燃料时不移动不增殖、寿命到自灭 + 放热（第一帧四邻升温、火格温度显著超环境、四邻烤到草致死线以上）+ 自然熄灭终态为空气（非腐殖质）+ 蔓延烧光草后全部熄灭（八邻点燃 + 有草不熄；过程火数 >1，终态只余空气或腐殖质——含 20% 腐殖质残留）+ 投放资格（不覆盖实体、不浮空、火链 / 大气 / 越界边界）+ 烤热贴着的沙 / 石（十帧后 > 100 度）+ 遇湿土先烤干再加速熄灭（精确帧校准：种子 6 → 第 29 帧；第一格烤干后其后被空气饱和节流、水守恒）+ 遇水快速淬灭（种子 14 → 第 17 帧；水原样保留；生产表 + 固定种子校准）
 ```
 
-测试总数 **171**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16。
+测试总数 **181**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 10。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 
@@ -1100,8 +1116,8 @@ Particle Sandbox
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。
 - **暂停/恢复（空格）**：`ParticleEditor._pauseKey`（默认 `Space`；设 `None` 关闭热键）每帧检测按下，按当前状态调驱动的 `Pause()` / `Resume()`——暂停时运动帧与逻辑帧**一起冻结**、时间不累加（恢复不补跑暂停期间堆积的帧），画面停在最后一帧；再按一次继续。驱动侧只提供 `Pause()` / `Resume()` / `Paused`（及 `Simulate`）等状态与方法，**不含输入判断**。暂停中 `ParticleEditor` 画完会自己 `PresentNow()` 上屏，因此暂停状态下依然能涂改并立即看到结果。
 - **沙箱尺寸可在 Inspector 调整**：驱动上的 `_widthOverride` / `_heightOverride`（0 = 用 `ParticleSimulationSettings` 资产的 `Width` / `Height`，非 0 则覆盖，夹在 1..4096）。改 Inspector 字段、改 Settings 资产宽高、或调用 `ParticleSimulationDriver.Resize(w, h)` 都会在下一帧重建一个**空**世界（已有内容不保留），渲染器随之重建纹理/mesh 并由 `_fitCameraOnInitialize` 重新框住整张网格；`ParticleEditor` 每帧从 `driver.World` 取尺寸，无需额外处理。
-- **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**只含材料类固/液**——石头/沙/土/水，外加草种子与水生态种子；大气等 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
-- **投放白名单（`ParticleEditor`）**：两个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `AquaticPlantParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗。将来有更多「单颗 + 冷却」或「不可投放」的类型时，往对应列表追加类型名即可。
+- **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**材料类固/液 + Gas 白名单**——石头/沙/土/水/火，外加草种子与水生态种子；其余 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
+- **投放白名单（`ParticleEditor`）**：三个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `AquaticPlantParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗；`_placeableGasTypes`（默认 `FireParticle`）让白名单里的 Gas 例外可手刷（Gas 默认一律不可投放——蒸汽/云/大气是水循环中间态、只能由相变产生，火是唯一例外；火还另有 `FireParticle.CanPlaceAt` 投放资格：不覆盖实体、需附着物不浮空，圆刷时不合格的格被跳过）。将来有更多「单颗 + 冷却」「不可投放」或「可手刷气体」的类型时，往对应列表追加类型名即可。
 - **光标格读数（`ParticleEditor`，屏幕左上角）**：常驻一行 `(x,y)  粒子名  T=温度  Q=热量  湿度=…`，显示光标指向的那一格；光标落在网格外则显示「视口外」。温度是导出量 `T = Q / C`（C 取该格类型的热容，气体还会加上该格**湿度**带来的附加热容 `HeatMap.HumidityHeatCapacity`），湿度对固/液恒为 0。纯调试读数：只读 `world.Heat` / `world.Humidity`，不参与模拟，也不改动任何状态。
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。

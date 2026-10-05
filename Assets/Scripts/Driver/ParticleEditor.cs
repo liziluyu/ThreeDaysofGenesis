@@ -9,7 +9,7 @@ namespace TapTap2026.Game
     /// <summary>
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
-    /// **右键**在可投放类型间循环切换（只含材料类：固/液；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
+    /// **右键**在可投放类型间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
     /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度。
@@ -50,8 +50,13 @@ namespace TapTap2026.Game
                  "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认草种子与水生态种子，将来可追加。")]
         [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle", "AquaticSeedParticle" };
 
+        [Tooltip("可手动投放的 Gas 类型白名单（按 DebugName 或类名匹配）：Gas 默认一律不可投放" +
+                 "（蒸汽 / 云 / 大气是水循环的中间态，只能由相变产生），火是当前唯一可手刷的例外。")]
+        [SerializeField] private string[] _placeableGasTypes = { "FireParticle" };
+
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
         private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();
+        private readonly HashSet<ushort> _placeableGas = new HashSet<ushort>();
         private ushort[] _placeable = new ushort[0];
         private int _cursor;
         private ushort _typeId;
@@ -105,10 +110,12 @@ namespace TapTap2026.Game
             }
 
             // 注册表由 ParticleRegistration 的 BeforeSceneLoad 钩子填充，因此这里读得到全部类型。
-            // 两个白名单按名字解析成 typeId：不可投放集合决定右键循环里有哪些类型，
-            // 单颗投放集合决定哪些类型走「单颗 + 冷却」而不是圆形笔刷。
+            // 三个白名单按名字解析成 typeId：不可投放集合决定右键循环里剔除哪些类型，
+            // 单颗投放集合决定哪些类型走「单颗 + 冷却」而不是圆形笔刷，
+            // Gas 白名单决定哪些 Gas 类型（默认只有火）例外可手刷。
             ResolveTypeNames(_unplaceableTypes, _unplaceable);
             ResolveTypeNames(_singlePlacementTypes, _singlePlacement);
+            ResolveTypeNames(_placeableGasTypes, _placeableGas);
             _placeable = CollectPlaceableTypes();
             if (_placeable.Length == 0)
             {
@@ -239,6 +246,8 @@ namespace TapTap2026.Game
         /// 投放当前粒子。普通类型填满以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆；
         /// **单颗投放白名单**里的类型（见 <see cref="_singlePlacementTypes"/>）无论半径多大都只在中心落一颗，
         /// 且两次投放之间共享 <see cref="SinglePlacementCooldownSeconds"/> 的冷却。
+        /// **火**另有投放资格判定（<see cref="FireParticle.CanPlaceAt"/>）：不覆盖实体、必须有附着物——
+        /// 不合格的格被跳过（圆内部分投放，其余类型不受影响）。
         /// </summary>
         /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0。</returns>
         public int Paint(ParticleWorld world, int cx, int cy)
@@ -256,6 +265,12 @@ namespace TapTap2026.Game
                 for (int dx = -BrushRadius; dx <= BrushRadius; dx++)
                 {
                     if (dx * dx + dy * dy > radiusSquared)
+                    {
+                        continue;
+                    }
+
+                    // 火不许覆盖实体、不许浮空（见 FireParticle.CanPlaceAt）；其余类型照常投放。
+                    if (_typeId == ParticleIds.Fire && !FireParticle.CanPlaceAt(world, cx + dx, cy + dy))
                     {
                         continue;
                     }
@@ -354,8 +369,9 @@ namespace TapTap2026.Game
                 x, y, name, temperature, heat, humidity);
         }
 
-        /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、所有 Gas 类型
-        /// （蒸汽/云/大气是水循环的中间态，只能由相变产生），以及 <see cref="_unplaceableTypes"/> 里的类型
+        /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、所有不在
+        /// <see cref="_placeableGasTypes"/> 白名单里的 Gas 类型（蒸汽/云/大气是水循环的中间态，
+        /// 只能由相变产生；火是白名单例外），以及 <see cref="_unplaceableTypes"/> 里的类型
         /// （草与湿土只能由模拟产生）。</summary>
         private ushort[] CollectPlaceableTypes()
         {
@@ -385,9 +401,14 @@ namespace TapTap2026.Game
 
         private bool IsPlaceable(ParticleType type, int typeId)
         {
-            return type != null
-                && (type.Info.Tags & ParticleTags.Gas) == 0
-                && !_unplaceable.Contains((ushort)typeId);
+            if (type == null || _unplaceable.Contains((ushort)typeId))
+            {
+                return false;
+            }
+
+            // Gas 默认不可手刷；白名单（_placeableGasTypes，默认火）里的 Gas 例外放行。
+            bool isGas = (type.Info.Tags & ParticleTags.Gas) != 0;
+            return !isGas || _placeableGas.Contains((ushort)typeId);
         }
 
         /// <summary>
