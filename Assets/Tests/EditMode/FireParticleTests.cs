@@ -7,7 +7,7 @@ namespace TapTap2026.Tests
     /// 火粒子的行为契约：接触点燃邻接的草（逐步蔓延直至烧光）、每逻辑帧放热抬升周围温度
     /// （贴着的沙 / 石会被烤热）、**失去附着物会下沉并在空中快速熄灭**、遇到石头 / 沙 / 水 / 湿土
     /// 快速熄灭、遇到湿土先将其烤成干土、每逻辑帧视觉跳动（shade 随机游走）；投放资格（不覆盖实体、
-    /// 不浮空、**火焰不算附着物**）；以及生产注册路径（追加注册的 Gas、调色板不透明）。
+    /// 不浮空；**投放锚点含火链**——物理附着不含火）；以及生产注册路径（追加注册的 Gas、调色板不透明）。
     /// </summary>
     /// <remarks>
     /// 全部用**生产类型表**（<c>new ParticleWorld(w, h, seed)</c>）：火的点燃目标按
@@ -40,6 +40,36 @@ namespace TapTap2026.Tests
             }
 
             return count;
+        }
+
+        /// <summary>模拟 ParticleEditor.Paint 的圆形笔刷（同序：dy 由低到高、dx 由小到大、圆形裁剪），
+        /// 逐格走火的投放资格判定并落子，返回落点格数。</summary>
+        private static int PaintCircle(ParticleWorld world, int cx, int cy, int radius)
+        {
+            int radiusSquared = radius * radius;
+            int written = 0;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    if (dx * dx + dy * dy > radiusSquared)
+                    {
+                        continue;
+                    }
+
+                    if (!FireParticle.CanPlaceAt(world, cx + dx, cy + dy))
+                    {
+                        continue;
+                    }
+
+                    if (world.Set(cx + dx, cy + dy, ParticleIds.Fire))
+                    {
+                        written++;
+                    }
+                }
+            }
+
+            return written;
         }
 
         /// <summary>
@@ -250,8 +280,8 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 投放资格 ②：**不许浮空**——目标格八邻内必须有附着物（固 / 液的一格；**火焰不算附着物**）；
-        /// 同时覆盖：大气格（气体）可投放、越界不可投放。
+        /// 投放资格 ②：**不许浮空**——目标格八邻内必须有锚点（固 / 液的一格，或另一格火：
+        /// 投放层允许火链，见圆刷回归测试）；同时覆盖：大气格（气体）可投放、越界不可投放。
         /// </summary>
         [Test]
         public void Fire_Placement_NeedsAttachment_NoFloating()
@@ -267,10 +297,11 @@ namespace TapTap2026.Tests
             Assert.IsFalse(
                 FireParticle.CanPlaceAt(world, 7, 7), "离附着物两格（浮空）不可投放");
 
-            // 火焰不算附着物：与已有的火相邻（正交 / 斜角）也不可投放——不许火柱链式投放。
+            // 投放锚点含火链：与已有的火相邻（正交 / 斜角）也可以投放——圆刷靠它连锁铺满整团火。
+            // 注意物理燃烧的附着物仍不含火（刷出的无支撑火会下沉 / 快熄，见坠落测试）。
             world.Set(8, 8, ParticleIds.Fire);
-            Assert.IsFalse(FireParticle.CanPlaceAt(world, 8, 9), "火焰不算附着物：正交火链不可投放");
-            Assert.IsFalse(FireParticle.CanPlaceAt(world, 9, 9), "火焰不算附着物：斜向火链不可投放");
+            Assert.IsTrue(FireParticle.CanPlaceAt(world, 8, 9), "正交火链（投放锚点）可投放");
+            Assert.IsTrue(FireParticle.CanPlaceAt(world, 9, 9), "斜向火链（投放锚点）可投放");
 
             // 大气格（气体）可投放：大气是可替换的环境气。
             world.Set(12, 12, ParticleIds.Atmosphere);
@@ -282,27 +313,51 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 火贴着沙 / 石会被**热传导**烤热（热容小、导热快，几帧就到上百度）；同时火因贴着
-        /// 石头 / 沙（非草木实体）走**快熄骰**快速熄灭——「烤热」与「速灭」两个效果并存。
-        /// 种子 2026 实测校准：快熄骰第 55 帧命中（此前一直在放热）。
+        /// 圆刷回归（「无论笔刷多大只有薄薄一层」的修复）：半径 2 的实心圆（13 格）悬在地面上方，
+        /// 按编辑器笔刷顺序逐格判定——底格先锚到地面，上面的格子再锚到已落下的火，13 格全落；
+        /// 高空同一半径没有任何锚点，一格都放不下（不许浮空）。
+        /// </summary>
+        [Test]
+        public void Fire_Placement_CircleBrush_FillsBlobOnGround_NoneInAir()
+        {
+            var world = new ParticleWorld(32, 16, 2026u);
+            for (int gx = 13; gx <= 17; gx++)
+            {
+                world.Set(gx, 0, ParticleIds.Grass);   // 一块草地面
+            }
+
+            // 圆心 (15,3)、半径 2：圆的最低格（15,1）贴着草地，其余靠火链向上铺。
+            Assert.AreEqual(13, PaintCircle(world, 15, 3, 2), "贴地圆刷应连锁铺满整团火（13 格全落）");
+
+            // 高空同一半径：没有任何锚点，一格都不应落下。
+            Assert.AreEqual(0, PaintCircle(world, 15, 10, 2), "悬空圆刷（无锚点）应一格都放不下");
+        }
+
+        /// <summary>
+        /// 火贴着（侧邻）沙 / 石会被**热传导**烤热（热容小、导热快，几帧就到上百度）；同时火因贴着
+        /// 石头 / 沙（非草木实体）走**快熄骰**逐渐熄灭——「烤热」与「速灭」两个效果并存。
+        /// 注意**正下方**是石头 / 沙 / 水时会当帧直接熄灭（见压顶测试）——本测试因此把沙 / 石放在
+        /// 火的两侧、火托在土上。第一帧无论火是否被快熄骰命中，沙 / 石都至少获得一帧的炙烤热量。
         /// </summary>
         [Test]
         public void Fire_HeatsAdjacentSandAndStone()
         {
             var world = new ParticleWorld(16, 16, 2026u);
+            world.Set(8, 0, ParticleIds.Soil);    // 土托底（不在淬熄 / 压顶集合里）
             world.Set(7, 0, ParticleIds.Stone);
             world.Set(7, 1, ParticleIds.Stone);   // 石柱（高摩擦，稳定）
-            world.Set(8, 0, ParticleIds.Sand);
-            world.Set(9, 0, ParticleIds.Sand);    // 底行的沙（不会移动）
-            world.Set(8, 1, ParticleIds.Fire);    // 火：正下方是沙、左方是石
+            world.Set(9, 0, ParticleIds.Stone);
+            world.Set(10, 0, ParticleIds.Stone);  // 底行石（托住沙并挡住右侧斜滑）
+            world.Set(9, 1, ParticleIds.Sand);    // 沙：下方有石、两侧斜滑位被挡 → 不会移动
+            world.Set(8, 1, ParticleIds.Fire);    // 火：左方是石、右方是沙（侧邻 → 快熄骰）
 
             for (int i = 0; i < 6; i++)
             {
                 world.StepLogic();
             }
 
-            Assert.Greater(world.Heat.GetTemperature(8, 0), 50f, "火正下方的沙应被热传导烤热");
-            Assert.Greater(world.Heat.GetTemperature(7, 1), 50f, "火左方的石应被热传导烤热");
+            Assert.Greater(world.Heat.GetTemperature(9, 1), 20f, "火右方的沙应被热传导烤热");
+            Assert.Greater(world.Heat.GetTemperature(7, 1), 20f, "火左方的石应被热传导烤热");
 
             int steps = 6;
             while (CountType(world, ParticleIds.Fire) > 0 && steps < 400)
@@ -311,7 +366,33 @@ namespace TapTap2026.Tests
                 steps++;
             }
 
-            Assert.AreEqual(55, steps, "种子校准：贴着石头 / 沙的火第 55 帧被快熄骰熄灭");
+            Assert.AreEqual(0, CountType(world, ParticleIds.Fire), "贴着石头 / 沙（侧邻）的火应被快熄骰熄灭");
+        }
+
+        /// <summary>
+        /// 被实体**压顶**直接熄灭：石头落在火上 → 世界 rank 规则把火置换到石头正上方（Swap）→
+        /// 火在下一逻辑帧立即熄灭（"正下方是石头 / 沙 / 水 → 当帧立灭、不摇骰"）。
+        /// 全过程不消耗随机数、与种子无关：石头落下的那一帧火还没轮到扫描、第二帧被顶时直接 Clear。
+        /// </summary>
+        [Test]
+        public void Fire_CrushedFromAbove_IsExtinguishedImmediately()
+        {
+            var world = new ParticleWorld(16, 16, 2026u);
+            world.Set(8, 0, ParticleIds.Soil);    // 土托底：火先正常燃烧
+            world.Set(8, 1, ParticleIds.Fire);
+            world.Set(8, 2, ParticleIds.Stone);   // 悬在火上方的石头
+
+            // 第 1 帧：石头落下（固体沉穿气体）——火被顶到石头正上方一格。
+            world.StepLogic();
+            Assert.AreEqual(
+                (int)ParticleIds.Fire, (int)world.GetCell(8, 2).typeId,
+                "石头落进火格：火被置换到石头上方一格（世界 rank 规则）");
+            Assert.AreEqual((int)ParticleIds.Stone, (int)world.GetCell(8, 1).typeId, "石头落到火原来的位置");
+
+            // 第 2 帧：火的正下方是石头 → 被压顶，当帧直接熄灭。
+            world.StepLogic();
+            Assert.AreEqual(0, CountType(world, ParticleIds.Fire), "被实体压顶的火应在下一逻辑帧立即熄灭");
+            Assert.AreEqual((int)ParticleIds.Air, (int)world.GetCell(8, 2).typeId, "熄灭后那格应为空气");
         }
 
         /// <summary>
