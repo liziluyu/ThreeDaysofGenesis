@@ -246,8 +246,9 @@ namespace TapTap2026.Game
         /// 投放当前粒子。普通类型填满以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆；
         /// **单颗投放白名单**里的类型（见 <see cref="_singlePlacementTypes"/>）无论半径多大都只在中心落一颗，
         /// 且两次投放之间共享 <see cref="SinglePlacementCooldownSeconds"/> 的冷却。
-        /// **火**另有投放资格判定（<see cref="FireParticle.CanPlaceAt"/>）：不覆盖实体、必须有附着物——
-        /// 不合格的格被跳过（圆内部分投放，其余类型不受影响）。
+        /// **火**另有投放资格判定（<see cref="FireParticle.CanPlaceAt"/>）：不覆盖实体、八邻内必须有**锚点**——
+        /// 固 / 液的一格，**或另一格火**（投放层允许火链互相锚定，圆刷贴地时能连锁铺满整团火；
+        /// 物理燃烧的附着物**不含火**）。不合格的格被跳过（圆内部分投放，其余类型不受影响）。
         /// </summary>
         /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0。</returns>
         public int Paint(ParticleWorld world, int cx, int cy)

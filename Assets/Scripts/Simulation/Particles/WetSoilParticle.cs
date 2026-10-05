@@ -17,7 +17,8 @@ namespace TapTap2026.Simulation
     //   · 受热上行（T ≥ DryingTemperature）：水优先往上走，同样有 1/PercolationDenominator（= 50%）
     //     的概率门（与下渗对称，消除热源消失时相邻两格的往返）——上方是干土就把那格变成湿土；
     //     上方是空气且空气没吸饱，就像水粒子慢蒸发一样把一份水汽摊进空气（不可见，走湿度场），
-    //     但干燥要从土壤吸走相变潜热（LatentHeat，随温度线性）。
+    //     但干燥要从土壤吸走热容差潜热（DryingLatentHeatPerDegree × T = 1.2T，随温度线性；
+    //     与水↔大气的 HumidityField.LatentHeat（5.5T）不同源）。
     //   · 常温迁移（T < DryingTemperature）：**有压才渗**——只有正上方是水或湿土（被上方的水柱 /
     //     湿层压着，即有水头压力）时，才以每逻辑帧 1/PercolationDenominator（= 50%）的概率把水
     //     交给**正下方**的干土（首选）；正下方被石头/沙/水/湿土挡住时，按随机顺序改试同行左右干土。
@@ -45,6 +46,11 @@ namespace TapTap2026.Simulation
         /// <summary>水在湿土里携带的热容份额：湿土热容 2.0 − 干土热容 0.8 = 1.2。
         /// 水迁移时按 <c>ΔQ = T(源) × 1.2</c> 搬热（热随物质走），使两侧温度不因换格而跳。</summary>
         private const float WaterShareHeatCapacity = 1.2f;
+
+        /// <summary>湿土 → 干土的干燥潜热系数：湿土热容 2.0 − 干土热容 0.8 = 1.2，随温度线性。
+        /// 与水 ↔ 大气的 <see cref="HumidityField.LatentHeat"/>（5.5T）**不同源**：5.5 是水的
+        /// 汽化口径（C_水 6.5 − C_空气 1），干燥的相变双方是湿土与干土，温度连续只补热容差这一份。</summary>
+        private const float DryingLatentHeatPerDegree = 1.2f;
 
         private static readonly Color32[] Palette =
         {
@@ -97,10 +103,12 @@ namespace TapTap2026.Simulation
                     && world.Humidity.SpreadUnitIntoAir(
                         world, x, y, HumidityField.InvisibleSpreadRadius, HumidityField.InvisibleSpreadMaxShare) > 0)
                 {
-                    // C1 潜热：干燥要从土壤吸热——SetPhase 保留 Q，故相变完成后再对本格补一笔负潜热（随温度）。
+                    // C1 潜热：干燥要从土壤吸热——SetPhase 保留 Q，故相变完成后再对本格补一笔负潜热。
+                    // 系数取**湿土→干土的热容差** 1.2（湿土 2.0 − 干土 0.8，随温度线性），**不是**
+                    // 水的 HumidityField.LatentHeat（5.5T，水↔大气的口径）：错取 5.5T 会过冷、土温为负。
                     float temperature = world.Heat.GetTemperature(x, y);
                     world.SetPhase(x, y, ParticleIds.Soil);
-                    world.Heat.AddHeat(x, y, -HumidityField.LatentHeat(temperature));
+                    world.Heat.AddHeat(x, y, -DryingLatentHeatPerDegree * temperature);
                 }
 
                 // 热土只走上行 / 蒸发：温度低于干燥阈值才允许下渗（B7），否则热源一消失就会立刻往回渗。

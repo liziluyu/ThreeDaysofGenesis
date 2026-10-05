@@ -137,8 +137,8 @@ namespace TapTap2026.Simulation
         /// 只有非固非液的格持有湿度；水蒸发提升湿度，湿度像热量一样传播并带温度定向
         /// （水平冷→热、竖直越热越向上），高值低温处凝结成雨。
         /// 湿度随 <see cref="Swap"/> 被气流搬走（云随风平移）；<see cref="Set"/> / <see cref="Clear"/> 换上全新物质时，
-        /// 目标若是气体则本格湿度清零；目标若是固/液（不持有湿度），则该格残余先由 <see cref="EvacuateHumidity"/>
-        /// 推给四邻气体格再清零（推不掉则留下，守恒优先于不变量）。
+        /// 本格残余水汽一律先由 <see cref="EvacuateHumidity"/> 推给四邻气体格再清零——无论目标是气体还是固/液
+        /// （固/液不持有湿度），旧水汽都不会被就地湮灭（推不掉则留下，守恒优先于不变量）。
         /// 蒸发 / 凝结 / 降水都是 1:1 搬运，因此水总量守恒。见 <see cref="HumidityField"/>。
         /// </summary>
         public HumidityField Humidity
@@ -363,8 +363,9 @@ namespace TapTap2026.Simulation
         /// 执行顺序严格为：读受害者 → 受害者 <c>OnKill(world, x, y, typeId)</c>（此刻网格上仍是受害者本体）
         /// → 写入新格（typeId / flags = 当前标记 / shade 重新抽样）→ 新类型 <c>OnSpawn</c>。
         /// 因此 <c>OnKill</c> 内对本格的写会被随后写入的新格覆盖，残留物必须写到邻居格。
-        /// 换上的是**全新物质**：旧物质离场，但它的热就地留给新物质（继承该格原有热量）；目标换成非气体（固/液）时，
-        /// 旧格的水汽先由 <see cref="EvacuateHumidity"/> 推给四邻气体格再清零（推不掉则留下，守恒优先于不变量）。
+        /// 换上的是**全新物质**：旧物质离场，但它的热就地留给新物质（继承该格原有热量）；旧格残余水汽
+        /// （本格残湿 > 0 时）先由 <see cref="EvacuateHumidity"/> 推给四邻气体格再清零，无论目标是气体
+        /// 还是固/液（推不掉则留下，守恒优先于不变量）。
         /// 同类型重复 Set 是空操作，不触发任何钩子、不消耗随机数。
         /// </remarks>
         /// <returns>坐标越界或 typeId 未注册则 false（非法 typeId 只报错一次）。</returns>
@@ -404,17 +405,11 @@ namespace TapTap2026.Simulation
             // 新物质继承该格原有热量：旧物质离场，但它的热视作就地留给了新物质（新生成的有机物
             // 不会被拍成 0°——例如夜里发芽的草继承暖空气的 Q，不会当帧冻死）。相变要带走自己的热时用 SetPhase。
 
-            // 水汽也是旧物质的一部分：目标是非气体（固/液）时，固/液不持有湿度，先把本格水汽推给四邻
-            // 气体格再清零（推不掉则留在原地，守恒优先，见 EvacuateHumidity）。目标仍是气体则按
-            // 「全新物质」语义直接清零。
-            if (IsGasType(typeId))
-            {
-                _humidity.ResetAt(index);
-            }
-            else
-            {
-                EvacuateHumidity(x, y, index);
-            }
+            // 水汽也是旧物质的一部分：无论目标是气体还是固/液，本格残余水汽都先推给四邻气体格再清零
+            // （推不掉则留在原地，守恒优先，见 EvacuateHumidity）。旧写法对气体目标直接 ResetAt 会
+            // 凭空湮灭水汽（FB2：火蔓延 / 自灭）；固/液目标本不持有湿度，两条路径因此统一为同一疏散
+            // 语义，residual <= 0 的快路径由 EvacuateHumidity 内部保留。
+            EvacuateHumidity(x, y, index);
 
             if (typeId == ParticleRegistry.AirTypeId)
             {
@@ -710,10 +705,12 @@ namespace TapTap2026.Simulation
         /// 把 (x,y) 一格的水汽**全部**推给四邻气体格，随即把本格湿度清零；无气体邻居可推时留在原地。
         /// </summary>
         /// <remarks>
-        /// 调用时机：一格即将变成非气体（固/液）——<see cref="Set"/> / <see cref="SetPhase"/> 在目标非气体时调用，
+        /// 调用时机：任何覆盖旧气体的写入——<see cref="Set"/> 无条件调用（目标气体或固/液皆然），
+        /// <see cref="SetPhase"/> 在目标非气体时调用（相变到气体则原样携带湿度、不经此处），
         /// 降雨凝结路径则经 <see cref="SetPhase"/> 间接走到这里。固/液不持有湿度：若留下残余，等它日后
-        /// 相变回气体时会与新增的水汽叠加、凭空造水（实测：每 4000 tick 多出 0.3 个水格）。
-        /// 四面都不是气体时**不清零**——守恒优先于「固/液不持有湿度」这条不变量。
+        /// 相变回气体时会与新增的水汽叠加、凭空造水（实测：每 4000 tick 多出 0.3 个水格）；气体被直接
+        /// 覆盖若就地清零，同样会凭空湮灭水汽（FB2：火蔓延 / 自灭）。四面都不是气体时**不清零**——
+        /// 守恒优先于「非固液格才持湿」这条不变量。
         /// </remarks>
         private void EvacuateHumidity(int x, int y, int index)
         {

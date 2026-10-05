@@ -2,72 +2,85 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // FireParticle —— 火焰（气体；**接触点燃**邻接的草、**接触烘干**邻接的湿土，遇石头 / 沙 / 水 / 湿土
-    //   快速熄灭；失去附着物会下沉并在空中快速熄灭；每逻辑帧放热、跳动着燃烧）
+    // FireParticle —— 火焰（气体；**接触点燃**邻接的草、**接触烘干**邻接的湿土，遇石头 / 沙 / 水快速熄灭；
+    //   每逻辑帧放热、按温度上色；贴燃料时定在原地燃烧并向上抛出火舌，失去附着物则上升 + 摇曳并迅速熄灭）
     //
-    // flags 私有位：无（bit3-7 全部空闲；也不使用 CellFlags.Burning——该位当前没有任何消费者）
-    // 邻居查询范围：**八邻**（固定顺序：左 → 右 → 下 → 上 → 左下 → 右下 → 左上 → 右上），每帧读一遍做：
-    //   燃料判定（第一格草）、干化目标（第一格湿土）、淬熄判定（石头 / 沙 / 水 / 湿土的邻接）、
-    //   附着物判定（固 / 液的一格——**火焰不算附着物**，火柱不会互相支撑；火是气体，天然不被
-    //   Solid/Liquid 判据命中）。**投放**资格的锚点判定不同源：除固 / 液外**火链也算锚点**——
+    // flags 私有位：无（bit3-4 大气风向记忆、bit5-6 种子计数占用中；bit7 空闲但本类型不使用）
+    //   （也不使用 CellFlags.Burning——该位当前没有任何消费者。）
+    // 邻居查询范围：**八邻**（固定顺序：左 → 右 → 下 → 上 → 左下 → 右下 → 左上 → 右上），每逻辑帧读一遍做：
+    //   附着物判定（固 / 液的一格）、燃料判定（第一格草）、干化目标（第一格湿土）、淬熄判定
+    //   （第一格液体、第一格石头 / 沙 / 湿土）。**火焰不算附着物**（火是气体，天然不被 Solid/Liquid
+    //   判据命中）——火柱不会互相支撑。**投放**资格的锚点判定不同源：除固 / 液外**火链也算锚点**——
     //   同笔刷 / 已有的火可以互相锚定，圆刷贴地时能连锁铺满整团火；完全悬空时一格都放不下。
-    //   物理燃烧的附着物始终不含火：刷出的无支撑火仍会下沉并按 20%/帧熄灭（火团会「塌落」）。
+    //   物理燃烧的附着物始终不含火。
     // 交互的 ParticleIds：Grass → Fire（接触点燃，Set 成火）；WetSoil → Soil（接触烘干——先确认水汽
     //   摊得出去（走湿度场的不可见播撒，与湿土受热蒸发的口径完全一致），水不凭空消失；摊不出去则保留）。
     //   石头 / 沙 / 水 / 湿土只作为**淬熄触发**（见下），不改动对方；液体按标签判（当前所有液体视为水）。
     //   注意：草带 Organic 标签，世界的 MaybeLeaveHumus 规则会在 Set 之后按 20% 概率把那格改判成腐殖质——
     //   **烧过的草地可能留下腐殖质残迹**，这是世界通用规则、不是火的行为。
     //
-    // 为什么是 Gas：要被固体 / 液体沉穿（沙落穿火、水浇进火），且失去附着物时要能下沉——
-    //   Gas 标签让火无需特判即可复用气体原语（TrySink / CanGasEnter）。密度 0.6 比环境大气（0.5）重，
-    //   大气推不动它、火能沉穿大气。
+    // 为什么是 Gas：要被固体 / 液体沉穿（沙落穿火、水浇进火）；上升 / 摇曳也复用气体原语
+    //   （ParticleRules.CanGasEnter）。密度 0.6 比环境大气（0.5）重：大气推不动它。
     //
-    // 行为（① 在逻辑钩子开头、②-⑥ 在 OnLogic 20 Hz；下沉在 OnMotion 60 Hz）：
-    //   ① 跳动：本格 shade 沿调色板随机游走一步（±1，撞界弹回）——纯视觉、确定性哈希、**不消耗世界
-    //      随机流**。多格混排即「跳动的火色」，像现实火焰的闪烁。
-    //   ② 放热：本格温度低于 PeakTemperature 时向本格注入 FireHeatPerTick。热由世界每逻辑帧自动做
-    //      四邻传导扩散（火绝不自己做传导）。紧贴的沙 / 石会被烤热（热容小、导热快，几帧就到上百度，
-    //      随后火被 ⑤a 淬熄）、近处的草会被「烤」、紧邻的水会趋近沸腾点（80）。
-    //   ③ 八邻扫描（只读，不摇骰）：燃料 / 干化目标 / 淬熄触发 / 附着物。
-    //   ④ 干化（先于熄灭骰）：遇到湿土就先把它烤成干土（TryDryWetSoil）。
-    //   ⑤ 熄灭：「被压顶」优先——**正下方是石头 / 沙 / 水**（实体顶到火头上）→ **当帧直接熄灭、不摇骰**：
-    //      石头 / 沙落在火上时，世界的 rank 规则会先把火置换到实体正上方（Swap），火在下一逻辑帧
-    //      立即熄灭——修复「火被顶到石头上方继续烧」（位移本身是 rank 规则，火代码无法拦截，
-    //      但能做到「顶上去即灭」）。其余情况按三优先档，每帧恰摇一次骰：
-    //      a. 贴着**石头 / 沙 / 水 / 湿土**（非草木的实体，侧 / 斜 / 上邻）→ 快熄骰 1/QuenchDenominator
-    //         （20，期望约 1 秒）：被石头压、被沙埋、被水浇都会快速熄灭。注意**干土与腐殖质 / 腐殖土
-    //         有意不参与淬熄**：草必须长在土上、腐殖类又是草地被烧后留下的残渣——若它们也淬熄，
-    //         火线会被自己脚下的土 / 刚留下的残渣按灭，「烧光草地」的既有验收会破（离线推演过：
-    //         分支率 0.8×点火节奏 < 1）。
-    //      b. 没有附着物（飘在空中、正在下沉）→ 坠落熄灭骰 1/UnsupportedExtinguishDenominator（5 = 20% 每
-    //         逻辑帧）：期望约 5 帧内熄灭，下沉几格后熄灭。
-    //      c. 有附着物但燃料烧尽 → 普通熄灭骰 1/BurnoutDenominator（120，期望约 6 秒，几何分布）。
-    //   ⑥ 蔓延：有燃料（必然带附着物——草是固体）时以 1/IgnitionDenominator 的概率点燃第一格草
-    //      （Set 成火，新火有全新寿命）。**有燃料且不贴淬熄物时不摇熄灭骰**——保证邻接燃料必被逐格
-    //      吃掉（否则火线会随机断代，烧过的格变成空气、火不能穿过空气回头补烧，草地上就留下烧不掉的
-    //      零星残株——离线模拟复现过）。
-    //   每帧的随机消耗：贴淬熄物 1 个熄灭骰（若还带草再加 1 个点燃骰）；无附着物 1 个；只烧草 1 个点燃骰；
-    //   托着烧但无火燃料 1 个熄灭骰。
+    // ── v2 角色模型（每逻辑帧重判，无持久状态）──
+    //   · 附着火：八邻有固 / 液（火不算）。定在原地燃烧、注入热量、概率点燃邻接的草、向上抛射火舌。
+    //   · 游离火：八邻无固 / 液。即「火舌」——不注入热量，靠余热上升（OnLogic 末尾），随传导冷却，
+    //     冷却到熄影线（EmberTemperature）或摇中熄灭骰即消失，自然呈现「顶端越升越暗、自行收束」。
+    //   附着火的燃料烧光 / 被浇灭后，下一帧自动变游离火、上升一二格后熄灭——「脱离残渣上扬消散」是涌现的。
     //
-    // 下沉（OnMotion，60 Hz）：有附着物就定在原地；失去附着物则 TrySink（气体版下落——下方是空气 / 气体
-    //   才换位，被固 / 液挡住自然停下，落地即恢复附着）。「火焰不算附着物」意味着火柱不互相支撑，会整体下沉。
+    // 行为（OnLogic，20 Hz；**顺序即契约**）：
+    //   ① 颜色回写：shade = **本格温度的分档**（≥300→0 亮黄，200–300→1，130–200→2，80–130→3，
+    //      40–80→4，<40→5 暗红）+ (x,y,Tick) 哈希 ±1 抖动后 clamp [0,5]。shade 是温度的**派生量**
+    //      （不再由 Set 抽样 / 独立随机游走）：附着火底部恒亮，游离火越升越暗，视觉与热学同源。
+    //      哈希不消耗世界随机流。
+    //   ② 放热：**仅附着火**且本格温度 < PeakTemperature 时注入 FireHeatPerTick。游离火不注入——
+    //      离焰即离热源，配合 ① 自然得到「顶尖暗红消散」。热由世界每逻辑帧自动做四邻传导扩散
+    //      （火绝不自己做传导）。
+    //   ③ 八邻扫描（只读，不摇骰）：燃料 / 干化目标 / 淬熄触发（液体一档、石头 / 沙 / 湿土一档）。
+    //   ④ 干化（先于熄灭骰）：贴湿土且**本格火温 ≥ WetSoilParticle.DryingTemperature（60）**才允许烤干
+    //      （冷火不烤干）；水汽先确认摊得出去（IsAirSaturated / SpreadUnitIntoAir 两道门），摊不出去
+    //      则原样保留（守恒优先）。烤干按**湿土→干土的热容差** 1.2 结算潜热，不是水↔大气的 5.5。
+    //   ⑤ 熄灭（每帧恰摇一次骰，档位自上而下互斥）：
+    //      1. **压顶立灭**：正下方是石头 / 沙 / 液体 → 当帧 Clear、不摇骰（石头 / 沙 / 水落在火上时，
+    //         世界 rank 规则先把火置换到实体正上方，火在下一逻辑帧即灭）。
+    //      2. 贴**液体** → 1/WaterQuenchDenominator（5）：水是最强灭火剂，贴水期望 5 帧 ≈ 0.25 秒灭。
+    //      3. 贴**石头 / 沙 / 湿土** → 1/QuenchDenominator（20，期望约 1 秒）。
+    //         （干土与腐殖类有意不参与淬熄：草必须长在土上、腐殖类又是草地被烧后的残渣，若它们也淬熄，
+    //         火线会被自己脚下按灭，「烧光草地」的既有验收会破。）
+    //      4. **冷却即灭**：游离火本格温度 < EmberTemperature（40）→ 当帧 Clear、不摇骰（火舌顶端收束）。
+    //      5. **游离熄灭骰**：其余游离火 → 1/FreeExtinguishDenominator（8，期望 8 逻辑帧 ≈ 0.4 秒）。
+    //      6. **烧尽骰**：附着但无燃料 → 1/BurnoutDenominator（120，期望约 6 秒，几何分布）。
+    //      有燃料且不贴任何淬熄物时**不摇熄灭骰**——保证邻接燃料必被逐格吃掉（否则火线随机断代，
+    //      烧过的格变成空气、火不能穿过空气回头补烧，草地上会留下烧不掉的零星残株）。
+    //      档位 2/3 命中且带草时仍摇 ⑦ 的点燃骰（见下 RNG 消耗表）。
+    //   ⑥ 火舌抛射（附着火专属，先判后摇）：正上方是气体 / 空、且不是火、本格温度 ≥ 200 →
+    //      摇 1/TongueDenominator（10），命中 Set(x, y+1, Fire)。新火格通常无附着 → 下一帧起上升为游离火。
+    //      上方是火则跳过（火舌不叠火舌，避免垂直火柱自我无限加高）。
+    //   ⑦ 蔓延：有燃料 → 摇 1/IgnitionDenominator（20）点燃第一格草（Set 成火，新火有全新寿命）。
+    //   ⑧ 游离火上升（末尾，仅游离火，将死之火死在原地）：(x,y,Tick) 哈希 2 bit 选向
+    //      （50% 正上 / 25% 左上 / 25% 右上）→ CanGasEnter 通过则 Swap 并 return；首选被挡试另一斜上；
+    //      再被挡原地不动（**不下降**）。哈希不消耗随机流；Swap 后两格都被世界打上本 tick 处理标记。
     //
-    // 投放（ParticleEditor 手刷走 CanPlaceAt）：**不覆盖 / 不替换任何实体方块或粒子**（固、液都不行；
-    //   空气与大气等气体格放行——大气是可替换的环境气）；**不许浮空**——目标格的八邻内必须有锚点
-    //   （固 / 液的一格，**或另一格火**：圆刷贴地时靠火链连锁铺满整团火；完全悬空则一格都放不下）。
-    //   注意这是**投放**规则，不是生成规则：点燃草与火的自然蔓延不受它约束；且物理燃烧的附着物
-    //   不含火——刷出的无支撑火仍会下沉 / 快熄。
+    // RNG 消耗（每格每逻辑帧，枚举即契约）：
+    //   贴淬熄物（实体或液体，液体优先判）→ 1 熄灭骰；若还带草 +1 点燃骰。
+    //   游离火 → 1 熄灭骰（冷却即灭则不摇，0）。
+    //   附着无燃料 → 1 熄灭骰。
+    //   附着有燃料 → 1 点燃骰；上方气体且 T ≥ 200 再 +1 抛射骰。
+    //   运动帧：0（OnMotion 留空）。上升选向 / 摇曳全是坐标与 Tick 的哈希，不消耗世界随机流。
+    //
+    // 显式行为（是设计不是 bug）：**火无法停留在石头 / 沙 / 水面上**——这是压顶立灭的必然推论：
+    //   手刷在石面 / 沙面 / 水面的火，下一逻辑帧即灭。要「石头旁有篝火」的观感请用草 / 土做基座。
     //
     // 与世界的边界：世界的通用规则仍会作用于火——固 / 液按 rank 规则置换火（水横流换进火格、
     //   沙沉穿火），火被覆盖即经 OnKill 消失：**水浇灭火是涌现的，火自己不写灭火**；降雨凝结
     //   进火格同理。
     //
-    // 渲染：不透明火焰色渐变调色板（shade 由 ParticleWorld.Set 抽样后被 ① 逐帧扰动，见上）。
+    // 渲染：不透明火焰色渐变调色板；shade 是温度派生量（见 ①），渲染只读 shade 查表。
     // 投放白名单：ParticleEditor 的 Gas 白名单（_placeableGasTypes，默认 FireParticle）允许手刷火；
     //   其余 Gas（大气 / 水汽）仍不可手刷。
     public sealed class FireParticle : IParticleType
     {
-        /// <summary>每逻辑帧向本格注入的热量 Q（火的热容 1.0 ⇒ 未扩散前每帧 +250 度等效）。</summary>
+        /// <summary>每逻辑帧向本格注入的热量 Q（火的热容 1.0 ⇒ 未扩散前每帧 +250 度等效）。仅附着火注入。</summary>
         public const float FireHeatPerTick = 250f;
 
         /// <summary>火格的软温度上限：本格温度低于它才注入热量。单格火的设计平衡温度低于它，
@@ -78,26 +91,49 @@ namespace TapTap2026.Simulation
         /// 即 1/20 每帧，期望约 1 秒烧掉一格。</summary>
         public const uint IgnitionDenominator = 20u;
 
-        /// <summary>熄灭概率的分母：八邻无草（燃料烧尽）时每逻辑帧 <c>NextUInt() % 本值 == 0</c>
+        /// <summary>烧尽概率的分母：**附着**但八邻无草（燃料烧尽）时每逻辑帧 <c>NextUInt() % 本值 == 0</c>
         /// 就自然熄灭，即 1/120 每帧，期望寿命 120 逻辑帧 ≈ 6 秒（几何分布，有少量长尾）。</summary>
         public const uint BurnoutDenominator = 120u;
 
-        /// <summary>淬熄概率的分母：八邻有**石头 / 沙 / 水（液体）/ 湿土**时走这个快骰
-        /// （<c>NextUInt() % 本值 == 0</c> 即熄灭），即 1/20 每帧、期望约 1 秒——被石头压、被沙埋、
-        /// 被水浇都死得快。干土与腐殖类有意不在淬熄集合里（见文件头 ⑤a 的说明）。</summary>
+        /// <summary>非液体淬熄概率的分母：八邻有**石头 / 沙 / 湿土**时走这个快骰
+        /// （<c>NextUInt() % 本值 == 0</c> 即熄灭），即 1/20 每帧、期望约 1 秒——被石头压、被沙埋
+        /// 都死得快。干土与腐殖类有意不在淬熄集合里（见文件头 ⑤3 的说明）。</summary>
         public const uint QuenchDenominator = 20u;
 
-        /// <summary>坠落熄灭概率的分母：失去附着物（飘在空中 / 正在下沉）时每逻辑帧
-        /// <c>NextUInt() % 本值 == 0</c> 就立即熄灭，即 1/5 = 20% 每帧（期望约 5 帧 ≈ 0.25 秒）。</summary>
-        public const uint UnsupportedExtinguishDenominator = 5u;
+        /// <summary>液体淬熄概率的分母：八邻有**液体**（按标签判）时走这个独立快骰
+        /// （<c>NextUInt() % 本值 == 0</c> 即熄灭），即 1/5 每帧、期望 5 逻辑帧 ≈ 0.25 秒。
+        /// 把液体从非液体淬熄档拆出：贴水的火远快于贴石头熄——水是最强灭火剂，也把
+        /// 「贴水必然煮沸邻水」降为偶发。液体档优先于非液体档（同一格两档都命中时走本档）。</summary>
+        public const uint WaterQuenchDenominator = 5u;
+
+        /// <summary>游离火熄灭概率的分母：八邻无固 / 液（火舌）时每逻辑帧 <c>NextUInt() % 本值 == 0</c>
+        /// 就立即熄灭，即 1/8 每帧、期望 8 逻辑帧 ≈ 0.4 秒（上升 8 格，火舌长度适中）。
+        /// 温度先于本骰判定：本格温度 &lt; <see cref="EmberTemperature"/> 时当帧直接熄灭、不摇本骰。</summary>
+        public const uint FreeExtinguishDenominator = 8u;
+
+        /// <summary>游离火的熄影线（冷却即灭）：本格温度低于它时当帧直接熄灭、不摇骰。
+        /// 取 40，与 shade 最暗档（< 40 → 5 暗红）同阈值——火舌顶端余热散尽必然收束，不会飘浮长尾。</summary>
+        public const float EmberTemperature = 40f;
+
+        /// <summary>火舌抛射概率的分母：**附着火**正上方是气体 / 空（且不是火）、本格温度 ≥ 200 时，
+        /// 每逻辑帧 <c>NextUInt() % 本值 == 0</c> 就在正上方 Set 一格火，即 1/10（平均每 0.5 秒吐一格火舌）。
+        /// 先判「上方可抛」再摇骰（无目标不消耗 RNG）。</summary>
+        public const uint TongueDenominator = 10u;
+
+        /// <summary>湿土热容（与 <see cref="WetSoilParticle.Info"/> 的 heatCapacity 同源）。
+        /// 烤干潜热按 湿土 − 干土 的热容差结算，见 <see cref="TryDryWetSoil"/>。</summary>
+        private const float WetSoilCapacity = 2.0f;
+
+        /// <summary>干土热容（与 <see cref="SoilParticle.Info"/> 的 heatCapacity 同源）。</summary>
+        private const float SoilCapacity = 0.8f;
 
         // 八邻偏移（固定顺序：左 → 右 → 下 → 上 → 左下 → 右下 → 左上 → 右上）。
-        // 静态共享数组：所有八邻扫描（燃料 / 湿土 / 淬熄 / 附着物）同序同源，热路径零分配。
+        // 静态共享数组：所有八邻扫描（附着物 / 燃料 / 湿土 / 淬熄）同序同源，热路径零分配。
         private static readonly int[] NeighbourX = { -1, 1, 0, 0, -1, 1, -1, 1 };
         private static readonly int[] NeighbourY = { 0, 0, -1, 1, -1, -1, 1, 1 };
 
-        // 火焰色渐变（亮黄 → 暗红，全部不透明）。shade 初始由 ParticleWorld.Set 抽样，
-        // 之后由 ① 的随机游走逐帧扰动——多档混排且逐帧变化即「跳动的火色」。
+        // 火焰色渐变（亮黄 → 暗红，全部不透明）。shade 是温度派生量：每逻辑帧由 ① 按本格温度分档
+        // 重算（+ 哈希 ±1 抖动），Set 时的初始抽样会被下一逻辑帧覆盖。
         private static readonly Color32[] Palette =
         {
             new Color32(255, 238, 140, 255),
@@ -110,11 +146,11 @@ namespace TapTap2026.Simulation
 
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Gas,
-            density: 0.6f,               // 比大气（0.5）重：大气推不动它，火能沉穿大气
+            density: 0.6f,               // 比大气（0.5）重：大气推不动它
             heatCapacity: 1.0f,
             thermalConductivity: 1.0f,   // 气体传导最强一档（与大气一致）
             thermalEmissivity: 1.0f,     // 火焰近黑体：暴露面辐射散热强
-            affectedByGravity: false,    // 下沉由 OnMotion 手动发起（只在失去附着物时）
+            affectedByGravity: false,    // 位移全部在逻辑帧手动完成（上升 / 摇曳），不靠重力
             isStatic: false,             // 非静态：才能被扫描（静态类型的钩子永不触发）
             maxFlowSpread: 0,
             friction: 0f,                // 非固体，不参与安息角规则
@@ -124,56 +160,63 @@ namespace TapTap2026.Simulation
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
-            // 有附着物（八邻有固 / 液；**火不算附着物**）就定在原地燃烧；
-            // 失去附着物则尝试下沉——气体版下落：下方是空气 / 气体才换位，被固 / 液挡住自然停下
-            // （落地即恢复附着，随后按 OnLogic 的熄灭骰结算）。
-            if (HasAttachment(world, x, y))
-            {
-                return;
-            }
-
-            ParticleRules.TrySink(world, x, y);
+            // 留空（已拍板：不动世界、上升走 OnLogic）：火的位移全部在逻辑帧完成——附着火定在原地；
+            // 游离火的上升 + 摇曳是 OnLogic 的最后一步（⑧），每逻辑帧至多一格 → 上限 20 格/秒。
+            // 运动帧对火零操作、不消耗任何随机流；上升与颜色回写在同一逻辑帧发生，天然合拍，
+            // 不会出现「移动了但颜色没跟上」的错帧。
         }
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // ① 跳动：本格 shade 沿调色板随机游走一步（±1，撞界弹回，避免停在边缘不动）——纯视觉、
-            //    确定性哈希、不消耗世界随机流（At() 是就地读写 flags / shade 的官方入口）。
-            ref Cell cell = ref world.At(x, y);
-            uint noise = (uint)x * 73856093u ^ (uint)y * 19349663u ^ (uint)world.Tick * 83492791u;
-            int stepped = cell.shade + (int)(noise % 3u) - 1;
-            if (stepped < 0)
+            // ① 颜色回写：shade = 本格温度分档（≥300→0 … <40→5）+ (x,y,Tick) 哈希 ±1 抖动后 clamp [0,5]。
+            //    shade 是温度的**派生量**（不再是独立随机游走）；哈希不消耗世界随机流。
+            float temperature = world.Heat.GetTemperature(x, y);
+            int band = temperature >= 300f ? 0
+                : temperature >= 200f ? 1
+                : temperature >= 130f ? 2
+                : temperature >= 80f ? 3
+                : temperature >= 40f ? 4
+                : 5;
+            uint spatial = (uint)x * 73856093u ^ (uint)y * 19349663u;
+            uint noise = spatial ^ (uint)world.Tick * 83492791u;
+            int shade = band + (int)(noise % 3u) - 1;
+            if (shade < 0)
             {
-                stepped = 1;
+                shade = 0;
             }
-            else if (stepped >= Palette.Length)
+            else if (shade >= Palette.Length)
             {
-                stepped = Palette.Length - 2;
+                shade = Palette.Length - 1;
             }
 
-            cell.shade = (byte)stepped;
+            world.At(x, y).shade = (byte)shade;
 
-            // ② 放热：低于上限才注入。热由世界每逻辑帧做四邻传导扩散，火绝不自己做传导。
-            if (world.Heat.GetTemperature(x, y) < PeakTemperature)
+            // ② 放热：先判角色——八邻有固 / 液（**火不算附着物**）即附着火；仅附着火注入热量，
+            //    游离火不注入（离焰即离热源）。注入后的温度记入 postHeatTemperature 供 ⑤⑥ 的门槛使用；
+            //    ④ 的干化门故意用**注入前**的 temperature——否则附着火恒 ≥250，温度门永不阻断（FB3 死代码）。
+            bool attached = HasAttachment(world, x, y);
+            float postHeatTemperature = temperature;
+            if (attached && temperature < PeakTemperature)
             {
                 world.Heat.AddHeat(x, y, FireHeatPerTick);
+                postHeatTemperature = world.Heat.GetTemperature(x, y);
             }
 
-            // ③ 八邻扫描（只读，不摇骰）：燃料 / 干化目标 / 淬熄触发 / 附着物。
+            // ③ 八邻扫描（只读，不摇骰）：燃料 / 干化目标 / 淬熄触发。附着物已由 ② 的 HasAttachment 解析
+            //    （同一八邻、同序；火是气体，天然不被 Solid/Liquid 判据命中）。
             bool hasFuel = false;
             int fuelX = 0;
             int fuelY = 0;
             bool hasWetSoil = false;
             int wetX = 0;
             int wetY = 0;
-            bool quench = false;
-            bool attached = false;
+            bool hasLiquidQuench = false;
+            bool hasSolidQuench = false;
             for (int i = 0; i < NeighbourX.Length; i++)
             {
                 int nx = x + NeighbourX[i];
                 int ny = y + NeighbourY[i];
                 ushort id = world.GetCell(nx, ny).typeId;
-                ParticleTags tags = ParticleRules.TagsAt(world, nx, ny);
 
                 if (!hasFuel && id == ParticleIds.Grass)
                 {
@@ -188,31 +231,27 @@ namespace TapTap2026.Simulation
                     wetY = ny;
                 }
 
-                if (!quench
-                    && (id == ParticleIds.Stone || id == ParticleIds.Sand || id == ParticleIds.WetSoil
-                        || (tags & ParticleTags.Liquid) != 0))
+                // 淬熄触发拆两档：液体一档（优先），石头 / 沙 / 湿土一档。
+                if (!hasLiquidQuench && (ParticleRules.TagsAt(world, nx, ny) & ParticleTags.Liquid) != 0)
                 {
-                    quench = true;
+                    hasLiquidQuench = true;
                 }
-
-                if (!attached && (tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0)
+                else if (!hasSolidQuench
+                    && (id == ParticleIds.Stone || id == ParticleIds.Sand || id == ParticleIds.WetSoil))
                 {
-                    attached = true;
+                    hasSolidQuench = true;
                 }
             }
 
-            // ④ 干化（先于熄灭骰）：遇到湿土就先把它烤成干土——干化的代价是 ⑤a 的快速熄灭骰。
-            if (hasWetSoil)
+            // ④ 干化（先于熄灭骰）：贴湿土且本格火温（**注入前**）≥ DryingTemperature 才烤干——
+            //    新生火第一逻辑帧 T≈0 不烤干，注入的热量下一帧才生效（FB3；冷火不再是万能烘干机）。
+            if (hasWetSoil && temperature >= WetSoilParticle.DryingTemperature)
             {
                 TryDryWetSoil(world, wetX, wetY);
             }
 
-            // ⑤ 熄灭：「被压顶」优先——正下方是石头 / 沙 / 水（实体顶到火头上）→ 当帧直接熄灭、不摇骰
-            //    （石头 / 沙落在火上时，rank 规则先把火置换到实体正上方，火在下一逻辑帧即灭）。
-            //    其余情况按三优先档，每帧恰摇一次骰：
-            //    a. 贴着石头 / 沙 / 水 / 湿土 → 快熄骰；
-            //    b. 没有附着物（飘在空中）→ 坠落熄灭骰（20% 每逻辑帧）；
-            //    c. 有附着物但燃料烧尽 → 普通熄灭骰。
+            // ⑤ 熄灭：每帧恰摇一次骰，档位自上而下互斥。
+            //    1. 压顶立灭：正下方是石头 / 沙 / 液体 → 当帧 Clear、不摇骰。
             ushort belowId = world.GetCell(x, y - 1).typeId;
             bool crushed = belowId == ParticleIds.Stone || belowId == ParticleIds.Sand
                 || (ParticleRules.TagsAt(world, x, y - 1) & ParticleTags.Liquid) != 0;
@@ -222,8 +261,18 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            if (quench)
+            if (hasLiquidQuench)
             {
+                // 2. 贴液体 → 1/5 快熄（液体优先于非液体档）。
+                if (world.NextUInt() % WaterQuenchDenominator == 0u)
+                {
+                    world.Clear(x, y);
+                    return;
+                }
+            }
+            else if (hasSolidQuench)
+            {
+                // 3. 贴石头 / 沙 / 湿土 → 1/20。
                 if (world.NextUInt() % QuenchDenominator == 0u)
                 {
                     world.Clear(x, y);
@@ -232,7 +281,15 @@ namespace TapTap2026.Simulation
             }
             else if (!attached)
             {
-                if (world.NextUInt() % UnsupportedExtinguishDenominator == 0u)
+                // 4. 冷却即灭：游离火本格温度 < EmberTemperature → 当帧 Clear、不摇骰（火舌顶端收束）。
+                if (temperature < EmberTemperature)
+                {
+                    world.Clear(x, y);
+                    return;
+                }
+
+                // 5. 游离熄灭骰：1/8。
+                if (world.NextUInt() % FreeExtinguishDenominator == 0u)
                 {
                     world.Clear(x, y);
                     return;
@@ -240,14 +297,49 @@ namespace TapTap2026.Simulation
             }
             else if (!hasFuel && world.NextUInt() % BurnoutDenominator == 0u)
             {
+                // 6. 附着但无燃料 → 1/120 烧尽。
                 world.Clear(x, y);
                 return;
             }
 
-            // ⑥ 蔓延：有燃料时概率点燃第一格草（Set 成火，新火有全新寿命）。
+            // ⑥ 火舌抛射（附着火专属）：正上方是气体 / 空、不是火、本格温度 ≥ 200 才摇 1/10
+            //    （先判「上方可抛」再摇骰；无目标不消耗 RNG）。
+            if (attached && postHeatTemperature >= 200f)
+            {
+                ushort aboveId = world.GetCell(x, y + 1).typeId;
+                if (aboveId != ParticleIds.Fire && ParticleRules.IsGasOrEmpty(world, x, y + 1)
+                    && world.NextUInt() % TongueDenominator == 0u)
+                {
+                    world.Set(x, y + 1, ParticleIds.Fire);
+                }
+            }
+
+            // ⑦ 蔓延：有燃料 → 1/20 点燃第一格草（Set 成火，新火有全新寿命）。
             if (hasFuel && world.NextUInt() % IgnitionDenominator == 0u)
             {
                 world.Set(fuelX, fuelY, ParticleIds.Fire);
+            }
+
+            // ⑧ 游离火上升（OnLogic 末尾，仅游离火）：熄灭骰结算完、确认本帧存活之后才尝试移动，
+            //    将死之火死在原地、不拖着尸体上移。哈希 2 bit 选向：50% 正上 / 25% 左上 / 25% 右上；
+            //    首选被挡试另一斜上（正上被挡时由 hash bit2 选一侧）；再被挡原地不动（**不下降**）。
+            if (attached)
+            {
+                return;
+            }
+
+            uint roll = noise & 3u;
+            int dx = roll == 2u ? -1 : roll == 3u ? 1 : 0;
+            if (ParticleRules.CanGasEnter(world, x, y, x + dx, y + 1))
+            {
+                world.Swap(x, y, x + dx, y + 1);
+                return;
+            }
+
+            int fallbackX = dx != 0 ? -dx : ((noise & 4u) == 0u ? -1 : 1);
+            if (ParticleRules.CanGasEnter(world, x, y, x + fallbackX, y + 1))
+            {
+                world.Swap(x, y, x + fallbackX, y + 1);
             }
         }
 
@@ -259,7 +351,7 @@ namespace TapTap2026.Simulation
         ///    的顺序逐格判定，贴地时底圈先锚到地面 / 实体、上面的格子再连锁锚到已落下的火，
         ///    因此能一次刷出整团火；完全悬空时底圈一格都锚不上、后续无火可锚，一格都放不下。
         ///    （注意：**物理燃烧的附着物不含火**——见 <see cref="HasAttachment"/>，刷出的无支撑火
-        ///    仍会下沉并按 20%/帧熄灭。）越界返回 false。
+        ///    仍会上升、摇曳并按 1/8 熄灭。）越界返回 false。
         /// 注意这是**投放**规则、不是生成规则：点燃草与火的自然蔓延不受它约束。
         /// </summary>
         public static bool CanPlaceAt(ParticleWorld world, int x, int y)
@@ -289,7 +381,8 @@ namespace TapTap2026.Simulation
 
         /// <summary>(x,y) 八邻内是否有**附着物**：带 <see cref="ParticleTags.Solid"/> 或
         /// <see cref="ParticleTags.Liquid"/> 标签的一格。**火焰不算附着物**（火是气体，
-        /// 天然不被 Solid/Liquid 判据命中）——所以火柱不会互相支撑，失去支撑会整体下沉。</summary>
+        /// 天然不被 Solid/Liquid 判据命中）——所以火柱不会互相支撑。是 v2 角色模型（附着火 / 游离火）
+        /// 的判据，每逻辑帧重判、无持久状态（见文件头）。</summary>
         private static bool HasAttachment(ParticleWorld world, int x, int y)
         {
             for (int i = 0; i < NeighbourX.Length; i++)
@@ -307,8 +400,13 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// 把 (wx,wy) 的湿土烤成干土：复用湿土自身「受热蒸发」的既有配方——**先确认水汽摊得出去**
         /// （空气没饱和、且不可见播撒返回 &gt; 0），摊不出去就原样保留（水不能凭空消失，守恒优先）；
-        /// 成功则 SetPhase 成干土，并按同一口径从土壤吸走一份相变潜热。
+        /// 成功则 SetPhase 成干土，并按相变双方的热容差结算潜热。
         /// </summary>
+        /// <remarks>
+        /// 潜热系数取**湿土→干土的热容差** <c>WetSoilCapacity − SoilCapacity = 1.2</c>（随温度线性），
+        /// **不是** <see cref="HumidityField.LatentHeat"/>（5.5T，水↔大气的口径）：干燥的相变双方是
+        /// 湿土与干土，温度连续、只需补热容差这一份。错取 5.5T 会过冷、土温为负。
+        /// </remarks>
         private static void TryDryWetSoil(ParticleWorld world, int wx, int wy)
         {
             if (world.Humidity.IsAirSaturated(
@@ -321,23 +419,24 @@ namespace TapTap2026.Simulation
 
             float temperature = world.Heat.GetTemperature(wx, wy);
             world.SetPhase(wx, wy, ParticleIds.Soil);
-            world.Heat.AddHeat(wx, wy, -HumidityField.LatentHeat(temperature));
+            world.Heat.AddHeat(wx, wy, -(WetSoilCapacity - SoilCapacity) * temperature);
         }
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 留空：蔓延 / 熄灭 / 干化都是每逻辑帧的确定性或概率行为，写在 OnLogic（随机刻密度随世界
-            // 大小变稀，用随机刻会让节奏漂移）。将来若有「缓慢过程」（如余烬）再写这里。
+            // 留空：蔓延 / 熄灭 / 干化 / 上升都是每逻辑帧的确定性或概率行为，写在 OnLogic（随机刻密度随
+            // 世界大小变稀，用随机刻会让节奏漂移）。将来若有「缓慢过程」（如余烬）再写这里。
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
         {
-            // shade 已由 ParticleWorld.Set 按本类型调色板抽样，无需额外初始化（之后由 ① 逐帧扰动）。
+            // shade 已由 ParticleWorld.Set 按本类型调色板抽样，无需额外初始化——下一逻辑帧起由 OnLogic ①
+            // 按本格温度分档重算（shade 是温度派生量）。
         }
 
         public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
         {
-            // 火被覆盖 / 抹除时无残留效果（将来要留余烬的话在这里往邻居格发射）。
+            // 火被覆盖 / 抹除时无残留效果（将来若做余烬粒子在这里往邻居格发射）。
         }
     }
 }
