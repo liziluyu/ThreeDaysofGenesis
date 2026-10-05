@@ -235,6 +235,20 @@ public readonly struct ParticleTypeInfo
 
 **水的冲刷（水 → 沙，随机刻）**：水被**随机刻**命中时，以自身为中心、半径 `WaterParticle.SandifyingRadius`（=2）格的**圆盘**内找**第一个土壤 / 湿土 / 腐殖土**（固定扫描序：y 升序、同一行 x 升序，只取 `dx² + dy² ≤ 半径²` 的格），找到目标后再摇一次骰（`NextUInt() % WaterParticle.ErosionChanceDenominator`，分母 5 ⇒ **20%**），掷中才把它 `SetPhase` 成沙（同一份物质换形态，Q 留在该格）——**先判目标再摇骰**，无土可冲时不消耗随机流。这是「水把土冲成沙」的慢过程，走随机刻而不是每逻辑帧（每帧冲刷会瞬间抹平地貌）。水本身不动这一格——它只是把附近的土改判成沙。
 
+**水生植物与种子（`AquaticPlantParticle` / `AquaticSeedParticle`，沉水、扎根水底）**：一对具体类型反应，走 `ParticleIds.AquaticSeed` / `ParticleIds.AquaticPlant`。植物带 `Solid | Organic`、`gravity=false`、`isStatic=false`（靠**空的 `OnMotion`** 定植——静态类型收不到随机刻），全部行为写在**随机刻**里，按固定顺序：
+
+- ① **被压死**：正上方是**固体且非同类**时被压死——死亡**沿竖直向下**清掉下面整段连续植物。**液体（水）上方是「沉水」常态、不算压**（与草相反：草把液体也算压）。
+- ② **失去扎根**：正下方不是**软底** `{Sand, Soil, WetSoil, HumusSoil}`（也不是同株下段）→ 死亡**沿竖直向上**清掉上面整段。
+- ③ **脱水致死**：本格**八邻内没有任何液体**（冒出水面 / 水被排空）→ 只清这一格；死亡从顶端一格格涌现，水下部分（八邻仍有液体）存活。**已知代价**：1 格宽的水道里左右是井壁而非水，会被误判成脱水、整株死。
+- ④ **温度致死**：`T > LethalHeatTemperature`（50）或 `T < LethalColdTemperature`（3）→ 只清这一格（与草同值）。
+- ⑤ **撒种（10%）**：在半径 `SeedSpawnRadius`（=2）的**圆盘**内找第一个「**非持水基质** `{Sand, Soil, HumusSoil}`、**正上方是液体**、**正下方是软底**」的格，`SetPhase` 成**水生态种子**。覆盖的是不计入守恒的基质格，所以水守恒不受影响。
+
+**水生态种子**是受重力的固体粉末（摩擦 / 粘性 0.5，走 `ParticleRules.StepSolid`），沉到水底基质上后由**随机刻**驱动：命中时先判「**正上方是液体**（被淹没）**且正下方是软底**」——满足才发芽：摇出高度 `1..MaxGrowthHeight`（=3），自身 `SetPhase` 成植物（原为基质格、不涉及水），再自下而上**位移式抽茎**；否则累计一次「空转」命中（计数存本格 `flags` 的 bit5-6，**与草种子共用同一组位**——一格同时只属一个类型，互不冲突），连续 `MaxStrikesBeforeHumus`（=3）次都无发芽条件就 `SetPhase` 成腐殖质，且**不消耗随机数**。
+
+**位移式抽茎（水守恒的核心）**：向上抽茎时目标格必须是 `Water`。做法：找到该列**连续水柱的顶端**，把顶端之上那格**界内气体 / 空格** `Set` 成水（**水位上升一格**），再把目标格 `SetPhase` 成植物——只有 **2 次写入**，水**只是被顶上去、不销毁**，因此 `水格 + 湿土格 + 湿度场` **严格守恒**。遇非液体（固体 / 气体）或**水柱封顶**（顶端之上不是界内气体 / 空格）即**停止生长并保留已抽出的部分**。副作用：植物生长会**抬高水位**（等价阿基米德位移；正如草长进空气会销毁空气格，这里销毁的是气体接收格，水不受影响）。
+
+**与草的对比**：草的「被压死」把**液体也算压**、扎根集合是 `{Soil, WetSoil, HumusSoil}`；水生把液体从压力中排除、扎根集合**含沙**（软底）。两者都带 `Organic`，死亡走世界的 20% 腐殖质衰变（类型代码不写残留逻辑）。植物**不可在编辑器选择**（只能由模拟产生），水生态种子**可单颗投放**（`ParticleEditor._singlePlacementTypes`，500ms 冷却）。**本任务不改 `WaterParticle`**：水的冲刷（土 / 湿土 / 腐殖土 → 沙）不会直接拔根（沙仍是软底），"冲刷致死"只以**被沙埋 = 被压死**涌现。
+
 **有机物的衰变（有机物 → 腐殖质 → 腐殖土）**：这是一条**标签驱动的通用过程**，实现在 `ParticleWorld` 而非某个类型的钩子里——因为「死掉的有机体变成腐殖质」要写**自己脚下那一格**，而 `OnKill` 在写入新格**之前**调用、它对自身格的写入会被随后写入的新格覆盖（§6「写操作的钩子与副作用」）。因此在 `Set` / `SetPhase` **写完新格之后**，世界再检查：受害者带 `ParticleTags.Organic`、且新类型不带该标签时，按 `1 / ParticleWorld.OrganicDecayDenominator`（分母 5 ⇒ **20%**）的概率把这格 `SetPhase` 成**腐殖质**（`ParticleIds.Humus`）。判据只看标签、不看 typeId；产物是固定的腐殖质（与 `StepRain` 直接引用 `ParticleIds.Water` 同理，是世界的具体过程）。`Clear` 走 `Set(..., Air)` 同样覆盖。**每次有机物死亡都摇一次骰**（消耗一个随机数，确定性不变）；有机物之间互变（草种子 → 草）不算死亡、不摇骰。
 
 - **腐殖质（`HumusParticle`）**：固体，短暂中间态。每**逻辑帧**（`OnLogic`）在**八邻**内找**第一个土壤**（`ParticleIds.Soil`，固定扫描序：y 升序、同一行 x 升序），找到就把那格 `SetPhase` 成腐殖土，然后自己消失（`Clear` → 空气）——腐殖质被土壤吸收，只在世上停留一帧；八邻没有土壤时保持不动、下一逻辑帧再试（悬空时按固体下落）。运动是 `StepSolid`（摩擦 / 粘性 0.5）。
@@ -1030,6 +1044,8 @@ Assets/Scripts/
       GrassParticle.cs                        草（固体 + Organic，非 IsStatic：由草种子生长生成；空的 OnMotion 使其长在原地不落、不流。**随机刻**里按顺序：① 正上方是「固体或液体、且不是草」时被压死、死亡沿竖直方向向下传播清掉下面整段连续的草；② 正下方不是土/湿土/腐殖土（或同株草下段）时失去扎根而死、死亡沿竖直方向向上传播清掉上面整段连续的草；③ 本格温度 > 50 或 < 3 时这一格草死亡；④ 10% 概率在半径 2 格圆盘内找第一个「下方是可托住种子的固体（固体且非草）的空地」并 Set 出一颗新草种子（不会撒到别的草头上）；⑤ 把半径 2 格圆盘内的第一个沙 SetPhase 成土。OnLogic/OnMotion 皆空。LightAbsorption=0.8（受阳光升温略慢）。不可在编辑器中选择）
       HumusParticle.cs                        腐殖质（固体；有机物死亡时按 20% 概率就地生成。每逻辑帧在八邻内找第一个土壤 SetPhase 成腐殖土，然后自己 Clear 消失；八邻无土则保持不动。不可在编辑器中选择）
       HumusSoilParticle.cs                    腐殖土（固体；土壤被腐殖质改良后的黑色形态，与干土同款粉末运动，稳定无变化。不可在编辑器中选择）
+      AquaticSeedParticle.cs                  水生态种子（固体粉末，摩擦 / 粘性 0.5；flags bit5-6 与草种子共用 = 无发芽条件计数。随机刻命中且「正上方是液体 + 正下方是软底」时发芽成水生植物，自下而上**位移式抽茎** 1-3 格——把连续水柱顶端之上的气体格 Set 成水、目标格变植物，水只是被顶上去、不销毁；连续 3 次无发芽条件则变成腐殖质。不可在右键循环，但可单颗投放）
+      AquaticPlantParticle.cs                 水生植物（固体 + Organic，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**随机刻**里按顺序：① 正上方是固体（非同类）时被压死、死亡向下清整段（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙}（或同株下段）时失去扎根、死亡向上清整段；③ 八邻无液体时脱水、单格死；④ 温度 > 50 或 < 3 死；⑤ 10% 概率在半径 2 格圆盘内把第一个「非持水基质 {沙/干土/腐殖土}、正上方是液体、正下方是软底」的格 SetPhase 成水生态种子。不可在编辑器中选择）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 缩放整场亮度：白天上限、夜晚下限）
   Driver/
@@ -1053,9 +1069,10 @@ Assets/Tests/EditMode/
   WetSoilParticleTests.cs                     土 ⇄ 湿土：水被土喝掉（含热量并进湿土）/ **有压才渗**（孤立湿土永久持水不沉底 / 被水压着才下渗且锋面身后保持湿润）/ 被挡侧渗 / 下渗温度门（T < 60）/ 上行 50% 概率门 / 换格水带热 T(源)×1.2 两侧温度不跳 / 受热上行润湿上方干土 / 受热在空气下蒸发（播撒不可见 + 带走潜热）/ 空气吸饱则不蒸发 / 无干土可接则保持湿 / 常温不蒸发 / 湿土照样下落 / 调色板逐档更深 / 生产注册路径
   WeatherParticleTests.cs                     气象：浮力方向（热升/冷沉/死区，含绝热直减降温）/水平热压流（直调原语，隔离表）+ 湿度场（蒸发提升附近湿度 / 水平冷→热 / 竖直越热越向上 / 随风平流 / 输送守恒 / 凝结释放潜热）+ 降雨（碰并凑整、液体不持有湿度）+ 水循环总量守恒 + 云渲染（湿度染白）+ 云遮光（按列 Beer–Lambert 衰减、逐列独立）（生产注册路径——跨类型相变依赖 ParticleIds 回填；云遮光测试用隔离表 + `new ParticleWorld(w,h,seed,types)` 直构）
   ThermalDriftTests.cs                        大气水平热压流的风向记忆（隔离类型表，直接调 TryThermalDrift / OnMotion）：两格走廊不再逐帧往返（B1 回归）/ 大温差净输运保留 / 梯度消失即清记忆允许新方向 / 写记忆不破坏 bit0 处理标记 / 浮力换行清记忆 / 反向漂移被挡且记忆保留
+  AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
 ```
 
-测试总数 **154**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 6 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17。
+测试总数 **170**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 15。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 

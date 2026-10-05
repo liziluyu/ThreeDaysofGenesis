@@ -455,8 +455,10 @@ MonoBehaviour:
   - WetSoilParticle
   - HumusParticle
   - HumusSoilParticle
+  - AquaticPlantParticle
   _singlePlacementTypes:
   - GrassSeedParticle
+  - AquaticSeedParticle
 --- !u!114 &1926363754
 MonoBehaviour:
   m_ObjectHideFlags: 0

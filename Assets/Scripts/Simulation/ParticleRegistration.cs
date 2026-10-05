@@ -47,7 +47,9 @@ namespace TapTap2026.Simulation
                     new GrassSeedParticle(),
                     new GrassParticle(),
                     new HumusParticle(),
-                    new HumusSoilParticle());
+                    new HumusSoilParticle(),
+                    new AquaticSeedParticle(),
+                    new AquaticPlantParticle());
                 // ===========================================================
 
                 ParticleIds.Stone = ids[0];
@@ -60,6 +62,8 @@ namespace TapTap2026.Simulation
                 ParticleIds.Grass = ids[7];
                 ParticleIds.Humus = ids[8];
                 ParticleIds.HumusSoil = ids[9];
+                ParticleIds.AquaticSeed = ids[10];
+                ParticleIds.AquaticPlant = ids[11];
                 _registered = true;
             }
             catch (Exception exception)

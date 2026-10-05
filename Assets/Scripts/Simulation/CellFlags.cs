@@ -55,11 +55,12 @@ namespace TapTap2026.Simulation
         public const int DriftDirectionShift = 3;
 
         /// <summary>
-        /// bit5-6：**草种子私有**（<see cref="GrassSeedParticle"/>）——「被随机刻命中但没有发芽条件」的
-        /// 连续计数（0..<see cref="GrassSeedParticle.MaxStrikesBeforeHumus"/>）。与
-        /// <see cref="DriftDirectionMask"/> 同一写法：读取用本掩码、清除用
-        /// <see cref="SeedStrikeClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（尤其保留 bit0）。
-        /// 草种子在自身文件头部登记了该占用。
+        /// bit5-6：**草种子 / 水生态种子私有**——「被随机刻命中但没有发芽条件」的连续计数
+        /// （0..<see cref="GrassSeedParticle.MaxStrikesBeforeHumus"/>）。两种种子**共用**同一组位
+        /// （一格在同一时刻只属于一个类型，互不冲突）。与 <see cref="DriftDirectionMask"/> 同一写法：
+        /// 读取用本掩码、清除用 <see cref="SeedStrikeClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值
+        /// <c>flags</c>（尤其保留 bit0）。<see cref="GrassSeedParticle"/> 与 <see cref="AquaticSeedParticle"/>
+        /// 各自在文件头部登记了该占用。
         /// </summary>
         public const byte SeedStrikeMask = 0x60;
 

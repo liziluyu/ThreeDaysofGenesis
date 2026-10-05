@@ -40,15 +40,15 @@ namespace TapTap2026.Game
 
         [Header("投放白名单")]
         [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
-                 "草、湿土、腐殖质、腐殖土只能由模拟产生，默认已列入。")]
+                 "草、湿土、腐殖质、腐殖土、水生植物只能由模拟产生，默认已列入。")]
         [SerializeField] private string[] _unplaceableTypes =
         {
-            "GrassParticle", "WetSoilParticle", "HumusParticle", "HumusSoilParticle",
+            "GrassParticle", "WetSoilParticle", "HumusParticle", "HumusSoilParticle", "AquaticPlantParticle",
         };
 
         [Tooltip("「单颗投放」白名单（按 DebugName 或类名匹配）：右键切到这些类型时，无论笔刷半径多大，" +
-                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认只有草种子，将来可追加。")]
-        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle" };
+                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认草种子与水生态种子，将来可追加。")]
+        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle", "AquaticSeedParticle" };
 
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
         private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();

@@ -1,0 +1,252 @@
+using UnityEngine;
+
+namespace TapTap2026.Simulation
+{
+    // AquaticPlantParticle —— 水生植物（沉水、扎根水底；随机刻撒种 + 四种死法）
+    //
+    // flags 私有位：无（bit3-7 全部空闲）
+    // 邻居查询范围：随机刻时以自身为中心、半径 2 格（SeedSpawnRadius）的圆盘；
+    //               死亡判定用正上方一格（①被压）、正下方一格（②扎根）、八邻（③脱水）
+    // 交互的 ParticleIds：AquaticSeed —— 撒种时把附近的非持水基质格 SetPhase 成它；
+    //                     Soil / WetSoil / HumusSoil / Sand —— 扎根 / 播撒判据（具体类型反应）
+    //
+    // 行为：
+    //   它不是 IsStatic（静态类型收不到随机刻），靠**空的 OnMotion**（而不是静态标记）保持长在原地：草同款。
+    //   OnLogic / OnMotion / OnSpawn / OnKill 全空；全部行为写在随机刻（OnRandomTick），按固定顺序：
+    //       ① **被压死**：正上方是**固体且非同类**（沙/土/石/腐殖质/腐殖土/种子…）→ 死亡沿竖直向下传播，
+    //          清掉下面整段连续的水生植物。**液体（水）上方是"沉水"常态，不算压**（与草相反——草把液体算压）。
+    //       ② **失去扎根**：正下方不是软底 {Soil, WetSoil, HumusSoil, Sand}（也不是同株下段）→ 死亡沿竖直
+    //          向上传播，清掉上面整段连续的水生植物。
+    //       ③ **脱水致死**：本格**八邻内没有任何液体**（冒出水面 / 水被排空）→ 只清这一格。死亡因此从顶端
+    //          一格格涌现，水下的部分（八邻仍有液体）留在原地。已知代价：1 格宽的水道里左右是井壁而非水，
+    //          会被误判成脱水、整株死。
+    //       ④ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）→ 只清这一格。
+    //       ⑤ **撒种（10% 概率）**：每次命中都摇骰（消耗 1 个随机数，保证确定性）；命中才在半径 2 格圆盘内找
+    //          第一个「**非持水基质** {Sand, Soil, HumusSoil}、且正上方是液体、且正下方是软底」的格，
+    //          把它 SetPhase 成 AquaticSeed。播撒不消耗水（覆盖的是不计入守恒的基质格），水守恒不受影响。
+    //   三种清法都走 Clear / 世界的有机衰变 → 各 20% 概率留腐殖质（水生植物带 Organic 标签）。
+    public sealed class AquaticPlantParticle : IParticleType
+    {
+        /// <summary>撒种时搜索落点的半径（格，欧氏距离）：只处理 dx²+dy² ≤ 半径² 的格。</summary>
+        public const int SeedSpawnRadius = 2;
+
+        /// <summary>撒种概率的分母：每次随机刻命中时 <c>NextUInt() % 本值 == 0</c> 才尝试撒种，即 1/10 = 10%。</summary>
+        public const uint SeedSpawnChanceDenominator = 10u;
+
+        /// <summary>致死高温（温度严格**高于**它即死）。温度是导出量 <c>T = Q / 热容</c>；与草同值。</summary>
+        public const float LethalHeatTemperature = 50f;
+
+        /// <summary>致死低温（温度严格**低于**它即死）；与草同值。</summary>
+        public const float LethalColdTemperature = 3f;
+
+        /// <summary>光照吸收率：水下收不到光（光停在水面），取值无实际影响，仅与草保持一致的量级。</summary>
+        public const float LightAbsorptionFactor = 0.8f;
+
+        private static readonly Color32[] Palette =
+        {
+            new Color32(30, 84, 58, 255),
+            new Color32(42, 106, 72, 255),
+            new Color32(56, 128, 88, 255),
+            new Color32(72, 150, 106, 255),
+        };
+
+        public ParticleTypeInfo Info => new ParticleTypeInfo(
+            tags: ParticleTags.Solid | ParticleTags.Organic,
+            density: 0.6f,
+            heatCapacity: 0.80f,   // 与草/干土同档
+            thermalConductivity: 0.60f,
+            thermalEmissivity: 1.0f,     // 近黑体（水下不暴露，无实际影响）
+            affectedByGravity: false,
+            isStatic: false,     // 必须非静态，否则收不到随机刻；靠空的 OnMotion 保持不动
+            maxFlowSpread: 0,
+            friction: 0f,
+            stickiness: 0f,
+            palette: Palette,
+            debugName: nameof(AquaticPlantParticle),
+            lightAbsorption: LightAbsorptionFactor);
+
+        public void OnMotion(ParticleWorld world, int x, int y)
+        {
+            // 沉水植物长在原地：运动帧什么都不做。不用 IsStatic 是因为静态类型收不到随机刻。
+        }
+
+        public void OnLogic(ParticleWorld world, int x, int y)
+        {
+            // 死亡判定与撒种都在随机刻里，逻辑帧为空。
+        }
+
+        public void OnRandomTick(ParticleWorld world, int x, int y)
+        {
+            // ① 被压死：正上方是固体且非同类 → 向下清整段。
+            if (IsPressed(world, x, y))
+            {
+                ClearCascade(world, x, y, -1);
+                return;
+            }
+
+            // ② 失去扎根：正下方不是软底（也不是同株下段）→ 向上清整段。
+            if (!IsRooted(world, x, y))
+            {
+                ClearCascade(world, x, y, 1);
+                return;
+            }
+
+            // ③ 脱水致死：八邻没有任何液体 → 只清这一格（顶端逐格死，水下的部分存活）。
+            if (!HasLiquidNeighbour(world, x, y))
+            {
+                world.Clear(x, y);
+                return;
+            }
+
+            // ④ 温度致死：只判这一格，相邻格各判各的。
+            float temperature = world.Heat.GetTemperature(x, y);
+            if (temperature > LethalHeatTemperature || temperature < LethalColdTemperature)
+            {
+                world.Clear(x, y);
+                return;
+            }
+
+            // ⑤ 撒种（10% 概率）：骰子每次都摇（保证确定性），命中才搜索落点。
+            if (world.NextUInt() % SeedSpawnChanceDenominator == 0u)
+            {
+                TrySpawnSeed(world, x, y);
+            }
+        }
+
+        public void OnSpawn(ParticleWorld world, int x, int y)
+        {
+            // shade 已由 ParticleWorld.Set/SetPhase 按本类型调色板抽样，无需额外初始化。
+        }
+
+        public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+        {
+            // 被覆盖时无残留效果：腐烂由世界的有机衰变（Organic 标签 → 20% 腐殖质）统一处理。
+        }
+
+        /// <summary>
+        /// 从 (x,y) 起沿 <paramref name="step"/>（−1 = 向下、+1 = 向上）清掉整段连续的水生植物，遇非本类型即停。
+        /// 每一格都走 <see cref="ParticleWorld.Clear"/>，因而各自按有机衰变规则留下腐殖质。
+        /// </summary>
+        private static void ClearCascade(ParticleWorld world, int x, int y, int step)
+        {
+            int columnY = y;
+            while (world.GetCell(x, columnY).typeId == ParticleIds.AquaticPlant)
+            {
+                world.Clear(x, columnY);
+                columnY += step;
+            }
+        }
+
+        /// <summary>
+        /// (x,y) 是否扎根：正下方 ∈ 软底 {Soil, WetSoil, HumusSoil, Sand}，或是**同株下段**
+        /// （只有整株最底下那格需要基质，上面的茎段靠下段支撑）。空气 / 气体 / 水 / 石一律视为没扎根。
+        /// </summary>
+        private static bool IsRooted(ParticleWorld world, int x, int y)
+        {
+            ushort belowId = world.GetCell(x, y - 1).typeId;
+            return belowId == ParticleIds.Soil
+                || belowId == ParticleIds.WetSoil
+                || belowId == ParticleIds.HumusSoil
+                || belowId == ParticleIds.Sand
+                || belowId == ParticleIds.AquaticPlant;
+        }
+
+        /// <summary>
+        /// (x,y) 是否被压住：正上方是**固体**且**不是同类植物**。
+        /// 于是沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、水生态种子（固体）都算压；
+        /// **液体（水）不算压**（沉水常态）、同株茎的上一段不算压、气体 / 空气不算压。
+        /// </summary>
+        private static bool IsPressed(ParticleWorld world, int x, int y)
+        {
+            ushort aboveId = world.GetCell(x, y + 1).typeId;
+            if (aboveId == ParticleIds.AquaticPlant)
+            {
+                return false;
+            }
+
+            return (ParticleRules.TagsAt(world, x, y + 1) & ParticleTags.Solid) != 0;
+        }
+
+        /// <summary>(x,y) 的**八邻**（3×3 去掉自身）里是否有带 <see cref="ParticleTags.Liquid"/> 标签的格。
+        /// 越界由 <see cref="ParticleWorld.GetCell"/> 返回空气，天然不算。</summary>
+        private static bool HasLiquidNeighbour(ParticleWorld world, int x, int y)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    if (ParticleRules.HasTag(world, x + dx, y + dy, ParticleTags.Liquid))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>软底判据：该格 ∈ {Soil, WetSoil, HumusSoil, Sand}。</summary>
+        private static bool IsSoftSubstrate(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            return id == ParticleIds.Soil
+                || id == ParticleIds.WetSoil
+                || id == ParticleIds.HumusSoil
+                || id == ParticleIds.Sand;
+        }
+
+        /// <summary>非持水基质判据（不计入水守恒、可被植物覆盖）：该格 ∈ {Sand, Soil, HumusSoil}。</summary>
+        private static bool IsNonWaterBearingSubstrate(ParticleWorld world, int x, int y)
+        {
+            ushort id = world.GetCell(x, y).typeId;
+            return id == ParticleIds.Sand
+                || id == ParticleIds.Soil
+                || id == ParticleIds.HumusSoil;
+        }
+
+        /// <summary>
+        /// 在半径 <see cref="SeedSpawnRadius"/> 格的**圆盘**内找第一个「非持水基质、正上方是液体、
+        /// 正下方是软底」的格，把它 <see cref="ParticleWorld.SetPhase"/> 成 <see cref="ParticleIds.AquaticSeed"/>。
+        /// 固定扫描序：dy 升序、同一行 dx 升序。找到即返回 true（至多一颗）。
+        /// </summary>
+        private static bool TrySpawnSeed(ParticleWorld world, int x, int y)
+        {
+            for (int dy = -SeedSpawnRadius; dy <= SeedSpawnRadius; dy++)
+            {
+                for (int dx = -SeedSpawnRadius; dx <= SeedSpawnRadius; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    if (dx * dx + dy * dy > SeedSpawnRadius * SeedSpawnRadius)
+                    {
+                        continue;
+                    }
+
+                    int nx = x + dx;
+                    int ny = y + dy;
+
+                    // 落点：非持水基质，正上方是液体（发芽后沉水），正下方是软底（发芽后扎根）。
+                    if (!IsNonWaterBearingSubstrate(world, nx, ny)
+                        || !ParticleRules.HasTag(world, nx, ny + 1, ParticleTags.Liquid)
+                        || !IsSoftSubstrate(world, nx, ny - 1))
+                    {
+                        continue;
+                    }
+
+                    world.SetPhase(nx, ny, ParticleIds.AquaticSeed);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+}
