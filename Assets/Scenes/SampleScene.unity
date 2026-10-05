@@ -410,9 +410,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9201e0ab605c42dfab9b7d087da5083f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _background:
+  _dayBackground:
     serializedVersion: 2
-    rgba: 4278190080
+    rgba: 4294960588
+  _nightBackground:
+    serializedVersion: 2
+    rgba: 4281999914
   _nightBrightness: 0.5
   _material: {fileID: 0}
   _camera: {fileID: 0}
@@ -476,7 +479,6 @@ MonoBehaviour:
   _litTicks: 600
   _darkTicks: 600
   _intensity: 10
-  _transitionTicks: 2
   _cloudExtinction: 0.05
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

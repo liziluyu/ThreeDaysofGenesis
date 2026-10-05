@@ -11,8 +11,9 @@ namespace TapTap2026.Rendering
     /// <remarks>
     /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步。
     /// 上屏时机完全由调用方（<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
-    /// <para>上屏前按 <see cref="LightController.Daylight"/> 把整场亮度缩到
-    /// <c>Lerp(_nightBrightness, 1, Daylight)</c>：白天上限、夜晚下限，过渡由光照周期给出。</para>
+    /// <para>上屏前按 <see cref="LightController.Daylight"/> 做昼夜表现：天空色在 <c>_nightBackground</c> /
+    /// <c>_dayBackground</c> 之间取色，粒子与云按 <c>Lerp(_nightBrightness, 1, Daylight)</c> 整体变暗。
+    /// 过渡长度由光照周期自动给出（下一时段长度的 1/10）。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleRenderer : MonoBehaviour
@@ -23,9 +24,13 @@ namespace TapTap2026.Rendering
             "Sprites/Default",
         };
 
-        [SerializeField] private Color32 _background = new Color32(0, 0, 0, 255);
+        [Header("昼夜（光照系统的可见表现）")]
+        [Tooltip("白天天空色（背景）。")]
+        [SerializeField] private Color32 _dayBackground = new Color32(0xCC, 0xE5, 0xFF, 255);
 
-        [Header("昼夜亮度（光照系统的可见表现）")]
+        [Tooltip("夜晚天空色（背景）。")]
+        [SerializeField] private Color32 _nightBackground = new Color32(0x2A, 0x22, 0x3A, 255);
+
         [Tooltip("夜晚亮度倍率 0..1。白天恒为 1（现在的正常亮度），夜晚取本值；1 = 不随昼夜变暗。")]
         [SerializeField, Range(0f, 1f)] private float _nightBrightness = 0.5f;
 
@@ -65,9 +70,12 @@ namespace TapTap2026.Rendering
                 return;
             }
 
-            // 整场明暗：白天上限（1）、夜晚下限（_nightBrightness），过渡由 LightController.Daylight 给出。
-            float brightness = Mathf.Lerp(_nightBrightness, 1f, world.Light.Daylight);
-            ParticlePixelBuffer.Fill(world, _pixels, _background, brightness);
+            // 昼夜：天空色在夜 / 昼两色之间按日照度取色，粒子与云按同一进度整体变暗。
+            // 过渡长度由 LightController.Daylight 自动给出（= 下一时段长度的 1/10）。
+            float daylight = world.Light.Daylight;
+            float brightness = Mathf.Lerp(_nightBrightness, 1f, daylight);
+            Color32 background = Color32.Lerp(_nightBackground, _dayBackground, daylight);
+            ParticlePixelBuffer.Fill(world, _pixels, background, brightness);
 
             _texture.SetPixels32(_pixels);
             _texture.Apply(false, false);

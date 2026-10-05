@@ -30,10 +30,14 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 同上，并额外把所有像素（含背景色）按 <paramref name="brightness"/> 整体缩放明暗——
+        /// 同上，并额外把**画在天空之上的内容**（粒子、云）按 <paramref name="brightness"/> 缩放明暗——
         /// 整场亮度调节，白天上限、夜晚下限，由调用方从 <see cref="LightController.Daylight"/> 映射得到。
         /// </summary>
         /// <param name="brightness">亮度倍率，夹在 [0, 1]；1 = 原样。</param>
+        /// <remarks>
+        /// **不缩 <paramref name="background"/>**：天空色由调用方按昼夜直接给定（夜晚本身就是深色），
+        /// 再乘一遍亮度就不是作者指定的那个颜色了。云与粒子画在天空之上，照常参与明暗。
+        /// </remarks>
         public static void Fill(ParticleWorld world, Color32[] pixels, Color32 background, float brightness)
         {
             if (world == null)
@@ -75,12 +79,13 @@ namespace TapTap2026.Simulation
 
             for (int i = 0; i < cells.Length; i++)
             {
-                Color32 color = BaseColor(cells[i], types, background);
+                Color32 color = BaseColor(cells[i], types, background, out bool painted);
 
                 float cloud = (humidity.GetAt(i) - HumidityField.VisibleThreshold) / visibleSpan;
                 if (cloud > 0f)
                 {
                     color = Color32.Lerp(color, CloudColor, cloud >= 1f ? 1f : cloud);
+                    painted = true;
                 }
 
                 if (overlay)
@@ -92,7 +97,8 @@ namespace TapTap2026.Simulation
                     }
                 }
 
-                if (dim)
+                // 只有真正画了东西（粒子 / 云）的像素才随昼夜变暗；裸天空走调用方给的颜色。
+                if (dim && painted)
                 {
                     color = new Color32(
                         (byte)(color.r * brightness),
@@ -107,9 +113,12 @@ namespace TapTap2026.Simulation
 
         /// <summary>单格的静态颜色：空气 / 未注册 id / 空槽位 → 背景色，否则查该类型调色板。
         /// 调色板颜色 alpha == 0 视为「透明粒子」→ 也显示背景色（运行期材质不做 alpha 混合，
-        /// 透明只能在映射层表达；热力叠加仍会在此基础上把热格染红——隐形大气因此能当风的可视化层）。</summary>
-        private static Color32 BaseColor(Cell cell, ParticleType[] types, Color32 background)
+        /// 透明只能在映射层表达；热力叠加仍会在此基础上把热格染红——隐形大气因此能当风的可视化层）。
+        /// <paramref name="painted"/> 为 true 表示这一格画了实物（后面要参与昼夜变暗）。</summary>
+        private static Color32 BaseColor(Cell cell, ParticleType[] types, Color32 background, out bool painted)
         {
+            painted = false;
+
             ushort id = cell.typeId;
             if (id == ParticleRegistry.AirTypeId || id >= types.Length)
             {
@@ -125,7 +134,13 @@ namespace TapTap2026.Simulation
             Color32[] palette = type.Info.Palette;
             int shade = cell.shade;
             Color32 color = shade < palette.Length ? palette[shade] : palette[0];
-            return color.a == 0 ? background : color;
+            if (color.a == 0)
+            {
+                return background;
+            }
+
+            painted = true;
+            return color;
         }
     }
 }

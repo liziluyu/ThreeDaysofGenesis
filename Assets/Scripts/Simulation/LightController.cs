@@ -28,8 +28,9 @@ namespace TapTap2026.Simulation
     /// （云多 → 地表冷 → 蒸发少 → 云少）。<see cref="CloudExtinction"/> = 0 即关掉这条。
     /// 只算光路上的湿度，意味着洞穴 / 顶棚下方的地表不会再被上方云层连带遮黑。</para>
     /// <para>简化：一次性均匀照到整个网格，没有方向、也不按距离或角度衰减。需要阴影 / 衰减再另行扩展。</para>
-    /// <para>另导出 <see cref="Daylight"/>（0 = 夜、1 = 昼）给渲染层做整场明暗：白天保持上限、夜晚保持下限，
-    /// 只在白天开始 / 结束的 <see cref="TransitionTicks"/> 刻里平滑过渡。它与施热无关，只是时序的读数。</para>
+    /// <para>另导出 <see cref="Daylight"/>（0 = 夜、1 = 昼）给渲染层做整场明暗与天空配色：白天保持上限、
+    /// 夜晚保持下限，破晓 / 黄昏各用「下一时段长度的 1/<see cref="DaylightFadeDivisor"/>」刻平滑过渡
+    /// （下一段是 600 刻的白天 ⇒ 60 刻淡入）。它与施热无关，只是时序的读数。</para>
     /// </remarks>
     public sealed class LightController
     {
@@ -40,7 +41,6 @@ namespace TapTap2026.Simulation
         private int _litTicks = 60;
         private int _darkTicks = 60;
         private float _intensity = 5f;
-        private int _transitionTicks = 60;
         private float _cloudExtinction = DefaultCloudExtinction;
         private ParticleWorld _world;
         private int _elapsed;
@@ -157,21 +157,19 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 昼夜过渡刻数（&gt;= 0）：白天开始与结束各用这么多刻从暗平滑到亮（反之亦然）。
-        /// 实际生效值被夹在 <c>[0, LitTicks / 2]</c>，避免升 / 降坡重叠。
+        /// 破晓 / 黄昏的过渡长度 = **下一时段**长度的 1/<see cref="DaylightFadeDivisor"/>。
+        /// 例：下一段是 600 刻的白天，破晓就用 60 刻淡入；黄昏的下一段是黑夜，就用 DarkTicks / 10 刻淡出。
         /// </summary>
-        public int TransitionTicks
-        {
-            get { return _transitionTicks; }
-            set { _transitionTicks = value < 0 ? 0 : value; }
-        }
+        public const int DaylightFadeDivisor = 10;
 
         /// <summary>
-        /// 归一化日照度 ∈ [0, 1]：1 = 白天（上限），0 = 夜晚（下限），中间的过渡只出现在白天开始 / 结束的
-        /// <see cref="TransitionTicks"/> 刻里。暗相位、<see cref="LitTicks"/> = 0 时恒为 0。
+        /// 归一化日照度 ∈ [0, 1]：1 = 白天（上限），0 = 夜晚（下限）。
+        /// 自动得出：破晓 / 黄昏各用「**下一时段**长度的 1/<see cref="DaylightFadeDivisor"/>」刻平滑过渡，
+        /// 其余时间恒定在上限 / 下限。暗相位、<see cref="LitTicks"/> = 0 时恒为 0。
         /// </summary>
         /// <remarks>
-        /// 纯导出量：不推进任何状态，也不参与模拟——渲染层靠它把整场像素按亮度缩放（白天上限、夜晚下限）。
+        /// 纯导出量：不推进任何状态，也不参与模拟——渲染层靠它把整场像素按亮度缩放（白天上限、夜晚下限）
+        /// 并在昼 / 夜背景色之间取色。
         /// 光照关闭（<see cref="Enabled"/> = false）时恒为 1：没有昼夜循环就没有明暗变化。
         /// </remarks>
         public float Daylight
@@ -200,22 +198,26 @@ namespace TapTap2026.Simulation
                     return 0f; // 暗相位
                 }
 
-                int half = _litTicks / 2;
-                int ramp = _transitionTicks < half ? _transitionTicks : half;
-                if (ramp <= 0)
+                int fadeIn = _litTicks / DaylightFadeDivisor;   // 破晓：下一时段是白天
+                int fadeOut = _darkTicks / DaylightFadeDivisor; // 黄昏：下一时段是黑夜
+
+                // 夜远长于昼时（如昼 10 / 夜 1000），黄昏的坡道会盖住整个白天——夹到半天以内。
+                // 破晓无需夹：LitTicks / 10 恒 <= LitTicks / 2。
+                int halfDay = _litTicks / 2;
+                if (fadeOut > halfDay)
                 {
-                    return 1f; // 无过渡：白天一到就是上限
+                    fadeOut = halfDay;
                 }
 
-                if (position < ramp)
+                if (fadeIn > 0 && position < fadeIn)
                 {
-                    return position / (float)ramp; // 破晓：从下限升到上限
+                    return position / (float)fadeIn; // 破晓：从下限升到上限
                 }
 
                 int remaining = _litTicks - position;
-                if (remaining <= ramp)
+                if (fadeOut > 0 && remaining <= fadeOut)
                 {
-                    return remaining / (float)ramp; // 黄昏：从上限降回下限
+                    return remaining / (float)fadeOut; // 黄昏：从上限降回下限
                 }
 
                 return 1f;
