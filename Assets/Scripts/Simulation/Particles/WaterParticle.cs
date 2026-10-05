@@ -35,8 +35,10 @@ namespace TapTap2026.Simulation
     //       跨类型交互全部由标签 rank 产生：固体（rank 3）沉穿水，水被置换上浮；
     //       同类水互不置换但横流时可互相穿过（CanFlowThrough 对流体放行同 rank）。
     //
-    //       随机刻（OnRandomTick）：冲刷——把半径 SandifyingRadius（2）格圆盘内的**第一个**土壤 / 湿土 /
-    //       腐殖土 SetPhase 成沙（固定扫描序 y 升序、同行 x 升序）。随机刻默认关闭，生产值由 Settings 注入。
+    //       随机刻（OnRandomTick）：冲刷——找到半径 SandifyingRadius（2）格圆盘内的**第一个**土壤 / 湿土 /
+    //       腐殖土后，按 1/ErosionChanceDenominator（= 1/5 = 20%）的概率把它 SetPhase 成沙
+    //       （固定扫描序 y 升序、同行 x 升序；先判目标再摇骰，无土可冲时不消耗随机流）。
+    //       随机刻默认关闭，生产值由 Settings 注入。
     public sealed class WaterParticle : IParticleType
     {
         private static readonly Color32[] Palette =
@@ -289,9 +291,12 @@ namespace TapTap2026.Simulation
         /// <summary>把附近土变成沙的搜索半径（格，欧氏距离）：只处理 dx²+dy² ≤ 半径² 的格。</summary>
         public const int SandifyingRadius = 2;
 
+        /// <summary>冲刷概率的分母：找到目标后再摇一次 <c>NextUInt() % 本值 == 0</c> 才真的冲刷，即 1/5 = 20%。</summary>
+        public const uint ErosionChanceDenominator = 5u;
+
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 冲刷：把半径 SandifyingRadius 格圆盘内的**第一个**土壤 / 湿土 / 腐殖土冲刷成沙。
+            // 先找目标（不消耗随机数）：半径 SandifyingRadius 格圆盘内的**第一个**土壤 / 湿土 / 腐殖土。
             // 固定扫描序（y 升序、同一行 x 升序）保证确定性（同种子逐格可复现）。
             for (int dy = -SandifyingRadius; dy <= SandifyingRadius; dy++)
             {
@@ -315,8 +320,14 @@ namespace TapTap2026.Simulation
                         continue;
                     }
 
-                    // 同一份物质换形态：土壤 / 湿土 / 腐殖土 → 沙，热量 Q 留在该格。
-                    world.SetPhase(x + dx, y + dy, ParticleIds.Sand);
+                    // 找到目标才摇骰（先判目标、再摇骰 ⇒ 无土可冲时不消耗随机流，确定性不随土量漂移）。
+                    // 掷中才冲刷：20% 概率（ErosionChanceDenominator = 5）。
+                    if (world.NextUInt() % ErosionChanceDenominator == 0u)
+                    {
+                        // 同一份物质换形态：土壤 / 湿土 / 腐殖土 → 沙，热量 Q 留在该格。
+                        world.SetPhase(x + dx, y + dy, ParticleIds.Sand);
+                    }
+
                     return;
                 }
             }

@@ -10,7 +10,7 @@ namespace TapTap2026.Simulation
     // 交互的 ParticleIds：Sand → Soil（把沙变成土）；GrassSeed（撒下新草种子）
     //
     // 行为：
-    //   逻辑（OnLogic，逻辑帧 20 Hz），按顺序判三件事：
+    //   随机刻（OnRandomTick），按固定顺序依次做五件事（死亡一旦触发就清掉整段草并 return）：
     //       ① **被压住就死**：正上方是**固体或液体、且不是草**时，草被压死——沙 / 土 / 石 / 湿土 / 腐殖土 /
     //          腐殖质、草种子（固体）与**水**（液体）都算压，同株草摞在草上不算压。死亡沿**竖直方向向下**
     //          传播，把下面整段连续的草一并清掉。
@@ -19,7 +19,10 @@ namespace TapTap2026.Simulation
     //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）时这一格
     //          草死亡（只死这一格；相邻草格各有自己的温度，会随传导各自判定）。
     //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质。
-    //   运动（OnMotion，运动帧 60 Hz）：**空**——草长在原地，不落、不流。它不是 IsStatic：
+    //       ④ 撒种（10% 概率）：落点下方必须是**可托住种子的固体**——固体且**不是草**，因此不会撒到别的草头上。
+    //       ⑤ 固沙。
+    //   逻辑帧（OnLogic）与运动帧（OnMotion）都**空**：草长在原地，不落、不流；死亡判定放在随机刻里
+    //       （见上），不必每逻辑帧空跑。它不是 IsStatic：
     //       随机刻会跳过静态类型（ParticleWorld.RunRandomTicks 检查 IsStatic），所以草必须是普通类型
     //       才能收到随机刻；靠空的 OnMotion（而不是 IsStatic）保证它不移动。草带 Solid 标签且与同 rank
     //       的固体（沙 / 土 / 石）互不置换（CanDisplace 要求严格更高的 rank），因此上方的沙会停在草上，
@@ -88,6 +91,17 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
+            // 草的逻辑帧什么都不做：死亡判定（压死 / 失去扎根 / 温度）已挪进随机刻（见 OnRandomTick）——
+            // 草本来就不会移动，每逻辑帧空跑一遍没有意义；死亡变成「缓慢、按概率」的过程，与撒种 / 固沙
+            // 同频。运动帧的 OnMotion 同样为空，草因此完全靠随机刻驱动。
+        }
+
+        /// <summary>
+        /// 死亡判定（①②③）与撒种 / 固沙（④⑤）都在随机刻里按固定顺序执行。死亡一旦触发就清掉整段草并返回，
+        /// 本帧不再撒种 / 固沙。
+        /// </summary>
+        private void RunRandomTick(ParticleWorld world, int x, int y)
+        {
             // ① 被压住就死：正上方是**固体或液体、且不是草**（沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、草种子、
             // 水）时，草被压死。判据用标签 Solid|Liquid，只把「草」本身排除——同株草摞在草上不算压。
             if (IsPressed(world, x, y))
@@ -113,7 +127,17 @@ namespace TapTap2026.Simulation
             if (temperature > LethalHeatTemperature || temperature < LethalColdTemperature)
             {
                 world.Clear(x, y);
+                return;
             }
+
+            // ④ 撒种（10% 概率）：先摇骰（每次都消耗 1 个随机数，保证确定性），命中才搜索落点。
+            if (world.NextUInt() % SeedSpawnChanceDenominator == 0u)
+            {
+                TrySpawnSeed(world, x, y);
+            }
+
+            // ⑤ 固沙（无概率门）：把半径 2 格圆盘内的第一个沙变成土。
+            ConvertNearestSand(world, x, y);
         }
 
         /// <summary>
@@ -165,13 +189,15 @@ namespace TapTap2026.Simulation
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // ① 10% 概率撒下一颗新草种子。先摇骰（每次都消耗 1 个随机数，保证确定性），命中才搜索。
-            if (world.NextUInt() % SeedSpawnChanceDenominator == 0u)
-            {
-                TrySpawnSeed(world, x, y);
-            }
+            RunRandomTick(world, x, y);
+        }
 
-            // ② 把半径 2 格圆盘内的第一个沙变成土。固定扫描序保证确定性（同种子逐格可复现）。
+        /// <summary>
+        /// 把半径 <see cref="SandConversionRadius"/> 格**圆盘**内的第一个沙变成土（固定扫描序：
+        /// y 升序、同一行 x 升序）。同一份物质换形态：走 <see cref="ParticleWorld.SetPhase"/>，热量 Q 原样留在该格。
+        /// </summary>
+        private static void ConvertNearestSand(ParticleWorld world, int x, int y)
+        {
             for (int dy = -SandConversionRadius; dy <= SandConversionRadius; dy++)
             {
                 for (int dx = -SandConversionRadius; dx <= SandConversionRadius; dx++)
@@ -191,7 +217,6 @@ namespace TapTap2026.Simulation
                         continue;
                     }
 
-                    // 同一份物质换形态：走 SetPhase，热量 Q 原样留在该格。
                     world.SetPhase(x + dx, y + dy, ParticleIds.Soil);
                     return;
                 }
@@ -209,10 +234,21 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 在半径 <see cref="SeedSpawnRadius"/> 格的**圆盘**内找第一个「下方 1 格是固体的空地」，
+        /// (x,y) 能不能托住一颗草种子：是固体（<see cref="ParticleRules.IsSolid"/>）且**不是草**
+        /// （<see cref="ParticleIds.Grass"/>）。排除草是为了**阻止草往别的草头上撒种**——否则落点会在
+        /// 已有草的顶上，种子悬在草尖上、掉落时又不会穿过同为 Solid 的草，观感与逻辑都不合理。
+        /// 石头 / 沙 / 土 / 湿土 / 腐殖土等无机（及腐殖土）固体照常可托住。
+        /// </summary>
+        private static bool IsSeedSupport(ParticleWorld world, int x, int y)
+        {
+            return ParticleRules.IsSolid(world, x, y) && world.GetCell(x, y).typeId != ParticleIds.Grass;
+        }
+
+        /// <summary>
+        /// 在半径 <see cref="SeedSpawnRadius"/> 格的**圆盘**内找第一个「下方 1 格是**可托住种子的固体**的空地」，
         /// 在那里生成一颗新草种子（<see cref="ParticleWorld.Set"/>，新物质）。
-        /// 「空地」= 空气或气体（<see cref="ParticleRules.IsGasOrEmpty"/>）；「下方是固体」用
-        /// <see cref="ParticleRules.IsSolid"/>。找到即返回 true（至多落一颗）。
+        /// 「空地」= 空气或气体（<see cref="ParticleRules.IsGasOrEmpty"/>）；「可托住」见
+        /// <see cref="IsSeedSupport"/>（固体且非草，因此不会撒到别的草头上）。找到即返回 true（至多落一颗）。
         /// </summary>
         private static bool TrySpawnSeed(ParticleWorld world, int x, int y)
         {
@@ -233,8 +269,8 @@ namespace TapTap2026.Simulation
                     int nx = x + dx;
                     int ny = y + dy;
 
-                    // 落点必须是空地（空气 / 气体），且正下方 1 格是固体（种子能停住，不会落走）。
-                    if (!ParticleRules.IsGasOrEmpty(world, nx, ny) || !ParticleRules.IsSolid(world, nx, ny - 1))
+                    // 落点必须是空地（空气 / 气体），且正下方 1 格是**可托住种子的固体**（种子能停住、不会落走）。
+                    if (!ParticleRules.IsGasOrEmpty(world, nx, ny) || !IsSeedSupport(world, nx, ny - 1))
                     {
                         continue;
                     }
