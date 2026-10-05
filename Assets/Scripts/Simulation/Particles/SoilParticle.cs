@@ -46,7 +46,9 @@ namespace TapTap2026.Simulation
         public void OnLogic(ParticleWorld world, int x, int y)
         {
             // 吸水：**只看正上方一格**，是水就把那一格水喝掉——本格变成湿土（SetPhase 保留本格 Q），
-            // 水格被 Clear（它的热量先并进本格，物质带热，避免「水一接触土、热凭空消失」）。
+            // 水格被 Clear。这份水的热量要**搬进**湿土、而不是复制：先读出水的 Q、把它显式清零，再 Clear——
+            // 因为 Set/Clear 的契约是「新物质继承该格原有热量」，不清零的话同一份热会同时留在湿土与水格
+            // 两处，总热凭空增加（G4 改动 Set/Clear 语义后此处的旧写法会复制热量）。
             // 上面是水的这一格，扫过它时本逻辑帧已经处理完了（扫描自上而下），因此在这里清掉它不会漏掉它的更新。
             // 湿土怎么把这份水再传下去由 WetSoilParticle 负责（水现在存在湿土这一格里了）。
             //
@@ -54,8 +56,10 @@ namespace TapTap2026.Simulation
             // 未来加入岩浆 / 酸等其它液体时，必须改成 id == ParticleIds.Water，否则任何液体都会被当水灌成湿土。
             if ((ParticleRules.TagsAt(world, x, y + 1) & ParticleTags.Liquid) != 0)
             {
+                float waterHeat = world.Heat.GetHeat(x, y + 1);
                 world.SetPhase(x, y, ParticleIds.WetSoil);
-                world.Heat.AddHeat(x, y, world.Heat.GetHeat(x, y + 1));
+                world.Heat.AddHeat(x, y, waterHeat);
+                world.Heat.SetHeat(x, y + 1, 0f); // 热已搬进湿土；清零水格，避免 Clear 再"继承"一份
                 world.Clear(x, y + 1);
             }
         }

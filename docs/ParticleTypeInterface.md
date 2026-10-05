@@ -199,7 +199,7 @@ public readonly struct ParticleTypeInfo
 
 **吸水与湿土的水迁移（土 ⇄ 湿土）**：这是一对**具体类型之间的反应**，因此按「A 生成 B 走 `ParticleIds`」的约定直接引用 `ParticleIds.Soil` / `ParticleIds.WetSoil`（不是通用标签规则）。模型是 **湿土 = 干土 + 一份水**：水总量 = 水格 + 湿土格 + 湿度场，全程守恒。
 
-- **干土吸水（`SoilParticle.OnLogic`）**：正上方一格带 `Liquid` 标签 ⇒ 本格 `SetPhase` 变湿土，并把那一格水 `Clear` 掉（水的热量先 `AddHeat` 并进本格）。一格水润湿一格土，水随即消失。（已知简化 B8：判据用 `Liquid` 标签，**当前所有液体一律视为水**；将来加入岩浆 / 酸等其它液体时必须改成 `id == ParticleIds.Water`，否则任何液体都会被灌成湿土。）
+- **干土吸水（`SoilParticle.OnLogic`）**：正上方一格带 `Liquid` 标签 ⇒ 本格 `SetPhase` 变湿土，并把那一格水 `Clear` 掉。水的热量**搬进**本格而不是复制：先读出水格 Q、`AddHeat` 并进本格，再把水格 Q **显式清零**后再 `Clear`（`Set`/`Clear` 的契约是「新物质继承该格原有热量」，不清零会让同一份热同时留在湿土与水格两处、总热凭空增加）。一格水润湿一格土，水随即消失。（已知简化 B8：判据用 `Liquid` 标签，**当前所有液体一律视为水**；将来加入岩浆 / 酸等其它液体时必须改成 `id == ParticleIds.Water`，否则任何液体都会被灌成湿土。）
 - **湿土把这份水交给邻格（`WetSoilParticle.OnLogic`）**，成功即本格变干（水要么进了邻格的干土，要么进了空气，湿土不会凭空变干）：
   - **受热上行**（`T ≥ DryingTemperature`，代码 60）：水优先往**上**走，分两种落点——
     - 上方是**干土**：有 `1/PercolationDenominator`（= **50%**）的概率把那格润湿成湿土、本格变干（与下渗同分母的概率门，用来打破「热源消失后水在相邻两格来回走」的时间对称）。
