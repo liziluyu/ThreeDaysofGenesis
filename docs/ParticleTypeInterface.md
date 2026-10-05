@@ -81,7 +81,7 @@ public struct Cell
 | bit2 | `Forced` | 通用（类型无关） | 受外部作用力 / 被推动 |
 | bit3-7 | 类型私有 | 各类型自行定义 | 必须在**该类型文件头部注释**里登记占用位 |
 
-已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3）。
+已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）。
 
 规则：
 
@@ -184,7 +184,7 @@ public readonly struct ParticleTypeInfo
 | `Liquid` | 2 | 液体：可自由横流，可沉穿气体 |
 | `Gas` | 1 | 气体：可被固/液置换，通常自行上升 |
 | （空气） | 0 | `typeId == 0`，不属于任何类型 |
-| `Organic` | — | **属性标签，不参与 rank**：生物来源的物质（草、草种子）。携带它的格被覆盖 / 抹除时会按概率留下腐殖质，见 §4「有机物的衰变」。必须与至少一个类别标签（Solid / Liquid / Gas）并用。 |
+| `Organic` | — | **属性标签，不参与 rank**：生物来源的物质（草、草种子、水生植物、水生态种子）。携带它的格被覆盖 / 抹除时会按概率留下腐殖质，见 §4「有机物的衰变」。必须与至少一个类别标签（Solid / Liquid / Gas）并用。 |
 
 一个字节允许同时带多个标签（`[Flags]`）；`TagRank` 只取其中的**类别**（Solid / Liquid / Gas），`Organic` 这类属性标签被忽略。
 `TagRank` 的实现按 Solid → Liquid → Gas 依次判位，因此属性标签不会影响置换次序。
@@ -1100,8 +1100,8 @@ Particle Sandbox
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。
 - **暂停/恢复（空格）**：`ParticleEditor._pauseKey`（默认 `Space`；设 `None` 关闭热键）每帧检测按下，按当前状态调驱动的 `Pause()` / `Resume()`——暂停时运动帧与逻辑帧**一起冻结**、时间不累加（恢复不补跑暂停期间堆积的帧），画面停在最后一帧；再按一次继续。驱动侧只提供 `Pause()` / `Resume()` / `Paused`（及 `Simulate`）等状态与方法，**不含输入判断**。暂停中 `ParticleEditor` 画完会自己 `PresentNow()` 上屏，因此暂停状态下依然能涂改并立即看到结果。
 - **沙箱尺寸可在 Inspector 调整**：驱动上的 `_widthOverride` / `_heightOverride`（0 = 用 `ParticleSimulationSettings` 资产的 `Width` / `Height`，非 0 则覆盖，夹在 1..4096）。改 Inspector 字段、改 Settings 资产宽高、或调用 `ParticleSimulationDriver.Resize(w, h)` 都会在下一帧重建一个**空**世界（已有内容不保留），渲染器随之重建纹理/mesh 并由 `_fitCameraOnInitialize` 重新框住整张网格；`ParticleEditor` 每帧从 `driver.World` 取尺寸，无需额外处理。
-- **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**只含材料类固/液**——石头/沙/土/水，外加草种子；大气等 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
-- **投放白名单（`ParticleEditor`）**：两个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗。将来有更多「单颗 + 冷却」或「不可投放」的类型时，往对应列表追加类型名即可。
+- **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**只含材料类固/液**——石头/沙/土/水，外加草种子与水生态种子；大气等 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
+- **投放白名单（`ParticleEditor`）**：两个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `AquaticPlantParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗。将来有更多「单颗 + 冷却」或「不可投放」的类型时，往对应列表追加类型名即可。
 - **光标格读数（`ParticleEditor`，屏幕左上角）**：常驻一行 `(x,y)  粒子名  T=温度  Q=热量  湿度=…`，显示光标指向的那一格；光标落在网格外则显示「视口外」。温度是导出量 `T = Q / C`（C 取该格类型的热容，气体还会加上该格**湿度**带来的附加热容 `HeatMap.HumidityHeatCapacity`），湿度对固/液恒为 0。纯调试读数：只读 `world.Heat` / `world.Humidity`，不参与模拟，也不改动任何状态。
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
