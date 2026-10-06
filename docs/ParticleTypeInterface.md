@@ -963,7 +963,7 @@ flowchart LR
 - **运动帧 `StepMotion`**：一次扫描，只对每个非空气、非静态且本帧未处理的格调用 `OnMotion`（移动）。**不跑**逻辑、随机刻、热、湿度、降水、光照。休眠开启（`MotionSleepEnabled`，默认）时只扫候选格，见上方「运动休眠」。
 - **逻辑帧 `StepLogic`**：同一次扫描里每格**先 `OnLogic`**（相变 / 反应 / 邻域写入）——若它把本格换成了别的类型（`Set` / `SetPhase` 已把新格标成已处理），本帧**跳过该格的运动**；否则继续 `OnMotion`。扫描后再依次跑 **①′ 随机刻**（抽 `RandomTicksPerStep` 个格调 `OnRandomTick`，见 §6「随机刻」，按**逻辑帧**计）→ **② 热传导 + 顶行散热**（热场已到不动点且输入未变时整趟跳过，见 §7）→ **③ 湿度输送** → **③′ 降水** → **④ 光照**。因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
 - 两个入口都推进 `world.Tick` 并交替扫描方向（`Parity`）与 bit0 标记，因此**运动帧才是世界的时基**；`Tick` 数 = 运动帧数。
-- **固定时间步长**，与渲染帧率解耦：驱动每帧最多跑 `MaxStepsPerFrame` 个运动帧，防止死亡螺旋。
+- **固定时间步长**，与渲染帧率解耦：每真实帧跑几个运动帧由 `SpeedController` 按预算决定（默认手动 1×，即与旧 `MaxStepsPerFrame` 固定累加器逐帧一致；见 §10「倍速」）。
 - **暂停/恢复**：驱动只暴露状态与方法——`Pause()` / `Resume()`（幂等）与 `Simulate` / `Paused` 属性，**不含任何输入判断**（何时暂停由调用方决定）。暂停时整个推进分支跳过：不累加 `Time.deltaTime`、不跑 `StepMotion` / `StepLogic`、不上屏，因此**所有帧一起冻结**，恢复后也不会补跑暂停期间堆积的时间。热键（默认空格，`ParticleEditor._pauseKey`，设 `None` 关闭）写在 `ParticleEditor.Update`：按下即按当前状态调 `Pause()` 或 `Resume()`。暂停中仍可 `PresentNow()` 手动上屏（`ParticleEditor` 画完自动补一下）。
 - 扫描顺序：**行永远从上到下**；**水平方向逐帧交替**（偶帧 x 升序、奇帧 x 降序）以消除重力/流动的方向偏置。交替由扫描循环内部完成，类型代码不感知。
 - 空气格与 `IsStatic` 类型**直接跳过**，不进行为调用（随机刻抽取同样跳过它们；静态类型仍会收到 `OnSpawn` / `OnKill`）。
@@ -1160,6 +1160,7 @@ Assets/Scripts/
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
     MotionReadBox.cs                          类型的运动阅读盒 (X, Up, Down)：OnMotion 对 _cells 的轴对齐读距，世界求反转并集作为运动休眠的写入唤醒集
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
+    SpeedController.cs                        倍速控制器（纯 C#，不引用 UnityEngine）：手动档 ×2/÷2 调档（[1,16]，也可由 `_speedMax` 封顶）+ 自适应档 AIMD（平滑「每 tick 耗时」EMA + 0.75/0.95 双水位线死区 + 每 10 帧一次评估的门控 + 滞回），每真实帧给出「本帧跑几个运动 tick」；超预算丢账不追账、预算上限保底 1 tick；另导出实测倍率 `EffectiveSpeed`（分子分母分别 EMA 再相除，稳态 1× 归一）供 HUD 显示
     Particles/
       StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
       SandParticle.cs                         沙（固体标签，摩擦度 0 / 粘性 0 ⇒ 1:1 安息角三角堆）
@@ -1177,10 +1178,10 @@ Assets/Scripts/
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 取昼夜天空色、粒子与云按 1 → 夜晚亮度变暗；昼夜参数由 ParticleLightDriver 推送）
   Driver/
-    ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、热力学系数、随机刻格数
-    ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度；`_simulate`（关 = 暂停全部帧），暴露 `Pause()` / `Resume()` / `Paused`（无输入判断）
+    ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、倍速预算 `_speedBudgetFraction`（0.5）与倍率上限 `_speedMax`（16）、热力学系数、随机刻格数
+    ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度；每真实帧跑几个运动帧由 `SpeedController` 决定（暴露 `Speed` 属性，只做 Stopwatch 测量与转发）；`_simulate`（关 = 暂停全部帧），暴露 `Pause()` / `Resume()` / `Paused`（无输入判断）
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
-    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、鼠标旁显示当前类型；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却 / Gas 可手刷例外）
+    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、`=`/`-` 手动调倍速（×2/÷2，[1,16]）、`Tab` 开关自适应倍速、鼠标旁显示当前类型、左上角读数末尾追加 `×N` / `×N auto`（实测吞吐缺口 ≥5% 时再追加 `(实 ×M)`）；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却 / Gas 可手刷例外）
     ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度 / 云层消光接到 world.Light，并把昼夜天空色与夜晚亮度推给 ParticleRenderer
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
@@ -1200,6 +1201,7 @@ Assets/Tests/EditMode/
   AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 环境低温（T=0）不冻死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
   FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、不浮空；锚点含火链——贴地圆刷 13 格全落、悬空 0 格；大气可投、越界不可投）+ 烤热沙石与 1/20 淬熄 + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/5 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
   MotionSleepTests.cs                        运动休眠（阶段 B）：休眠透明性（同一受热场景 sleep on/off 跑 200 周期后逐格 typeId / shade / 非 bit0 flags、热场、湿度场一致）/ 静止水池求值数为 0（写入后回升）/ 石头净空链的 19 格远写唤醒（清空最远那格后石头正确滑动）/ 湿度变化（无写入）也唤醒读温度的决策 / MotionSleepEnabled=false 回退全扫描且与 true 逐格一致（含来回切换）
+  SpeedControllerTests.cs                    倍速控制器（纯 C#，不依赖 Unity 时钟）：手动档 tick 数随倍率精确缩放且忽略耗时反馈（含 [1,16] 钳位）/ 自适应档便宜帧加性升到 16（每 K=10 帧一次评估）、昂贵帧乘性 16→1 只花 4 次评估 / 逐帧成本噪声不再驱动换向（回归）/ 超预算丢账（cap、丢账计数、下一帧不雪球）与预算为 0 时的 1 tick 保底 / 滞回把成块便宜·昂贵交替的方向反转次数压到低于无滞回对照 / 默认手动 1× 与迁移前固定累加器在 600 帧抖动序列上逐帧 tick 数一致 / 实测倍率：16× 撞紧预算时 `EffectiveSpeed` 收敛到被 cap 的 4×（不是目标 16）、预算充裕时收敛到目标 4×、稳态 1× 精确归一（含 dt 抖动，≈1±0.02）
 ```
 
 测试总数 **195**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24。
@@ -1231,6 +1233,7 @@ Particle Sandbox
 
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。
 - **暂停/恢复（空格）**：`ParticleEditor._pauseKey`（默认 `Space`；设 `None` 关闭热键）每帧检测按下，按当前状态调驱动的 `Pause()` / `Resume()`——暂停时运动帧与逻辑帧**一起冻结**、时间不累加（恢复不补跑暂停期间堆积的帧），画面停在最后一帧；再按一次继续。驱动侧只提供 `Pause()` / `Resume()` / `Paused`（及 `Simulate`）等状态与方法，**不含输入判断**。暂停中 `ParticleEditor` 画完会自己 `PresentNow()` 上屏，因此暂停状态下依然能涂改并立即看到结果。
+- **倍速（手动 + 自适应）**：**`=` / `-`** 手动调档（×2 / ÷2，夹在 `[1,16]`，按一下即切回手动档），**`Tab`** 开关自适应档（开启时从**当前倍率**起步，不重置回 1×）；左上角读数行末尾常驻 `×N`（自适应时 `×N auto`），目标倍率与实际吞吐相差 ≥5% 时追加 `(实 ×M)`——**`×N` 是目标倍率**，预算封顶 / 丢账时跑不满，`M` 才是实测速率（`SpeedController.EffectiveSpeed`：把「每帧实际 tick 数」与「每帧 dt」分别 EMA 再相除（÷ 运动速率），因此 dt 抖动与 0/1/2 tick 的量化都不会给比值带偏、稳态 1× 精确归一；显示用观测量、不参与调度；缺口小于 5% 就不显示，免得稳态读数抖）。策略与状态全在 **`SpeedController`**（`Assets/Scripts/Simulation/SpeedController.cs`；**纯 C#、不引用 `UnityEngine`**，因此能在 net9 测试工程下单独编译测试），驱动只做两件事：`Stopwatch` 量本帧 tick 循环耗时回喂、把控制器给定的 tick 数跑完；输入与展示仍在 `ParticleEditor`（照抄暂停模式的分工：方法在驱动 / 输入在编辑器）。四条语义：① **固定步长不变**——倍速只改「每真实帧跑几个运动 tick」，`StepMotion` / `StepLogic` 本体与每个 tick 内部逐位不变，任何倍率下同一 tick 序列推进出的世界逐位相同；② **丢时间不追账**——单帧需求超过预算上限时，超出部分连同欠账一起丢弃（欠账清零），死亡螺旋构造性不可能；③ **进度保底**——预算上限至少 1，因此极端超预算也照跑 1 个运动 tick（帧率代价用户自负；`dt` 本身不足一个 tick 时该帧照旧 0 个 tick）；④ **默认关闭**——默认手动 1×，与不含倍速的旧固定累加器**逐帧逐位一致**（tick 数按 `1f / motionRate` 的 float 步长从欠账里重复扣减，不是 double 取整）。预算 = `1000 / 目标帧率 × _speedBudgetFraction`（默认 0.5；目标帧率取 `Application.targetFrameRate`，≤ 0 时按 60），上限再按「每运动 tick 耗时」的 EMA 动态折算，倍率封顶由 `_speedMax`（默认 16）给定。自适应档 = AIMD，但调档决策只吃**已平滑的**「每 tick 耗时」EMA、且每 `DecisionIntervalFrames`（10）次 Plan 才评估一次：一周期（3 个运动 tick）的平滑成本低于「预算 × 0.75」加性升 `+0.25`、高于「预算 × 0.95」乘性降 `×0.5`，两者之间是死区，换方向再有 10 帧滞回——单帧成本抖动不再驱动倍率。**注意：倍速下同一段输入按 tick 对齐而非真实时间**——编辑器刷进去的粒子总在下一个运动 tick 被处理，而一个真实帧可能跑多个 tick，所以同一次按键 / 涂抹在 N× 下「经历」的模拟时间约为 1× 的 N 倍；需要严格按时序复现的脚本请固定手动 1×。
 - **沙箱尺寸可在 Inspector 调整**：驱动上的 `_widthOverride` / `_heightOverride`（0 = 用 `ParticleSimulationSettings` 资产的 `Width` / `Height`，非 0 则覆盖，夹在 1..4096）。改 Inspector 字段、改 Settings 资产宽高、或调用 `ParticleSimulationDriver.Resize(w, h)` 都会在下一帧重建一个**空**世界（已有内容不保留），渲染器随之重建纹理/mesh 并由 `_fitCameraOnInitialize` 重新框住整张网格；`ParticleEditor` 每帧从 `driver.World` 取尺寸，无需额外处理。
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**材料类固/液 + Gas 白名单**——石头/沙/土/水/火，外加草种子与水生态种子；其余 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
 - **投放白名单（`ParticleEditor`）**：三个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `AquaticPlantParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗；`_placeableGasTypes`（默认 `FireParticle`）让白名单里的 Gas 例外可手刷（Gas 默认一律不可投放——蒸汽/云/大气是水循环中间态、只能由相变产生，火是唯一例外；火还另有 `FireParticle.CanPlaceAt` 投放资格：不覆盖实体、需附着物不浮空，圆刷时不合格的格被跳过）。将来有更多「单颗 + 冷却」「不可投放」或「可手刷气体」的类型时，往对应列表追加类型名即可。
@@ -1287,7 +1290,7 @@ Particle Sandbox
 ## 13. 待定决策（评审时拍板）
 
 1. **`vx` / `vy`**：v1 采用 4 字节 `Cell`（不含速度）；确认何时切到 6 字节。
-2. **帧速率默认值**：运动帧 60 Hz（`_motionRate`）、逻辑帧 20 Hz（`_logicRate`，即每 3 个运动帧一次逻辑）、`MaxStepsPerFrame = 4`（按运动帧计；都放在 `ParticleSimulationSettings` 里，可改）。逻辑帧降频后热 / 湿度 / 降水 / 光照与昼夜相位都按 20 Hz 推进——昼夜周期相应变长约 3 倍（见 §2 比例约定），光照冷却速率若观感变化需另调系数。
+2. **帧速率默认值**：运动帧 60 Hz（`_motionRate`）、逻辑帧 20 Hz（`_logicRate`，即每 3 个运动帧一次逻辑）；每帧 tick 上限不再固定为 4，改由 `SpeedController` 按 `_speedBudgetFraction`（0.5）与实测每 tick 耗时动态给出（都放在 `ParticleSimulationSettings` 里，可改）。逻辑帧降频后热 / 湿度 / 降水 / 光照与昼夜相位都按 20 Hz 推进——昼夜周期相应变长约 3 倍（见 §2 比例约定），光照冷却速率若观感变化需另调系数。
 3. **上屏倍数**：`StepsPerPresent` 现为 1（每个运动帧渲染一次）。等帧速率提高或网格变大后，评估是否调大以省掉同一帧内的重复上传。
 4. **`ParticleRules` 共享帮助方法的边界**：已提供 `StepSolid`（固体的标准运动：正下 → 按 `Info.Friction` / `Info.Stickiness` 斜落）/ `TryCohesiveFall`（带粘性的斜落）/ `TryFall` / `TryDiagonalFall`（可选 `clearance`：斜下方落点起需要连续能进入的格数，1 = 1:1、2 = 2:1、10 = 10:1，`<= 0` = 不斜滑）/ `TryFlowHorizontal` / `TryLiquidConvect`（液体热对流：比正上方的液体暖 ε 就上浮一格，海洋翻转——白天稳定分层不翻转、夜晚表冷底暖时把深处的热翻回表面）/ `TryBuoyantStep` / `TryThermalDrift`（气体浮力与带风向记忆的水平热压流）/ `CanDisplace` / `CanGasEnter`（气体换位的密度次序判据：`自己.Density >= 目标.Density` 才可换入）/ `IsGasOrEmpty` / `TagsAt` / `HasTag` / `IsSolid` / `BlocksLight`。新增跨类型原语一律放这里、只走标签判断。
 5. **一键搭沙箱**：`SampleScene` 已接线完成；重建演示内容靠 `ParticleSandboxSeeder` 的 Inspector 右键菜单（`Reseed()`）。是否值得再加一个编辑器菜单项（`GameObject/粒子沙箱`）供新场景快速起一个。
