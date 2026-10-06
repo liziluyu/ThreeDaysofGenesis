@@ -145,6 +145,36 @@ namespace TapTap2026.Simulation
         private float _airThermalConductivity = DefaultAirThermalConductivity;
         private float _airThermalEmissivity = DefaultAirThermalEmissivity;
 
+        // ── 不动点跳过（Step 入口）──
+        // 热传导是 Q 的确定性函数 F(Q, humidity, cells, 参数)。若上一趟 Step 没改动任何 Q（恒等），
+        // 且此后所有输入都没变（外部未改 Q、世界写入版本 / 湿度版本 / 参数版本全等），那么本趟输出必然
+        // 与已存的场逐位相同——重跑一遍只会得到同样的结果，于是整趟跳过（不交换双缓冲、不动 dirty）。
+        // 关键：必须用「上一趟是恒等」这一条兜底。热 pass 自己的改动会被世界的 FlushTemperatureDirty
+        // 在帧末消费并清空 _anyDirty，所以「_anyDirty 为假」只说明**本帧内**没有变化，
+        // 不能说明场已收敛；若上一趟仍在松弛（非恒等），必须继续跑到达不动点为止。
+        private bool _lastStepWasIdentity;
+        private int _lastQVersion = int.MinValue;
+        private int _lastCellsVersion = int.MinValue;
+        private int _lastHumidityVersion = int.MinValue;
+        private int _lastParamVersion = int.MinValue;
+
+        /// <summary>
+        /// 外部热写入版本：<see cref="SetHeat"/> / <see cref="AddHeat"/> / <see cref="SwapHeat"/> 每次真正改动 Q 时自增。
+        /// <b>不能</b>用 <see cref="_anyDirty"/> 代替它——<c>_anyDirty</c> 由世界在每逻辑帧末尾消费并清空
+        /// （<see cref="ClearDirty"/>），因此它只说明「本帧内有过变化」，无法回答「自上次热 pass 以来 Q 变没变」。
+        /// 光照 / 降水 / 潜热都在热 pass **之后**才注热，若只看 <c>_anyDirty</c> 会在下一帧误判为「无变化」而跳过，
+        /// 把刚注入的热漏掉、并任其逐帧累积。本版本号只增不减，直到热 pass 明确缓存过它。
+        /// </summary>
+        private int _qVersion;
+
+        /// <summary>
+        /// 影响热 pass 输出的**可变参数**版本：<see cref="Conductivity"/> / <see cref="VoidHeatLoss"/> /
+        /// <see cref="RadiativeLoss"/> / <see cref="AirThermalConductivity"/> / <see cref="AirThermalEmissivity"/>
+        /// 任一被改成不同值时自增（值没变的赋值不递增）。不动点跳过靠它判断参数有无变化。
+        /// <see cref="AdiabaticLapse"/> 不在此列：它只在 <see cref="ParticleWorld.Swap"/> 里结算，不走热 pass。
+        /// </summary>
+        private int _paramVersion;
+
         /// <param name="width">宽度（格），范围 <c>1..ParticleWorld.MaxSide</c>。</param>
         /// <param name="height">高度（格），范围 <c>1..ParticleWorld.MaxSide</c>。</param>
         /// <param name="cells">世界的格子数组（同宽高）。热图只读它来查每格物质的热容。</param>
@@ -294,6 +324,32 @@ namespace TapTap2026.Simulation
             get { return _anyDirty; }
         }
 
+        /// <summary>
+        /// 最近一次 <see cref="Step"/> 是否整趟跳过（场已到不动点且所有输入未变，直接返回）。只读，供测试 / 诊断。
+        /// </summary>
+        public bool LastStepSkipped { get; private set; }
+
+        /// <summary>
+        /// 不动点跳过开关（默认 <c>true</c>）。关掉后 <see cref="Step"/> 每帧都重跑，不做整趟跳过——
+        /// 用于与跳过路径做**逐位对照**（跳过必须对结果完全透明）。与
+        /// <see cref="ParticleWorld.MotionSleepEnabled"/> 同为 A/B 回归开关，运行中随时可改。
+        /// </summary>
+        public bool FixpointSkipEnabled { get; set; } = true;
+
+        /// <summary>
+        /// 世界格子的写入版本（<see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.SetPhase"/> /
+        /// <see cref="ParticleWorld.Swap"/> 各递增一次）。由 <see cref="ParticleWorld"/> 在每逻辑帧调
+        /// <see cref="Step"/> 之前写入；热 pass 只用它判断「格子的类型/布局自上次以来有没有变」——
+        /// 类型一变，逐格热容 / σ / ε 与天空暴露判据都可能变，热 pass 必须重跑。
+        /// </summary>
+        internal int CellsVersion { get; set; }
+
+        /// <summary>湿度场的内容版本（湿度一变温度就变，热 pass 必须重跑）。无湿度场时恒为 0。</summary>
+        private int HumidityVersion
+        {
+            get { return _humidity == null ? 0 : _humidity.Version; }
+        }
+
         /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
         public void ClearDirty()
         {
@@ -315,6 +371,7 @@ namespace TapTap2026.Simulation
                 _anyDirty = true;
             }
 
+            _qVersion++;
         }
 
         /// <summary>
@@ -324,7 +381,7 @@ namespace TapTap2026.Simulation
         public float Conductivity
         {
             get { return _conductivity; }
-            set { _conductivity = value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value); }
+            set { SetParam(ref _conductivity, value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value)); }
         }
 
         /// <summary>
@@ -339,7 +396,7 @@ namespace TapTap2026.Simulation
         public float VoidHeatLoss
         {
             get { return _voidHeatLoss; }
-            set { _voidHeatLoss = value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value); }
+            set { SetParam(ref _voidHeatLoss, value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value)); }
         }
 
         /// <summary>
@@ -353,7 +410,7 @@ namespace TapTap2026.Simulation
         public float RadiativeLoss
         {
             get { return _radiativeLoss; }
-            set { _radiativeLoss = value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value); }
+            set { SetParam(ref _radiativeLoss, value < 0f ? 0f : (value > MaxConductivity ? MaxConductivity : value)); }
         }
 
         /// <summary>
@@ -376,7 +433,7 @@ namespace TapTap2026.Simulation
         public float AirThermalConductivity
         {
             get { return _airThermalConductivity; }
-            set { _airThermalConductivity = value < 0f ? 0f : (value > MaxThermalConductivity ? MaxThermalConductivity : value); }
+            set { SetParam(ref _airThermalConductivity, value < 0f ? 0f : (value > MaxThermalConductivity ? MaxThermalConductivity : value)); }
         }
 
         /// <summary>
@@ -387,7 +444,22 @@ namespace TapTap2026.Simulation
         public float AirThermalEmissivity
         {
             get { return _airThermalEmissivity; }
-            set { _airThermalEmissivity = value < 0f ? 0f : (value > MaxThermalEmissivity ? MaxThermalEmissivity : value); }
+            set { SetParam(ref _airThermalEmissivity, value < 0f ? 0f : (value > MaxThermalEmissivity ? MaxThermalEmissivity : value)); }
+        }
+
+        /// <summary>
+        /// 可变热学参数的统一写入口：值真变了才赋值并递增 <see cref="_paramVersion"/>（不变则什么都不做）。
+        /// 热 pass 的不动点跳过据此判断参数有无变化。
+        /// </summary>
+        private void SetParam(ref float field, float value)
+        {
+            if (field == value)
+            {
+                return;
+            }
+
+            field = value;
+            _paramVersion++;
         }
 
         /// <summary>
@@ -543,8 +615,29 @@ namespace TapTap2026.Simulation
             float conductivity = _conductivity;
             float voidLoss = _voidHeatLoss;
             float radiativeLoss = _radiativeLoss;
+
+            // 不动点跳过：上一趟是恒等，且自那以来外部未改过 Q、格子写入版本 / 湿度版本 / 参数版本全等
+            // → 本趟输出必然与已存的场逐位相同，直接返回（不交换双缓冲、不动 dirty）。
+            // 数学依据：Step 是 (Q, 湿度, cells, 参数) 的确定性函数；上一趟输入与输出相同（恒等），
+            // 而后所有输入都未变，故再跑一遍得到同一个输出——重算与跳过逐位等价。
+            if (FixpointSkipEnabled
+                && _lastStepWasIdentity
+                && _lastQVersion == _qVersion
+                && _lastCellsVersion == CellsVersion
+                && _lastHumidityVersion == HumidityVersion
+                && _lastParamVersion == _paramVersion)
+            {
+                LastStepSkipped = true;
+                return;
+            }
+
+            LastStepSkipped = false;
+
             if (conductivity <= 0f && voidLoss <= 0f && radiativeLoss <= 0f)
             {
+                // 全关时 Step 是恒等映射：记录指纹（含恒等标记），让后续帧能进入跳过。
+                _lastStepWasIdentity = true;
+                CacheFingerprint();
                 return;
             }
 
@@ -583,6 +676,19 @@ namespace TapTap2026.Simulation
             _heat = nextArr;
             _scratch = heatArr;
             _anyDirty = anyDirty != 0;
+
+            // 记录本趟是否为恒等（无任何格变化 → 场已收敛，下一帧若输入未变即可整趟跳过）与输入指纹。
+            _lastStepWasIdentity = anyDirty == 0;
+            CacheFingerprint();
+        }
+
+        /// <summary>记录本次 <see cref="Step"/> 消费掉的输入指纹，供下一帧的不动点跳过比对。</summary>
+        private void CacheFingerprint()
+        {
+            _lastQVersion = _qVersion;
+            _lastCellsVersion = CellsVersion;
+            _lastHumidityVersion = HumidityVersion;
+            _lastParamVersion = _paramVersion;
         }
 
         /// <summary>

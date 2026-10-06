@@ -144,6 +144,15 @@ namespace TapTap2026.Simulation
         private readonly byte[] _dirty;
         private bool _anyDirty;
 
+        /// <summary>
+        /// 湿度场的**内容版本**：任何一次真正改动湿度值（<see cref="Set"/> / <see cref="Add"/> /
+        /// <see cref="AddAt"/> / <see cref="Swap"/> / <see cref="ResetAt"/> 或 <see cref="Step"/> 的输送）
+        /// 都自增 1。热图的不动点跳过（见 <see cref="HeatMap.Step"/>）用它判断「湿度自上次热 pass 以来有没有变」——
+        /// 温度是 <c>T = Q / C</c> 而 C 含湿度附加项（<see cref="HeatMap.HumidityHeatCapacity"/>），
+        /// 所以湿度一变，温度场就变、热传导的输出也会变，必须重跑。
+        /// </summary>
+        private int _version;
+
         private float _diffusion = DefaultDiffusion;
         private float _horizontalBias = DefaultHorizontalBias;
         private float _riseBias = DefaultRiseBias;
@@ -202,6 +211,16 @@ namespace TapTap2026.Simulation
         public bool AnyDirty
         {
             get { return _anyDirty; }
+        }
+
+        /// <summary>
+        /// 湿度场的内容版本：任何一次真正改动湿度值（<see cref="Set"/> / <see cref="Add"/> /
+        /// <see cref="AddAt"/> / <see cref="Swap"/> / <see cref="ResetAt"/> 或 <see cref="Step"/> 的输送）
+        /// 都自增。热图的不动点跳过（见 <see cref="HeatMap.Step"/>）用它判断「湿度自上次热 pass 以来有没有变」。
+        /// </summary>
+        internal int Version
+        {
+            get { return _version; }
         }
 
         /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
@@ -295,6 +314,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = updated;
                 MarkDirty(index);
+                _version++;
             }
 
             return true;
@@ -313,6 +333,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = updated;
                 MarkDirty(index);
+                _version++;
             }
         }
 
@@ -331,6 +352,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = updated;
                 MarkDirty(index);
+                _version++;
             }
 
             return true;
@@ -606,6 +628,12 @@ namespace TapTap2026.Simulation
             }
 
             _anyDirty = anyDirty != 0;
+            if (anyDirty != 0)
+            {
+                // 本趟输送改动过湿度（或此前已有未消费的外部写入）→ 内容变了，版本递增。
+                _version++;
+            }
+
             _humidity = next;
             _scratch = current;
         }
@@ -789,6 +817,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = 0f;
                 MarkDirty(index);
+                _version++;
             }
         }
 
@@ -805,6 +834,7 @@ namespace TapTap2026.Simulation
             _humidity[b] = swap;
             MarkDirty(a);
             MarkDirty(b);
+            _version++;
         }
     }
 }

@@ -541,6 +541,7 @@ C 里的湿度项只对**持有湿度的气体格**生效（固/液恒为 0 湿�
 
 一对相邻格之间的交换**大小相等、方向相反**，因此**界内热量守恒**——热只是在格与格之间搬家。扩散读的是本 tick 开始时的温度场（先算全部差值、再整体写回，双缓冲），所以结果与扫描顺序无关、确定可复现。`Conductivity = 0` 关闭传导。核心循环跑在 **Burst**（`FloatMode.Strict`）里，见 §7「世界层场 pass 的实现」。
 
+**不动点跳过**：热场一旦收敛（某一趟 `Step` 无任一格 Q 变化）且此后输入全未变（无外部热写入、格子 / 湿度 / 参数都未变），`HeatMap.Step` 就**整趟跳过**——重算与跳过的结果逐位相同，故不改变模拟。持续照亮时每帧注入热、跳过不生效；昼夜循环的**暗相与静止期**才是收益所在。详见 §7「热传导不动点跳过」。
 
 #### 散热 A：顶行向虚空
 
@@ -715,6 +716,8 @@ public sealed class HeatMap
     public bool  SetHeat(int x, int y, float heat); // 越界无操作，返回 false
     public bool  AddHeat(int x, int y, float delta);// 累加；越界无操作，返回 false
     public void  Step();                            // 由 ParticleWorld.StepLogic 调用，粒子不要手动调
+    public bool  LastStepSkipped { get; }           // 最近一次 Step 是否整趟跳过（不动点跳过），只读
+    public bool  FixpointSkipEnabled { get; set; }  // 默认 true；false 时每帧重跑，用于 A/B 逐位对照
 }
 ```
 
@@ -1027,6 +1030,18 @@ public int  MotionCellsEvaluatedLastStep { get; }   // 最近一次 StepMotion �
 - `HumidityField` 的 `_touched` 短路（本帧无任何流动就不扫脏格）内联成内核局部变量，全零湿度场不产生任何脏格扫描。
 - 消费方不变：`ParticleWorld.StepLogic` 末尾的 `FlushTemperatureDirty()` 把脏格按 **chunk 粒度**并入候选位图（见下），随后 `ClearDirty()`。
 
+**热传导不动点跳过（fixpoint skip）**：
+
+- `HeatMap.Step` 入口先判「整趟跳过」：若**上一趟是恒等**（该趟无任一格 Q 变化），且此后所有输入都没变——外部未改过 Q（`_qVersion`）、世界的格子写入版本（`CellsVersion`）与湿度场版本（`HumidityField.Version`）未变、可变热学参数版本未变——则直接返回，**不交换双缓冲、不动 dirty**。
+- 数学依据：`Step` 是 `(Q, 湿度, cells, 参数)` 的确定性函数。上一趟输入与输出相同（恒等），且此后输入全未变，故再跑一遍得到同一个输出——重算与跳过**逐位等价**（`HeatSkipTests` 用「跳过开 / 关」两条路径跑到收敛后逐位对照验证）。
+- **为什么必须用「上一趟恒等」兜底、而不能只看 `_anyDirty`**：`_anyDirty` 由世界在每逻辑帧末尾消费并清空，它只说明「本帧内有过变化」，无法回答「自上次热 pass 以来 Q 变没变」。光照 / 降水 / 潜热都在热 pass **之后**才注热，所以另设只增不减的 `_qVersion`（`SetHeat` / `AddHeat` / `SwapHeat` 每次真正改 Q 时自增）来回答后一个问题；否则会把帧末刚注入的热误判为「无变化」而跳过、任其逐帧累积。
+- **跳过发生在暗相 / 无注入的平衡期**：持续照亮时每帧都在 `AddHeat → MarkDirty`，注入本身即破跳过（与热场是否平衡无关）——这是**语义而非缺陷**。`LightController` 是昼夜占空比循环，因此实际沙盒里的暗相与静止期都能吃到跳过收益。
+- 构造后**首帧必真跑**（不给 `_lastStepIsIdentity` 预置初值）；`FixpointSkipEnabled`（默认 true）可关掉跳过做 A/B 逐位对照；`LastStepSkipped` 暴露「本趟是否跳过」供测试 / 诊断。
+
+**chunk 粒度的温度脏唤醒**：
+
+- `FlushTemperatureDirty` → `FlushDirty` 把每个脏格**半径 2 唤醒球覆盖到的每个 chunk（16×16）整块**置入候选位图，而不是逐格刷 5×5 的球。整块 ⊇ 球，候选集仍是「输入可能变化的格」的超集，多求值一些输入未变的格不改变任何模拟结果（与运动休眠「超集即安全」同一依据）。收益在密集脏区：一片连续脏格往往只落在少数 chunk，逐格 25 次置位被摊成「每 chunk 4 个字 OR、已满即跳过」。
+
 ---
 
 ## 8. 写 `OnMotion` / `OnLogic` 的推荐形态
@@ -1154,6 +1169,7 @@ Assets/Scripts/
     ParticleIds.cs                            类型 id 静态字段（注册时回填）
     ParticleRegistration.cs                   唯一类型清单（新增类型只改这里；顺序只能追加）
     ParticleWorld.cs                          扁平数组、两级入口（StepMotion / StepLogic）、扫描、读写原语、RNG、随机刻抽取
+    HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每逻辑帧四邻热传导；T = Q / C；Swap 对气体竖直位移结算绝热直减 AdiabaticLapse；Step 热传导由直调内核 HeatStepKernel 串行执行（FloatMode.Strict；循环体已抽成 HeatStepParamsCell / HeatStepConductCell 单格体，job 化已实测否决——热 pass 仅 ~0.2ms/帧，调度开销吃掉收益）；**不动点跳过**（上一趟恒等且 Q/格子/湿度/参数版本全未变则整趟跳过，逐位等价；FixpointSkipEnabled 可关掉做 A/B，LastStepSkipped 诊断）；按 typeId 预生成热容/导热率/辐射率/天空暴露参数表
     HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上（RiseStopHumidity 只门控平流项、x 扫描按 Parity 交替）；云 = 湿度高的空气；蒸发的唯一入口 SpreadUnitIntoAir（5 参含 maxShare 份额门控）与饱和判据 IsAirSaturated / SaturationHumidity（降雨用指数饱和曲线）；潜热 LatentHeat(T) = LatentHeatPerDegree × T（5.5/度，20° 锚点 = 110）；Step 核心循环在 Burst（HumidityStepKernel，FloatMode.Strict，`_touched` 短路内联；**保持串行**——budget 读改写 + pair 顺序即语义，阶段 D 未并行化）
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
@@ -1201,10 +1217,11 @@ Assets/Tests/EditMode/
   AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 环境低温（T=0）不冻死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
   FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、不浮空；锚点含火链——贴地圆刷 13 格全落、悬空 0 格；大气可投、越界不可投）+ 烤热沙石与 1/20 淬熄 + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/5 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
   MotionSleepTests.cs                        运动休眠（阶段 B）：休眠透明性（同一受热场景 sleep on/off 跑 200 周期后逐格 typeId / shade / 非 bit0 flags、热场、湿度场一致）/ 静止水池求值数为 0（写入后回升）/ 石头净空链的 19 格远写唤醒（清空最远那格后石头正确滑动）/ 湿度变化（无写入）也唤醒读温度的决策 / MotionSleepEnabled=false 回退全扫描且与 true 逐格一致（含来回切换）
+  HeatSkipTests.cs                           热传导不动点跳过：静止世界首帧真跑后持续跳过 / 注热后恢复执行再收敛 / 改格类型后恢复执行再收敛 / 灯照脉冲必须被下一帧热 pass 传导、暗相收敛后进入跳过 / 跳过 vs 每帧重算（FixpointSkipEnabled）逐位透明
   SpeedControllerTests.cs                    倍速控制器（纯 C#，不依赖 Unity 时钟）：手动档 tick 数随倍率精确缩放且忽略耗时反馈（含 [1,16] 钳位）/ 自适应档便宜帧加性升到 16（每 K=10 帧一次评估）、昂贵帧乘性 16→1 只花 4 次评估 / 逐帧成本噪声不再驱动换向（回归）/ 超预算丢账（cap、丢账计数、下一帧不雪球）与预算为 0 时的 1 tick 保底 / 滞回把成块便宜·昂贵交替的方向反转次数压到低于无滞回对照 / 默认手动 1× 与迁移前固定累加器在 600 帧抖动序列上逐帧 tick 数一致 / 实测倍率：16× 撞紧预算时 `EffectiveSpeed` 收敛到被 cap 的 4×（不是目标 16）、预算充裕时收敛到目标 4×、稳态 1× 精确归一（含 dt 抖动，≈1±0.02）
 ```
 
-测试总数 **195**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24。
+测试总数 **215**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `SpeedControllerTests` 10 + `HeatSkipTests` 5。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 

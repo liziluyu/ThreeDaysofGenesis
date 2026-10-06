@@ -88,6 +88,12 @@ namespace TapTap2026.Simulation
         private bool _motionScanActive;
         private int _motionCellsEvaluatedLastStep;
 
+        /// <summary>
+        /// 格子写入版本：<see cref="Set"/> / <see cref="SetPhase"/> / <see cref="Swap"/> 每次真正改动格子时自增。
+        /// 热图不动点跳过（<see cref="HeatMap.Step"/>）靠它判断「格子的类型 / 布局自上次热 pass 以来有没有变」，
+        /// 由 <see cref="StepLogic"/> 在调 <see cref="HeatMap.Step"/> 前写入 <see cref="HeatMap.CellsVersion"/>。
+        /// </summary>
+        private int _writeVersion;
 
         /// <summary>使用全局注册表 <see cref="ParticleRegistry.Types"/> 创建世界。</summary>
         public ParticleWorld(int width, int height, uint seed)
@@ -463,6 +469,7 @@ namespace TapTap2026.Simulation
             _cells[a] = _cells[b];
             _cells[b] = swap;
             _heat.SwapHeat(a, b);
+            _writeVersion++;
 
             // 湿度跟着物质走：云因此随风平移。固/液永远持有 0 湿度（不变量），
             // 所以水与气体换位时搬过去的是气体那侧的湿度，水不会把水汽带走。
@@ -580,6 +587,8 @@ namespace TapTap2026.Simulation
             ref Cell cell = ref _cells[index];
             cell.typeId = typeId;
             cell.flags = _stamp;
+            _writeVersion++;
+
             // 运动休眠：新物质落入本格——本格与周围 R 内的邻居都要重新求值（下一帧），
             // 本帧扫描中邻居立即唤醒（同帧级联）；本格标成「本帧已处理」，本帧稍后扫到时跳过。
             MarkProcessed(index);
@@ -717,6 +726,8 @@ namespace TapTap2026.Simulation
             ref Cell cell = ref _cells[index];
             cell.typeId = typeId;
             cell.flags = _stamp;
+            _writeVersion++;
+
             // 运动休眠：相变后的新形态与周围邻居都要重新求值（下一帧），本帧扫描中邻居立即唤醒；
             // 本格标成「本帧已处理」。
             MarkProcessed(index);
@@ -1022,6 +1033,7 @@ namespace TapTap2026.Simulation
                 // → ③′降水（饱和且够冷的气体格凝结成雨、释放潜热）→ ④光照（向每列最上面的非气体粒子施热）。
                 // 全程在 try 内：任一阶段抛异常时，其后阶段一并不生效；此时 _tick 已自增（见上），
                 // 但 finally 会按新 tick 恢复写入标记，因此「异常后粒子仍会在下一帧被处理」的约定依然成立。
+                _heat.CellsVersion = _writeVersion;
                 _heat.Step();
                 _humidity.Step(this);
                 StepRain();
