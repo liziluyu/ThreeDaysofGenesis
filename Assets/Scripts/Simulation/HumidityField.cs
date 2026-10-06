@@ -1,4 +1,7 @@
 using System;
+#if UNITY_2022_3_OR_NEWER
+using Unity.Burst;
+#endif
 
 namespace TapTap2026.Simulation
 {
@@ -24,6 +27,11 @@ namespace TapTap2026.Simulation
     /// <para><b>简化**：不区分水滴与冰晶；不做 LCL 的显式建模（云底是"凝结温度面"的涌现）；湿度不做上界截断
     /// （截断会丢质量；降水负责把高值区消化掉）。</para>
     /// </remarks>
+#if UNITY_2022_3_OR_NEWER
+    // 类级 [BurstCompile] 是 Burst ILPP 的发现门（它只进入带该特性的类型）；真正被编译的仍只有
+    // 带方法级 [BurstCompile] 的 HumidityStepKernel。net9 独立编译（LogicBench）下属性被剥掉。
+    [BurstCompile]
+#endif
     public sealed class HumidityField
     {
         /// <summary>一个水格蒸发/凝结出的湿度量。所有相变方向都用它，保证水总量守恒。</summary>
@@ -261,6 +269,15 @@ namespace TapTap2026.Simulation
         public float GetAt(int index)
         {
             return (uint)index < (uint)_humidity.Length ? _humidity[index] : 0f;
+        }
+
+        /// <summary>
+        /// 底层湿度数组的当前引用（<see cref="Step"/> 会双缓冲交换它）。仅供同程序集的场 pass
+        /// 取 <c>fixed</c> 指针用：热图与湿度场的内核都以指针读写它，不做元素级托管访问。
+        /// </summary>
+        internal float[] RawBuffer
+        {
+            get { return _humidity; }
         }
 
         /// <summary>把 (x,y) 的湿度无条件写成 <paramref name="value"/>（下界 0，无上界）。</summary>
@@ -528,9 +545,14 @@ namespace TapTap2026.Simulation
         /// <see cref="RiseStopHumidity"/> **只门控竖直平流项**：已凝成云的空气（按真实湿度 <c>current</c> 判定）
         /// 不再上升，但对称扩散项照常结算——否则会把整对竖直交换冻死（半封闭地形里的一格宽水井曾因此永冻不散）。
         /// x 扫描方向按 <see cref="ParticleWorld.Parity"/> 交替（false 升序 / true 降序），消除固定方向的偏置。
+        /// <para>核心循环在 <see cref="HumidityStepKernel"/>：Unity 下由 Burst ILPP 把对该方法的直接调用重写为
+        /// DirectCall 分发（编辑器 JIT / 构建 AOT；<c>FloatMode.Strict</c>——禁用 FMA 收缩与浮点重排，
+        /// 与 managed 路径逐位一致）；独立编译（obj/LogicBench）时属性被 #if 剥掉，同一方法体直接以 managed 执行——
+        /// 两条路径共用一份源码。「本帧是否有过流动」的短路与逐格脏标记都在内核内完成（<c>_touched</c> 语义内联为内核局部变量），
+        /// 全零湿度场不产生任何脏格扫描。</para>
         /// </remarks>
         /// <exception cref="ArgumentNullException"><paramref name="world"/> 为 null。</exception>
-        public void Step(ParticleWorld world)
+        public unsafe void Step(ParticleWorld world)
         {
             if (world == null)
             {
@@ -546,24 +568,73 @@ namespace TapTap2026.Simulation
             }
 
             float[] current = _humidity;
-            float[] next = _scratch ?? (_scratch = new float[_humidity.Length]);
+            float[] next = _scratch ?? (_scratch = new float[current.Length]);
             Array.Copy(current, next, current.Length);
 
             // 每个格子的"可给出额度"：一对邻居一条出边，两条出边可能都想把该格搬空，
             // 用额度逐个扣减就不会出现负值——而负值一旦被下界截断就会**凭空造出湿度**
             // （实测：不做额度控制时每 3000 逻辑帧多出 158 个水格）。
-            float[] budget = _budget ?? (_budget = new float[_humidity.Length]);
+            float[] budget = _budget ?? (_budget = new float[current.Length]);
             Array.Copy(current, budget, current.Length);
 
             HeatMap heat = world.Heat;
+            float[] heatValues = heat.Values;
+            float[] capacityByType = heat.CapacityByType;
+            byte[] moistAirByType = heat.MoistAirByType;
+            int typeCount = heat.TypeCount;
             int width = _width;
             int height = _height;
 
             // x 扫描方向逐逻辑帧交替：否则"每对只在 a 侧结算一次"会长期偏向某一侧（方向偏置）。
-            bool reversed = world.Parity;
-            int startX = reversed ? width - 1 : 0;
-            int endX = reversed ? -1 : width;
-            int stepX = reversed ? -1 : 1;
+            int reversed = world.Parity ? 1 : 0;
+            int anyDirty;
+
+            fixed (float* humidity = current)
+            fixed (float* nextPtr = next)
+            fixed (float* budgetPtr = budget)
+            fixed (float* heatPtr = heatValues)
+            fixed (Cell* cells = world.Cells)
+            fixed (float* capacityPtr = capacityByType)
+            fixed (byte* moistAirPtr = moistAirByType)
+            fixed (byte* dirty = _dirty)
+            {
+                anyDirty = HumidityStepKernel(
+                    humidity, nextPtr, budgetPtr, heatPtr, cells, capacityPtr, moistAirPtr, dirty,
+                    typeCount, width, height, diffusion, horizontalBias, riseBias,
+                    HeatMap.AirHeatCapacity, HeatMap.HumidityHeatCapacity, InverseRiseTemperature, RiseStopHumidity,
+                    _anyDirty ? 1 : 0, reversed);
+            }
+
+            _anyDirty = anyDirty != 0;
+            _humidity = next;
+            _scratch = current;
+        }
+
+        /// <summary>
+        /// 湿度输送内核（Burst 入口）。只含指针与标量；「本帧是否有过流动」用局部 <c>touched</c> 记账，
+        /// 无流动时整趟脏格比较都跳过（旧实现的 <c>_touched</c> 短路优化）。返回「本帧后是否有任何脏格」，
+        /// 与 <see cref="Dirty"/> 记账语义一致。
+        /// </summary>
+        /// <remarks>
+        /// 算术逐句照搬原 managed 实现（水平右邻一次、竖直上邻一次、额度扣减、真实湿度门控），
+        /// 因此 <c>FloatMode.Strict</c> 下与旧路径逐位一致。
+        /// </remarks>
+#if UNITY_2022_3_OR_NEWER
+        [BurstCompile(FloatMode = FloatMode.Strict, CompileSynchronously = true)]
+#endif
+        private static unsafe int HumidityStepKernel(
+            float* humidity, float* next, float* budget,
+            float* heat, Cell* cells, float* capacityByType, byte* moistAirByType, byte* dirty,
+            int typeCount, int width, int height,
+            float diffusion, float horizontalBias, float riseBias,
+            float airCapacity, float humidityHeatCapacity,
+            float inverseRiseTemperature, float riseStopHumidity,
+            int anyDirtyIn, int reversed)
+        {
+            int touched = 0;
+            int startX = reversed != 0 ? width - 1 : 0;
+            int endX = reversed != 0 ? -1 : width;
+            int stepX = reversed != 0 ? -1 : 1;
 
             for (int y = 0; y < height; y++)
             {
@@ -571,21 +642,28 @@ namespace TapTap2026.Simulation
                 for (int x = startX; x != endX; x += stepX)
                 {
                     // 只有非固非液的格持有湿度：固/液是屏障，不参与输送。
-                    if (!IsMoistAir(world, x, y))
+                    int a = row + x;
+                    ushort idA = cells[a].typeId;
+                    if (idA >= typeCount || moistAirByType[idA] == 0)
                     {
                         continue;
                     }
 
-                    int a = row + x;
-
                     // 水平：右邻（每对只结算一次）。湿度向更热的一侧迁移（"同高度从冷迁往热"）。
-                    if (x + 1 < width && IsMoistAir(world, x + 1, y))
+                    if (x + 1 < width)
                     {
                         int b = a + 1;
-                        float flow = diffusion * (budget[a] - budget[b])
-                            + horizontalBias * (heat.GetTemperatureAt(b) - heat.GetTemperatureAt(a))
-                            * 0.5f * (budget[a] + budget[b]);
-                        Transfer(next, budget, a, b, flow);
+                        ushort idB = cells[b].typeId;
+                        if (idB < typeCount && moistAirByType[idB] != 0)
+                        {
+                            float flow = diffusion * (budget[a] - budget[b])
+                                + horizontalBias * (TemperatureAt(
+                                        heat, cells, humidity, capacityByType, typeCount, airCapacity, humidityHeatCapacity, b)
+                                    - TemperatureAt(
+                                        heat, cells, humidity, capacityByType, typeCount, airCapacity, humidityHeatCapacity, a))
+                                * 0.5f * (budget[a] + budget[b]);
+                            Transfer(next, budget, a, b, flow, ref touched);
+                        }
                     }
 
                     // 竖直：上邻。**温度越高的格子，湿度越倾向于向上传播**——这是一次"上风"平流：
@@ -597,30 +675,51 @@ namespace TapTap2026.Simulation
                     // 于是"云只有薄薄一层、雨像从虚空里落下来"。加门控后云会在**第一次达到可见浓度的高度**
                     // 铺成一层，那才是云的形状。
                     //
-                    // 门控**只作用在平流项 upward 上**、且读真实湿度 current[a]（不是被水平出流扣过的
+                    // 门控**只作用在平流项 upward 上**、且读真实湿度 humidity[a]（不是被水平出流扣过的
                     // budget[a]）：否则整对竖直交换（含对称扩散项）会被冻死——一格宽水井里的湿度曾因此永冻。
-                    if (y + 1 < height && IsMoistAir(world, x, y + 1))
+                    if (y + 1 < height)
                     {
                         int b = a + width;
-                        float self = budget[a];
-                        float upward = current[a] < RiseStopHumidity
-                            ? riseBias * (heat.GetTemperatureAt(a) * InverseRiseTemperature) * self
-                            : 0f;
-                        float flow = diffusion * (self - budget[b]) + upward;
-                        Transfer(next, budget, a, b, flow);
+                        ushort idB = cells[b].typeId;
+                        if (idB < typeCount && moistAirByType[idB] != 0)
+                        {
+                            float self = budget[a];
+                            float upward = humidity[a] < riseStopHumidity
+                                ? riseBias * (TemperatureAt(
+                                        heat, cells, humidity, capacityByType, typeCount, airCapacity, humidityHeatCapacity, a)
+                                    * inverseRiseTemperature) * self
+                                : 0f;
+                            float flow = diffusion * (self - budget[b]) + upward;
+                            Transfer(next, budget, a, b, flow, ref touched);
+                        }
                     }
                 }
             }
 
-            _humidity = next;
-            _scratch = current;
+            // 精确比较（Δ ≠ 0，无阈值）：只在本帧真的有过流动时才扫一遍，全零湿度场（绝大多数测试 /
+            // 干燥场景）直接跳过。湿度变了 ⇒ 该格热容变了 ⇒ 温度变了，运动休眠必须重新求值它。
+            int dirtyAny = anyDirtyIn;
+            if (touched != 0)
+            {
+                int count = width * height;
+                for (int i = 0; i < count; i++)
+                {
+                    if (next[i] != humidity[i])
+                    {
+                        dirty[i] = 1;
+                        dirtyAny = 1;
+                    }
+                }
+            }
+
+            return dirtyAny;
         }
 
         /// <summary>
         /// 结算一对邻居之间的一笔湿度流动（正 = a→b），流量上限由**给出方**剩余额度决定，
         /// 因此任何格子都不会被搬成负数；同一笔流量等量地从给出方扣、给接收方加，界内总量严格不变。
         /// </summary>
-        private static void Transfer(float[] next, float[] budget, int a, int b, float flow)
+        private static unsafe void Transfer(float* next, float* budget, int a, int b, float flow, ref int touched)
         {
             if (flow > 0f)
             {
@@ -632,6 +731,7 @@ namespace TapTap2026.Simulation
                 budget[a] -= flow;
                 next[a] -= flow;
                 next[b] += flow;
+                touched = 1;
             }
             else if (flow < 0f)
             {
@@ -644,12 +744,21 @@ namespace TapTap2026.Simulation
                 budget[b] -= amount;
                 next[a] += amount;
                 next[b] -= amount;
+                touched = 1;
             }
         }
 
-        private static bool IsMoistAir(ParticleWorld world, int x, int y)
+        /// <summary>
+        /// 读取下标 <paramref name="index"/> 处的温度 <c>T = Q / (物质热容 + 湿度 × 附加项)</c>，
+        /// 与 <see cref="HeatMap.GetTemperatureAt"/> 同式——内核不能调托管方法，故就地展开。
+        /// </summary>
+        private static unsafe float TemperatureAt(
+            float* heat, Cell* cells, float* humidity, float* capacityByType,
+            int typeCount, float airCapacity, float humidityHeatCapacity, int index)
         {
-            return ParticleRules.IsGasOrEmpty(world, x, y);
+            ushort id = cells[index].typeId;
+            float capacity = id >= typeCount ? airCapacity : capacityByType[id];
+            return heat[index] / (capacity + humidity[index] * humidityHeatCapacity);
         }
 
         private static float ClampUnit(float value)

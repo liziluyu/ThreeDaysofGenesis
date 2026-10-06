@@ -9,9 +9,6 @@ namespace TapTap2026.Game
     [CreateAssetMenu(menuName = "TapTap2026/Particle Simulation Settings", fileName = "ParticleSimulationSettings")]
     public sealed class ParticleSimulationSettings : ScriptableObject
     {
-        /// <summary><see cref="MaxStepsPerFrame"/> 的硬上限，与 Inspector 的 [Range] 保持一致。</summary>
-        public const int MaxStepsPerFrameLimit = 16;
-
         [SerializeField, Min(1)] private int _width = 320;
         [SerializeField, Min(1)] private int _height = 180;
 
@@ -22,8 +19,12 @@ namespace TapTap2026.Game
                  "按运动帧速率取整折算：每 round(MotionRate / LogicRate) 个运动帧跑一次逻辑帧。")]
         [SerializeField, Min(1f)] private float _logicRate = 20f;
 
-        [Tooltip("单帧内最多追多少个运动帧，防止卡顿后的死亡螺旋。")]
-        [SerializeField, Range(1, MaxStepsPerFrameLimit)] private int _maxStepsPerFrame = 4;
+        [Tooltip("倍速预算：每真实帧最多把多少比例的帧时间花在模拟 tick 上（0.5 = 一半）。" +
+                 "自适应档据此算「这帧还塞得下几个运动 tick」；手动档只把它当超预算丢账的门槛。")]
+        [SerializeField, Range(0f, 1f)] private float _speedBudgetFraction = 0.5f;
+
+        [Tooltip("倍速上限（下限恒为 1×）：手动档 ×2 调档到顶、自适应档加性升到此为止。1 = 禁用倍速。")]
+        [SerializeField, Min(1f)] private float _speedMax = SpeedController.MaxSpeed;
 
         [Tooltip("每多少个运动帧上屏一次。1 = 每个运动帧后渲染一次（默认）。调大可让多个运动帧只渲染一次。")]
         [SerializeField, Min(1)] private int _stepsPerPresent = 1;
@@ -99,10 +100,16 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>单帧内最多追几个运动帧。手改 YAML 越界时由 getter 兜底夹紧。</summary>
-        public int MaxStepsPerFrame
+        /// <summary>每真实帧允许花在模拟 tick 上的时间比例，夹在 <c>[0, 1]</c>。0 = 只保底 1 tick（极紧预算）。</summary>
+        public float SpeedBudgetFraction
         {
-            get { return Mathf.Clamp(_maxStepsPerFrame, 1, MaxStepsPerFrameLimit); }
+            get { return Mathf.Clamp(_speedBudgetFraction, 0f, 1f); }
+        }
+
+        /// <summary>倍速上限（下限恒为 1×）。手改 YAML 小于 1 时由 getter 兜底夹紧。</summary>
+        public float SpeedMax
+        {
+            get { return Mathf.Max(1f, _speedMax); }
         }
 
         /// <summary>每多少个运动帧上屏一次。1 = 每个运动帧后渲染一次（默认）。</summary>

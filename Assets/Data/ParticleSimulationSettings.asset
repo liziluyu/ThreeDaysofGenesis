@@ -16,7 +16,8 @@ MonoBehaviour:
   _height: 180
   _motionRate: 60
   _logicRate: 20
-  _maxStepsPerFrame: 4
+  _speedBudgetFraction: 0.5
+  _speedMax: 16
   _stepsPerPresent: 1
   _seed: 123456789
   _randomTicksPerStep: 48

@@ -1,3 +1,4 @@
+using Stopwatch = System.Diagnostics.Stopwatch;
 using TapTap2026.Rendering;
 using TapTap2026.Simulation;
 using UnityEngine;
@@ -16,6 +17,9 @@ namespace TapTap2026.Game
     /// 个运动帧跑一次 <see cref="ParticleWorld.StepLogic"/>，其余只跑 <see cref="ParticleWorld.StepMotion"/>。</para>
     /// <para>沙箱尺寸：默认取 <see cref="ParticleSimulationSettings"/> 的宽高，本组件的「沙箱尺寸」字段非 0 时覆盖之。
     /// 运行中改尺寸（Inspector 或 <see cref="Resize"/>）会重建一个空世界，已有内容不保留。</para>
+    /// <para>倍速：每真实帧跑几个运动帧由 <see cref="SpeedController"/> 决定（手动档 + 自适应档，默认手动 1×）。
+    /// 本类只负责测量本帧 tick 循环耗时并回喂、以及转发倍率；输入与展示在 <see cref="ParticleEditor"/>。
+    /// 倍速只改每帧的 tick 数，tick 内部逐位不变；超预算的部分直接丢弃、绝不结转。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleSimulationDriver : MonoBehaviour
@@ -42,7 +46,9 @@ namespace TapTap2026.Game
 
         private ParticleSimulationSettings _fallbackSettings;
         private ParticleWorld _world;
-        private float _accumulator;
+        private SpeedController _speed;
+        private readonly Stopwatch _frameStopwatch = new Stopwatch();
+        private double _lastFrameSimMs;
         private int _stepsSincePresent;
         private int _motionTicks;
 
@@ -50,6 +56,12 @@ namespace TapTap2026.Game
         public ParticleWorld World
         {
             get { return _world; }
+        }
+
+        /// <summary>倍速控制器（手动档 + 自适应档）。输入与展示在 <see cref="ParticleEditor"/>，本类只测量与转发。</summary>
+        public SpeedController Speed
+        {
+            get { return _speed; }
         }
 
         /// <summary>是否推进模拟（运动帧与逻辑帧）。运行时可切换（继续/暂停）。</summary>
@@ -151,6 +163,8 @@ namespace TapTap2026.Game
         private void Awake()
         {
             ParticleRegistration.RegisterAll();
+            ParticleSimulationSettings settings = Settings;
+            _speed = new SpeedController(SpeedController.MinSpeed, settings.SpeedMax);
             CreateWorld();
         }
 
@@ -161,7 +175,8 @@ namespace TapTap2026.Game
         {
             ParticleSimulationSettings settings = Settings;
             _world = new ParticleWorld(RequestedWidth, RequestedHeight, settings.Seed);
-            _accumulator = 0f;
+            _speed.ResetAccumulator();
+            _lastFrameSimMs = 0.0;
             _stepsSincePresent = 0;
             _motionTicks = 0;
 
@@ -222,21 +237,21 @@ namespace TapTap2026.Game
             if (_simulate)
             {
                 ParticleSimulationSettings settings = Settings;
-                float stepSeconds = 1f / settings.MotionRate;
-                int maxSteps = settings.MaxStepsPerFrame;
+                int motionRate = Mathf.Max(1, Mathf.RoundToInt(settings.MotionRate));
                 int stepsPerPresent = settings.StepsPerPresent;
                 int logicEvery = settings.LogicTicksPerMotionTick;
 
-                _accumulator += Time.deltaTime;
+                // 预算：本帧允许花在模拟 tick 上的时间 = 一帧的时间 × 预算比例。
+                // 目标帧率取 Application.targetFrameRate（<= 0 即不限帧时按 60 算）。
+                int targetFrameRate = Application.targetFrameRate > 0 ? Application.targetFrameRate : 60;
+                double budgetMs = 1000.0 / targetFrameRate * settings.SpeedBudgetFraction;
 
-                float maxLag = stepSeconds * maxSteps;
-                if (_accumulator > maxLag)
-                {
-                    _accumulator = maxLag;
-                }
+                // 倍速在这里落地：倍率只改变「本帧跑几个运动 tick」，每个 tick 内部逐位不变。
+                // 暂停（_simulate = false）时不调用：欠账不涨，恢复后接着当前倍率跑。
+                int ticks = _speed.PlanMotionTicks(Time.deltaTime, _lastFrameSimMs, budgetMs, motionRate);
 
-                int stepped = 0;
-                while (_accumulator >= stepSeconds && stepped < maxSteps)
+                _frameStopwatch.Restart();
+                for (int i = 0; i < ticks; i++)
                 {
                     // 逻辑帧是运动帧节拍上的一个子节拍：每 logicEvery 个运动帧跑一次「逻辑 + 运动」，
                     // 其余运动帧只跑运动。因此运动帧 60 Hz、逻辑帧 = 60 / logicEvery。
@@ -251,15 +266,17 @@ namespace TapTap2026.Game
                         _world.StepMotion();
                     }
 
-                    _accumulator -= stepSeconds;
-                    stepped++;
-
-                    // 渲染与模拟解耦的接缝：跑完这个运动帧之后是否上屏，只在这里决定。
+                    // 渲染与模拟解耦的接缝：上屏只在本帧所有运动帧跑完之后决定一次（高倍速下多推无意义）。
                     _stepsSincePresent++;
-                    if (_stepsSincePresent >= stepsPerPresent)
-                    {
-                        Present();
-                    }
+                }
+                _frameStopwatch.Stop();
+
+                // 回喂实测耗时，供控制器更新「每 tick 多少钱」的 EMA 与自适应档的 AIMD 判断。
+                _lastFrameSimMs = _frameStopwatch.Elapsed.TotalMilliseconds;
+
+                if (_stepsSincePresent >= stepsPerPresent)
+                {
+                    Present();
                 }
             }
         }

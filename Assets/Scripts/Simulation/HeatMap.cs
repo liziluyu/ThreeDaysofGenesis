@@ -1,4 +1,7 @@
 using System;
+#if UNITY_2022_3_OR_NEWER
+using Unity.Burst;
+#endif
 
 namespace TapTap2026.Simulation
 {
@@ -38,6 +41,11 @@ namespace TapTap2026.Simulation
     /// 各系数上限都是 <see cref="MaxConductivity"/> = 0.24，配合热容 ≳ 0.5 的取值即可稳定；
     /// 若把热容设得极小又拉满导热，会看到温度来回振荡。</para>
     /// </remarks>
+#if UNITY_2022_3_OR_NEWER
+    // 类级 [BurstCompile] 是 Burst ILPP 的发现门（它只进入带该特性的类型）；真正被编译的仍只有
+    // 带方法级 [BurstCompile] 的 HeatStepKernel。net9 独立编译（LogicBench）下属性被剥掉。
+    [BurstCompile]
+#endif
     public sealed class HeatMap
     {
         /// <summary>环境热量：热图初值、越界读的返回值，也是新生成物质的初始热量。</summary>
@@ -104,6 +112,20 @@ namespace TapTap2026.Simulation
         private readonly float[] _conductivityOf;
         private readonly float[] _emissivityOf;
 
+        // ── 按 typeId 索引的场 pass 参数表（世界构造时预生成一次）──
+        // 热传导是 O(W·H) 的逐格循环，逐格回调 ParticleType 对象（`types[id].Info.HeatCapacity`）
+        // 既慢又不可 Burst（托管对象）。这里把类型表的三个热学参数摊平成扁平 float[]，
+        // 内核只按 cells[i].typeId 查表；空气（typeId 0）与空槽项在每次 Step 前用可变属性刷新。
+        private readonly float[] _capacityByType;
+        private readonly float[] _conductivityByType;
+        private readonly float[] _emissivityByType;
+
+        /// <summary>按 typeId 索引的「正上方是它算暴露于天空」表（1 = 空气 / 气体 / 空槽）。</summary>
+        private readonly byte[] _skyExposedByType;
+
+        /// <summary>按 typeId 索引的「该类型是气体 / 空（湿度的合法载体）」表（1 = 是）。湿度场 pass 用。</summary>
+        private readonly byte[] _moistAirByType;
+
         private float[] _heat;
         private float[] _scratch;
 
@@ -162,6 +184,70 @@ namespace TapTap2026.Simulation
             _inverseCapacity = new float[width * height];
             _conductivityOf = new float[width * height];
             _emissivityOf = new float[width * height];
+
+            // 场 pass 参数表：按 typeId 摊平类型表的三个热学参数 + 两张分类表，
+            // 热路径不再逐格回调 ParticleType（也就同时满足 Burst 只认 blittable 数据的要求）。
+            int typeCount = types.Length;
+            _capacityByType = new float[typeCount];
+            _conductivityByType = new float[typeCount];
+            _emissivityByType = new float[typeCount];
+            _skyExposedByType = new byte[typeCount];
+            _moistAirByType = new byte[typeCount];
+            for (int id = 0; id < typeCount; id++)
+            {
+                ParticleType type = types[id];
+                if (type == null)
+                {
+                    // typeId 0（空气）与空槽：热学参数走空气常量 / 空气可变属性；
+                    // 暴露表按 IsSkyExposed 的语义（空气 / 空槽都算暴露），载体表按 IsGasOrEmpty 的语义（只有空气算）。
+                    _capacityByType[id] = AirHeatCapacity;
+                    _skyExposedByType[id] = 1;
+                    _moistAirByType[id] = id == 0 ? (byte)1 : (byte)0;
+                    continue;
+                }
+
+                ParticleTypeInfo info = type.Info;
+                _capacityByType[id] = info.HeatCapacity;
+                _conductivityByType[id] = info.ThermalConductivity;
+                _emissivityByType[id] = info.ThermalEmissivity;
+                bool gas = (info.Tags & ParticleTags.Gas) != 0;
+                _skyExposedByType[id] = gas ? (byte)1 : (byte)0;
+                _moistAirByType[id] = gas ? (byte)1 : (byte)0;
+            }
+
+            RefreshAirTypeTable();
+        }
+
+        /// <summary>把空气（typeId 0）与空槽项的可变热学参数刷新成当前值（σ / ε 可由驱动每帧改写）。O(typeCount)。</summary>
+        private void RefreshAirTypeTable()
+        {
+            for (int id = 0; id < _types.Length; id++)
+            {
+                if (id == 0 || _types[id] == null)
+                {
+                    _capacityByType[id] = AirHeatCapacity;
+                    _conductivityByType[id] = _airThermalConductivity;
+                    _emissivityByType[id] = _airThermalEmissivity;
+                }
+            }
+        }
+
+        /// <summary>按 typeId 索引的物质热容表（不含湿度附加项）。供湿度场 pass 换算温度时复用。</summary>
+        internal float[] CapacityByType
+        {
+            get { return _capacityByType; }
+        }
+
+        /// <summary>按 typeId 索引的「气体 / 空」表（1 = 湿度的合法载体）。供湿度场 pass 复用。</summary>
+        internal byte[] MoistAirByType
+        {
+            get { return _moistAirByType; }
+        }
+
+        /// <summary>类型表长度（下标上限）。</summary>
+        internal int TypeCount
+        {
+            get { return _types.Length; }
         }
 
         /// <summary>热图宽（格数），与世界网格一致。</summary>
@@ -443,7 +529,16 @@ namespace TapTap2026.Simulation
         /// 粒子类型不需要、也不应该自己调用（否则重复扩散）。
         /// <see cref="Conductivity"/>、<see cref="VoidHeatLoss"/> 与 <see cref="RadiativeLoss"/> 都为 0 时是空操作。
         /// </summary>
-        public void Step()
+        /// 核心循环在 <see cref="HeatStepKernel"/>：Unity 下由 Burst ILPP 把对该方法的直接调用重写为
+        /// DirectCall 分发（编辑器 JIT / 构建 AOT；<c>FloatMode.Strict</c>——禁用 FMA 收缩与浮点重排，
+        /// 与 managed 路径逐位一致，满足确定性契约）；独立编译（obj/LogicBench 的 net9）时属性被 #if 剥掉，
+        /// 同一个方法体直接以 managed 执行。两条路径共用一份源码，不存在第二份实现。
+        /// 内核的顺序循环体已抽成两个 per-cell 静态方法（<see cref="HeatStepParamsCell"/> / <see cref="HeatStepConductCell"/>）。
+        /// <b>不做并行</b>：阶段 D 实测热 pass 全量仅 ≈0.2ms/帧（逻辑帧的 1.5~3%），
+        /// 改 `IJobParallelFor` 后 workers=31 与 workers=0 无可分辨差异（313 批调度开销吃掉全部收益），故刻意保持串行直调。
+        /// 逐格参数（热容倒数 / σ / ε）由内核就地按 <see cref="_capacityByType"/> 等按 typeId 索引的表算出，
+        /// 不再逐格回调 <see cref="ParticleType"/>。
+        public unsafe void Step()
         {
             float conductivity = _conductivity;
             float voidLoss = _voidHeatLoss;
@@ -453,24 +548,78 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            float[] heat = _heat;
-            float[] next = _scratch;
-            float[] inverseCapacity = _inverseCapacity;
-            float[] conductivityOf = _conductivityOf;
-            float[] emissivityOf = _emissivityOf;
-            Cell[] cells = _cells;
-            ParticleType[] types = _types;
-            int width = _width;
-            int height = _height;
+            // 空气（typeId 0）与空槽项的 σ / ε 是可变的（驱动每帧写回），Step 前刷一次表。
+            RefreshAirTypeTable();
 
-            for (int i = 0; i < cells.Length; i++)
+            float[] heatArr = _heat;
+            float[] nextArr = _scratch;
+            float[] humidityArr = _humidity == null ? null : _humidity.RawBuffer;
+            int hasHumidity = _humidity == null ? 0 : 1;
+            int anyDirty;
+
+            fixed (float* heat = heatArr)
+            fixed (float* next = nextArr)
+            fixed (float* inverseCapacity = _inverseCapacity)
+            fixed (float* conductivityOf = _conductivityOf)
+            fixed (float* emissivityOf = _emissivityOf)
+            fixed (byte* dirty = _dirty)
+            fixed (Cell* cells = _cells)
+            fixed (float* humidity = humidityArr)
+            fixed (float* capacityByType = _capacityByType)
+            fixed (float* conductivityByType = _conductivityByType)
+            fixed (float* emissivityByType = _emissivityByType)
+            fixed (byte* skyExposedByType = _skyExposedByType)
             {
-                ushort id = cells[i].typeId;
-                inverseCapacity[i] = 1f / (CapacityOf(id, types) + HumidityOf(i) * HumidityHeatCapacity);
-                conductivityOf[i] = ConductivityOf(id, types);
-                emissivityOf[i] = EmissivityOf(id, types);
+                anyDirty = HeatStepKernel(
+                    heat, next, inverseCapacity, conductivityOf, emissivityOf, dirty, _anyDirty ? 1 : 0,
+                    cells, humidity, hasHumidity,
+                    capacityByType, conductivityByType, emissivityByType, skyExposedByType,
+                    _types.Length, _width, _height,
+                    conductivity, voidLoss, radiativeLoss,
+                    AirHeatCapacity, _airThermalConductivity, _airThermalEmissivity, HumidityHeatCapacity);
             }
 
+            // 双缓冲交换：本逻辑帧的读全部来自旧场，写全部落到新场，因此与扫描顺序无关。
+            _heat = nextArr;
+            _scratch = heatArr;
+            _anyDirty = anyDirty != 0;
+        }
+
+        /// <summary>
+        /// 热传导 / 散热内核（Burst 入口）。顺序调 <see cref="HeatStepParamsCell"/> 与 <see cref="HeatStepConductCell"/>，
+        /// 只含指针与标量，逐格参数按 typeId 索引的扁平表取得。
+        /// 返回「本帧后是否有任何脏格」（入参 OR 本次置位），与 <see cref="Dirty"/> 的记账语义一致。
+        /// </summary>
+        /// <remarks>
+        /// 算术逐句照搬原 managed 实现（含双缓冲、四邻顺序、暴露面判据），因此 <c>FloatMode.Strict</c> 下
+        /// 与旧路径逐位一致；<see cref="ParticleWorld"/> 的 EditMode 热学断言即是对照证据。
+        /// </remarks>
+#if UNITY_2022_3_OR_NEWER
+        [BurstCompile(FloatMode = FloatMode.Strict, CompileSynchronously = true)]
+#endif
+        private static unsafe int HeatStepKernel(
+            float* heat, float* next,
+            float* inverseCapacity, float* conductivityOf, float* emissivityOf,
+            byte* dirty, int anyDirtyIn,
+            Cell* cells, float* humidity, int hasHumidity,
+            float* capacityByType, float* conductivityByType, float* emissivityByType, byte* skyExposedByType,
+            int typeCount, int width, int height,
+            float conductivity, float voidLoss, float radiativeLoss,
+            float airCapacity, float airConductivity, float airEmissivity, float humidityHeatCapacity)
+        {
+            int cellCount = width * height;
+
+            // ① 逐格参数：热容倒数 / σ / ε。越界 id 与空槽走空气标量（表里下标 0 / 空槽已刷成空气值）。
+            for (int i = 0; i < cellCount; i++)
+            {
+                HeatStepParamsCell(
+                    i, cells, humidity, hasHumidity,
+                    capacityByType, conductivityByType, emissivityByType, typeCount,
+                    airCapacity, airConductivity, airEmissivity, humidityHeatCapacity,
+                    inverseCapacity, conductivityOf, emissivityOf);
+            }
+
+            int dirtyAny = anyDirtyIn;
             float halfScale = conductivity * 0.5f;
             int topRow = height - 1;
             for (int y = 0; y < height; y++)
@@ -479,66 +628,124 @@ namespace TapTap2026.Simulation
                 bool topRowExposed = y == topRow;
                 for (int x = 0; x < width; x++)
                 {
-                    int i = row + x;
-                    float selfTemperature = heat[i] * inverseCapacity[i];
-                    float selfConductivity = conductivityOf[i];
-                    float delta = 0f;
-
-                    // 每对邻居的界面导热率 = Conductivity · (σ_本 + σ_邻)/2（算术平均，对称、界内守恒）。
-                    // σ 全为 1 时退化成旧的 Conductivity·(T_邻 − T_本)，与改动前逐格一致。
-                    if (x > 0)
+                    if (HeatStepConductCell(
+                        row + x, x, y, width, height, topRowExposed, halfScale,
+                        heat, next, dirty, inverseCapacity, conductivityOf, emissivityOf,
+                        cells, typeCount, skyExposedByType, radiativeLoss, voidLoss))
                     {
-                        int j = i - 1;
-                        delta += halfScale * (selfConductivity + conductivityOf[j])
-                            * (heat[j] * inverseCapacity[j] - selfTemperature);
+                        dirtyAny = 1;
                     }
-
-                    if (x + 1 < width)
-                    {
-                        int j = i + 1;
-                        delta += halfScale * (selfConductivity + conductivityOf[j])
-                            * (heat[j] * inverseCapacity[j] - selfTemperature);
-                    }
-
-                    if (y > 0)
-                    {
-                        int j = i - width;
-                        delta += halfScale * (selfConductivity + conductivityOf[j])
-                            * (heat[j] * inverseCapacity[j] - selfTemperature);
-                    }
-
-                    if (y + 1 < height)
-                    {
-                        int j = i + width;
-                        delta += halfScale * (selfConductivity + conductivityOf[j])
-                            * (heat[j] * inverseCapacity[j] - selfTemperature);
-                    }
-
-                    // 辐射：只有**暴露于天空**的格才向 0K 虚空漏热，且按本格材料的辐射率 ε 缩放
-                    // （ΔQ = -RadiativeLoss · ε · T）。埋在地下的格四周都是物质、净辐射≈0，若也照漏就会
-                    // 把刚传进地下几格的热量抽干——这正是「热只停在地表」的根因。
-                    // 暴露 = 顶行，或正上方是气体/空。已知简化：只查正上方一格，洞穴内空气也按暴露面处理。
-                    // T < 0 时 -λ·ε·T 变成加热（符号反转）——等价于向 0 环境松弛，无害，但「只散热」仅对 T > 0 成立。
-                    // ε 小的材料（大气：N₂/O₂ 对红外透明）不逐格漏热，整根气柱因此不再把热抽干，
-                    // 地表的热能一路铺到网格顶（这是 λ 之外、真正与「地表温度」解耦的那个旋钮）。
-                    bool exposed = topRowExposed || IsSkyExposed(cells, types, i + width);
-                    float updated = heat[i] + delta - (exposed ? radiativeLoss * emissivityOf[i] * selfTemperature : 0f);
-
-                    // 顶行向虚空散热：界外上方是恒温 AmbientHeat 的无限热库，热量只出不进。
-                    // 与传导独立（不乘 conductivity），否则就失去「独立于导热率」的意义。
-                    if (topRowExposed)
-                    {
-                        updated -= voidLoss * selfTemperature;
-                    }
-
-                    next[i] = updated;
                 }
             }
 
-            // 双缓冲交换：本逻辑帧的读全部来自旧场，写全部落到新场，因此与扫描顺序无关。
-            _heat = next;
-            _scratch = heat;
+            return dirtyAny;
         }
+
+        /// <summary>
+        /// 阶段 ① 的单格体：按 typeId 查扁平参数表，算出下标 <paramref name="i"/> 那一格的 <c>1/C</c> / σ / ε。
+        /// 只读 <paramref name="cells"/> / <paramref name="humidity"/> 与类型表，只写本格自己的项——格间零依赖，
+        /// 由 <see cref="HeatStepKernel"/> 顺序调用；抽出单格体是为了让 net9 与 Unity 共用同一份实现。
+        /// </summary>
+        private static unsafe void HeatStepParamsCell(
+            int i, Cell* cells, float* humidity, int hasHumidity,
+            float* capacityByType, float* conductivityByType, float* emissivityByType, int typeCount,
+            float airCapacity, float airConductivity, float airEmissivity, float humidityHeatCapacity,
+            float* inverseCapacity, float* conductivityOf, float* emissivityOf)
+        {
+            ushort id = cells[i].typeId;
+            bool air = id >= typeCount;
+            float capacity = air ? airCapacity : capacityByType[id];
+            if (hasHumidity != 0)
+            {
+                capacity += humidity[i] * humidityHeatCapacity;
+            }
+
+            inverseCapacity[i] = 1f / capacity;
+            conductivityOf[i] = air ? airConductivity : conductivityByType[id];
+            emissivityOf[i] = air ? airEmissivity : emissivityByType[id];
+        }
+
+        /// <summary>
+        /// 阶段 ② 的单格体：四邻传导 + 暴露面辐射 + 顶行虚空散热，结果写进 <paramref name="next"/> 的同一格，
+        /// 并返回该格 Q 是否变化（调用方据此置「有脏格」）。
+        /// <b>纯 gather</b>——只读旧场（<paramref name="heat"/> 与阶段 ① 写好的逐格参数表）、只写自己那一格，
+        /// 不存在跨格写，因此任意线程 / batch 切分结果逐位相同。
+        /// </summary>
+        private static unsafe bool HeatStepConductCell(
+            int i, int x, int y, int width, int height, bool topRowExposed, float halfScale,
+            float* heat, float* next, byte* dirty,
+            float* inverseCapacity, float* conductivityOf, float* emissivityOf,
+            Cell* cells, int typeCount, byte* skyExposedByType,
+            float radiativeLoss, float voidLoss)
+        {
+            float selfTemperature = heat[i] * inverseCapacity[i];
+            float selfConductivity = conductivityOf[i];
+            float delta = 0f;
+
+            // 每对邻居的界面导热率 = Conductivity · (σ_本 + σ_邻)/2（算术平均，对称、界内守恒）。
+            // σ 全为 1 时退化成旧的 Conductivity·(T_邻 − T_本)，与改动前逐格一致。
+            if (x > 0)
+            {
+                int j = i - 1;
+                delta += halfScale * (selfConductivity + conductivityOf[j])
+                    * (heat[j] * inverseCapacity[j] - selfTemperature);
+            }
+
+            if (x + 1 < width)
+            {
+                int j = i + 1;
+                delta += halfScale * (selfConductivity + conductivityOf[j])
+                    * (heat[j] * inverseCapacity[j] - selfTemperature);
+            }
+
+            if (y > 0)
+            {
+                int j = i - width;
+                delta += halfScale * (selfConductivity + conductivityOf[j])
+                    * (heat[j] * inverseCapacity[j] - selfTemperature);
+            }
+
+            if (y + 1 < height)
+            {
+                int j = i + width;
+                delta += halfScale * (selfConductivity + conductivityOf[j])
+                    * (heat[j] * inverseCapacity[j] - selfTemperature);
+            }
+
+            // 辐射：只有**暴露于天空**的格才向 0K 虚空漏热，且按本格材料的辐射率 ε 缩放
+            // （ΔQ = -RadiativeLoss · ε · T）。埋在地下的格四周都是物质、净辐射≈0，若也照漏就会
+            // 把刚传进地下几格的热量抽干——这正是「热只停在地表」的根因。
+            // 暴露 = 顶行，或正上方是气体/空（越界 / 空槽也算暴露，与 IsSkyExposed 同语义）。
+            // T < 0 时 -λ·ε·T 变成加热（符号反转）——等价于向 0 环境松弛，无害，但「只散热」仅对 T > 0 成立。
+            bool exposed = topRowExposed;
+            if (!exposed)
+            {
+                ushort aboveId = cells[i + width].typeId;
+                exposed = aboveId >= typeCount || skyExposedByType[aboveId] != 0;
+            }
+
+            float updated = heat[i] + delta - (exposed ? radiativeLoss * emissivityOf[i] * selfTemperature : 0f);
+
+            // 顶行向虚空散热：界外上方是恒温 AmbientHeat 的无限热库，热量只出不进。
+            // 与传导独立（不乘 conductivity），否则就失去「独立于导热率」的意义。
+            if (topRowExposed)
+            {
+                updated -= voidLoss * selfTemperature;
+            }
+
+            next[i] = updated;
+
+            // 精确比较 Δ ≠ 0（无阈值）：本格 Q 变了就记脏，供世界的运动休眠热唤醒使用。
+            // 均匀温场里 delta = 0，比较恒 false，因此不产生任何脏格、不拖慢稳态。
+            if (updated != heat[i])
+            {
+                dirty[i] = 1;
+                return true;
+            }
+
+            return false;
+        }
+
 
 
         /// <summary><see cref="ParticleWorld.Swap"/> 交换两格时同步搬运热量（热由物质携带）。</summary>
@@ -615,24 +822,6 @@ namespace TapTap2026.Simulation
 
             ParticleType type = types[typeId];
             return type == null ? _airThermalEmissivity : type.Info.ThermalEmissivity;
-        }
-
-        /// <summary>
-        /// 正上方那格（<paramref name="aboveIndex"/>）是否是气体/空——即本格是否「暴露于天空」。
-        /// 辐射只作用于暴露面：埋着的格四周都是同温物质、净辐射≈0，不该向虚空漏热。
-        /// 越界 / 未注册 / 空槽一律当作空气（暴露）。
-        /// 已知简化：只看正上方一格——洞穴内的空气也算暴露、会被辐射抽热（接受现状，不重构）。
-        /// </summary>
-        private static bool IsSkyExposed(Cell[] cells, ParticleType[] types, int aboveIndex)
-        {
-            ushort id = cells[aboveIndex].typeId;
-            if (id == ParticleRegistry.AirTypeId || id >= types.Length)
-            {
-                return true;
-            }
-
-            ParticleType above = types[id];
-            return above == null || (above.Info.Tags & ParticleTags.Gas) != 0;
         }
     }
 }

@@ -539,7 +539,8 @@ C 里的湿度项只对**持有湿度的气体格**生效（固/液恒为 0 湿�
 
 σ 是每个类型的 `ParticleTypeInfo.ThermalConductivity`（`[0, 1]`，1 = 最强、0 = 绝热）；空气（typeId 0）没有类型条目，用 `HeatMap.AirThermalConductivity`。因为界面导热率 ≤ `Conductivity`，σ 全为 1 时就是旧的「单一全局导热系数」行为。这样高导热材料（水）把热摊开、低导热材料（沙）把热憋在表层——**同样注热，隔热材料的表面更烫**（实测 1×H 柱底部持续注热：水底 56°、石 83°、土 94°、沙 101°）。
 
-一对相邻格之间的交换**大小相等、方向相反**，因此**界内热量守恒**——热只是在格与格之间搬家。扩散读的是本 tick 开始时的温度场（先算全部差值、再整体写回，双缓冲），所以结果与扫描顺序无关、确定可复现。`Conductivity = 0` 关闭传导。
+一对相邻格之间的交换**大小相等、方向相反**，因此**界内热量守恒**——热只是在格与格之间搬家。扩散读的是本 tick 开始时的温度场（先算全部差值、再整体写回，双缓冲），所以结果与扫描顺序无关、确定可复现。`Conductivity = 0` 关闭传导。核心循环跑在 **Burst**（`FloatMode.Strict`）里，见 §7「世界层场 pass 的实现」。
+
 
 #### 散热 A：顶行向虚空
 
@@ -997,6 +998,35 @@ public int  MotionCellsEvaluatedLastStep { get; }   // 最近一次 StepMotion �
 - 单线程，主线程。不存在并行扫描。
 - `StepMotion` / `StepLogic` 都用 `try/finally` 恢复写入标记：某个钩子抛异常时 `_tick` 不自增、`_stamp` 按「旧 tick」恢复，因此异常后新建的粒子仍会在下一帧被处理，不会白等一帧。
 
+### 世界层场 pass 的实现（阶段 C 起 Burst；阶段 D 实测否决并行，保持串行直调）
+
+**目标**：把两个 O(W·H) 的浮点遍历——`HeatMap.Step`（四邻传导 + 顶行虚空散热 + 暴露面辐射）与 `HumidityField.Step`（扩散 + 水平冷→热 + 竖直越热越向上）——交给 Burst 编译执行；**降水 / 光照 / 随机刻 / 粒子类型代码保持 managed（类型代码零改动）**。
+
+**实现**：
+
+- `Packages/manifest.json` 直接依赖 `com.unity.burst`（**1.8.30**，Unity 2022.3 兼容的 1.8.x 线）；`TapTap2026.Simulation.asmdef` 引用 `Unity.Burst` 并开启 `allowUnsafeCode`（内核签名要指针）。
+- **按 typeId 预生成的扁平参数表**（世界构造时一次）：热容 `_capacityByType`、导热率 `_conductivityByType`、辐射率 `_emissivityByType`、天空暴露 `_skyExposedByType`、湿度载体 `_moistAirByType`。热路径不再逐格回调 `ParticleType.Info`（既更快，也是 Burst 只认 blittable 数据的前提）。空气（typeId 0）与空槽项在每次 `Step` 前用**可变属性**（`AirThermalConductivity` / `AirThermalEmissivity`）刷新，`id >= types.Length` 的越界 id 仍用标量空气值，与原 `CapacityOf` / `ConductivityOf` / `EmissivityOf` 语义逐格一致。
+- **热传导的循环体已抽成两个 per-cell 静态方法**：`HeatStepParamsCell`（阶段 ①：逐格填热容倒数 `1/C`、σ、ε）与 `HeatStepConductCell`（阶段 ②：四邻传导 + 暴露面辐射 + 顶行虚空散热 + 脏标记）。`HeatStepKernel` 顺序调它们，net9 与 Unity 共用同一份单格体（阶段 D 抽取，位哈希证明逐位中性）。
+- **阶段 D 测量结论：热传导刻意保持串行直调，不做 `IJobParallelFor`**。隔离诊断（Burst on，200×100）实测热 pass 全量仅 **≈0.19~0.26 ms/帧**（占逻辑帧的 1.5~3%），job 化后 workers=31 与 workers=0 **无可分辨差异**——313 个调度批次的调度 / 同步开销吃掉了全部并行收益；网格规模远未到并行甜蜜点。结论：保持 `Step` → 直调 `HeatStepKernel` 的单线程 Burst 路径（若将来网格放大到热 pass 成为瓶颈量级，再重估）。
+- **湿度为何保持串行（阶段 D 未动 `HumidityField`）**：`Transfer` 对给出方的 `budget[a]` 做**读改写**（额度随本步内已发生的转移逐笔扣减），接收方 `next[b]` 又由多来源累加——典型 scatter + 就地松弛（Gauss-Seidel 式）。pair 的处理顺序（y 升序 × x 随 `Parity` 交替、每格先右对后上对）**就是语义本身**：`budget` 的演化依赖前序 pair 的结果，浮点累加顺序同样影响位级轨迹。任何并行重排（行带 / 棋盘 / 相位着色）都会改变逐位结果，所以 `HumidityField.Step` 仍在主线程直调 `HumidityStepKernel`（同样 `FloatMode.Strict`），不并行化。
+- 核心循环是 `[BurstCompile(FloatMode = FloatMode.Strict, CompileSynchronously = true)] static unsafe` 内核（`HeatMap.HeatStepKernel` / `HumidityField.HumidityStepKernel`），签名只含 `float*` / `byte*` / `Cell*` / 标量。**宿主直接调用内核方法**——Burst 的 ILPP 把直调重写成 DirectCall 分发（编辑器 JIT / 构建 AOT 自动选路，Burst 关闭时回落到同一方法体的 managed 版本），宿主把数组 `fixed` 住再传指针，零拷贝、零分配。
+- **类级 `[BurstCompile]` 是 ILPP 的发现门**：Burst 的 IL 后处理器只进入「类型本身带 `[BurstCompile]`」的类，所以 `HeatMap` / `HumidityField` 两个类都标了类级特性；真正被编译的仍只有带方法级特性的内核方法。方法级 `[BurstCompile]` 的 `#if UNITY_2022_3_OR_NEWER` 包裹同理（net9 独立编译时属性不存在）。
+- `obj/LogicBench`（net9 独立编译，**注意别放 `Temp/`——Unity 启动会清空 Temp**）里 `UNITY_2022_3_OR_NEWER` 未定义、属性被剥掉，同一个内核方法直接以 managed 执行——两条路径共用一份源码（含抽出的 `HeatStepParamsCell` / `HeatStepConductCell` 单格体），不存在第二份实现，因此「编辑器 Burst / 独立编译 managed」可直接逐位对照。
+
+**FloatMode.Strict 与确定性条款**：
+
+- 内核显式 `FloatMode.Strict`——禁用 FMA 收缩与浮点重排。内核里的算式、四邻顺序、双缓冲、暴露面判据**逐句照搬**原 managed 实现，所以 Burst 与 managed 分支逐位一致。Burst 1.8 的 `FloatMode.Default` 恰好也是 `Strict`，这里**显式写死**，避免将来默认值变化悄悄破坏确定性契约。
+- `CompileSynchronously = true`：首次调用即编译完成，杜绝「前几帧 managed、之后 Burst」的混合执行——同一段模拟不能中途换浮点实现。
+- **确定性契约不变**：同种子同命令序列逐格可复现；Burst（编辑器 / player）与 managed 分支的结果逐位一致，因此确定性重放测试在任何分支下都成立。
+- **历史问题与最终方案**：最初用 `BurstCompiler.CompileFunctionPointer` 拿函数指针调用，但本机环境里 Burst 的「编辑器运行时 entry point 名单」始终为空（连一个朴素的 `[BurstCompile] static float Add(float,float)` 都报 `not a known Burst entry point`），`CompileFunctionPointer` 静默回落 managed。根因是该路径依赖编辑器侧的运行时发现，而 DirectCall（ILPP 在编译期改写直调）把入口注册烘焙进 IL、不依赖运行时发现。改为「类级 `[BurstCompile]` + 直调内核」后验证通过：ILPP 产物里出现 `$BurstManaged`/`$BurstDirectCall` 标记、entry point 报错归零、`Library/BurstCache/JIT` 产出新库、200/200 测试在 Burst 编译的内核下全绿（零断言失败）。**教训：内核调用一律直调（DirectCall），不要用 `CompileFunctionPointer`。** 阶段 D 曾把热传导改成 `IJobParallelFor`（已实测否决并回退，原因见上文测量结论），最终确认「类级发现门 + 直调内核」仍是本项目的正确路径。
+
+**脏标记语义（与阶段 B 逐位一致）**：
+
+- Q / 湿度的脏缓冲是 `byte[]`（`1` = 脏、`0` = 干净）——Burst 内核要求扁平 blittable 缓冲，公开属性 `HeatMap.Dirty` / `HumidityField.Dirty` 与 `ParticleWorld.FlushDirty` 随之从 `bool[]` 改为 `byte[]`（语义不变：非 0 即脏）。
+- 内核按**精确 Δ ≠ 0**（无阈值）就地置位，并把「入参 `_anyDirty` OR 本次置位」作为返回值交回宿主（对应旧实现的 `dirtyAny` 记账）。
+- `HumidityField` 的 `_touched` 短路（本帧无任何流动就不扫脏格）内联成内核局部变量，全零湿度场不产生任何脏格扫描。
+- 消费方不变：`ParticleWorld.StepLogic` 末尾的 `FlushTemperatureDirty()` 把脏格按 **chunk 粒度**并入候选位图（见下），随后 `ClearDirty()`。
+
 ---
 
 ## 8. 写 `OnMotion` / `OnLogic` 的推荐形态
@@ -1124,8 +1154,7 @@ Assets/Scripts/
     ParticleIds.cs                            类型 id 静态字段（注册时回填）
     ParticleRegistration.cs                   唯一类型清单（新增类型只改这里；顺序只能追加）
     ParticleWorld.cs                          扁平数组、两级入口（StepMotion / StepLogic）、扫描、读写原语、RNG、随机刻抽取
-    HeatMap.cs                                与网格同形的热量场 Q（float/格）+ 每逻辑帧四邻热传导；T = Q / C；Swap 对气体竖直位移结算绝热直减 AdiabaticLapse
-    HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上（RiseStopHumidity 只门控平流项、x 扫描按 Parity 交替）；云 = 湿度高的空气；蒸发的唯一入口 SpreadUnitIntoAir（5 参含 maxShare 份额门控）与饱和判据 IsAirSaturated / SaturationHumidity（降雨用指数饱和曲线）；潜热 LatentHeat(T) = LatentHeatPerDegree × T（5.5/度，20° 锚点 = 110）
+    HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上（RiseStopHumidity 只门控平流项、x 扫描按 Parity 交替）；云 = 湿度高的空气；蒸发的唯一入口 SpreadUnitIntoAir（5 参含 maxShare 份额门控）与饱和判据 IsAirSaturated / SaturationHumidity（降雨用指数饱和曲线）；潜热 LatentHeat(T) = LatentHeatPerDegree × T（5.5/度，20° 锚点 = 110）；Step 核心循环在 Burst（HumidityStepKernel，FloatMode.Strict，`_touched` 短路内联；**保持串行**——budget 读改写 + pair 顺序即语义，阶段 D 未并行化）
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）

@@ -75,7 +75,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 |---|---|
 |`docs/ParticleTypeInterface.md`|粒子系统的接口规范与架构契约。改架构必须同步它。|
 |`ProjectSettings/ProjectVersion.txt`|钉死编辑器 `2022.3.62f1 (4af31df58517)`，版本不一致会重写资产。|
-|`Packages/manifest.json`|依赖清单（含 OpenUPM scoped registry）；与 `packages-lock.json` 一起提交。|
+|`Packages/manifest.json`|依赖清单（含 OpenUPM scoped registry）；与 `packages-lock.json` 一起提交。直接依赖 `com.unity.burst` 1.8.30（`TapTap2026.Simulation` 引用它做两个世界层场 pass；内核用**直调 + 类级 `[BurstCompile]`** 的 DirectCall 路径，不要用 `CompileFunctionPointer`——本机编辑器运行时 entry point 发现不可靠）。热传导的 job 化已实测否决（热 pass 仅 ~0.2ms/帧、占逻辑帧 1.5~3%，`IJobParallelFor` 的调度开销吃掉全部并行收益），刻意保持串行直调；湿度因 budget 读改写 + pair 顺序即语义同样串行。|
 |`ProjectSettings/EditorBuildSettings.asset`|Build 场景列表，当前只有 `SampleScene.unity`。|
 |`Assets/Scripts/Simulation/ParticleRegistration.cs`|全工程唯一的粒子类型清单；注册顺序只能追加。|
 |`Assets/Scripts/Simulation/Cell.cs`|`Cell` 布局唯一真源，其它文件不得复制该结构。|

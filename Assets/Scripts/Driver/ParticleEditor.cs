@@ -11,8 +11,9 @@ namespace TapTap2026.Game
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
     /// **右键**在可投放类型间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
+    /// **`=` / `-`** 手动调倍速（×2 / ÷2，夹在 [1,16]，切回手动档）；**Tab** 开关自适应倍速（开启时从当前倍率起步）；
     /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
-    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度。
+    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（<c>×N</c>，自适应时 <c>×N auto</c>）。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
@@ -73,6 +74,9 @@ namespace TapTap2026.Game
 
         /// <summary>「单颗投放」白名单类型的投放冷却（秒）。</summary>
         public const float SinglePlacementCooldownSeconds = 0.5f;
+
+        /// <summary>倍速读数里「实测倍率」括号的显示阈值：实测与目标的相对差小于它就不显示（稳态下免噪音）。</summary>
+        public const float EffectiveSpeedDisplayThreshold = 0.05f;
 
         /// <summary>当前笔刷半径（格）。</summary>
         public int BrushRadius
@@ -151,6 +155,27 @@ namespace TapTap2026.Game
                 else
                 {
                     _driver.Pause();
+                }
+            }
+
+            // 倍速热键：与暂停同理，这里只负责「按下了就切一下」，
+            // 档位与自适应状态都在驱动暴露的 Speed 控制器里（驱动不认识输入）。
+            SpeedController speed = _driver.Speed;
+            if (speed != null)
+            {
+                if (Input.GetKeyDown(KeyCode.Equals))
+                {
+                    // ×2 手动调档（SetSpeed 切回手动档并钳到 [1, 16]）。
+                    speed.SetSpeed(speed.Speed * 2f);
+                }
+                else if (Input.GetKeyDown(KeyCode.Minus))
+                {
+                    speed.SetSpeed(speed.Speed * 0.5f);
+                }
+
+                if (Input.GetKeyDown(KeyCode.Tab))
+                {
+                    speed.SetAdaptive(!speed.Adaptive);
                 }
             }
 
@@ -335,7 +360,8 @@ namespace TapTap2026.Game
             GUI.Label(new Rect(x + 16f, y - 3f, 200f, 20f), _hudText);
         }
 
-        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」；按住 E（擦除修饰键）时前置提示。</summary>
+        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」；按住 E（擦除修饰键）时前置提示。
+        /// 末尾追加当前倍速（见 <see cref="DescribeSpeed"/>）。</summary>
         private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
         {
             string reading = TryGetCell(screenPosition, world, out int x, out int y)
@@ -343,7 +369,37 @@ namespace TapTap2026.Game
                 : "视口外";
 
             // 按住 E 时前缀一个固定串，免得以为左键还在投放。
-            _probeText = Input.GetKey(KeyCode.E) ? "【擦除】" + reading : reading;
+            string line = Input.GetKey(KeyCode.E) ? "【擦除】" + reading : reading;
+            _probeText = line + "  " + DescribeSpeed();
+        }
+
+        /// <summary>
+        /// 左上角读数的倍速后缀：手动档 <c>×N</c>、自适应档 <c>×N auto</c>；目标倍率与实测吞吐（<see cref="SpeedController.EffectiveSpeed"/>）
+        /// 相差 ≥5% 时再追加 <c>(实 ×M)</c>——稳态下不显示这个括号，免得读数抖。
+        /// </summary>
+        private string DescribeSpeed()
+        {
+            SpeedController speed = _driver != null ? _driver.Speed : null;
+            if (speed == null)
+            {
+                return "×1";
+            }
+
+            float target = speed.Speed;
+            string text = "×" + target.ToString("0.##", CultureInfo.InvariantCulture);
+            if (speed.Adaptive)
+            {
+                text += " auto";
+            }
+
+            float effective = speed.EffectiveSpeed;
+            // effectiv <= 0 = 还没有过有效样本（例如一直暂停），不猜一个假数字出来。
+            if (effective > 0f && Mathf.Abs(effective - target) >= target * EffectiveSpeedDisplayThreshold)
+            {
+                text += " (实 ×" + effective.ToString("0.##", CultureInfo.InvariantCulture) + ")";
+            }
+
+            return text;
         }
 
         /// <summary>
