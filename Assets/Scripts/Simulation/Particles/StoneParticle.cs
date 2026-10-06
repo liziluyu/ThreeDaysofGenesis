@@ -36,7 +36,11 @@ namespace TapTap2026.Simulation
             friction: 0.9f,
             stickiness: 0.9f,
             palette: Palette,
-            debugName: nameof(StoneParticle));
+            debugName: nameof(StoneParticle),
+            // 运动阅读盒：TrySlope 的净空链。粘住（同排反侧有固体）时
+            // clearance = 1/(1−0.9) + 1/(1−0.9) − 1 = 19，TrySlide 逐格读 (x ± 1, y−1 … y−19)
+            // 的 _cells；不粘住时为 10。水平只读斜滑那一侧（X = 1）、向上不读（Up = 0）。
+            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 19));
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {

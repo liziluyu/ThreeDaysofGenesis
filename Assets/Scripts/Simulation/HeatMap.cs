@@ -106,6 +106,16 @@ namespace TapTap2026.Simulation
 
         private float[] _heat;
         private float[] _scratch;
+
+        /// <summary>
+        /// 本逻辑阶段内 Q 发生过变化（精确 <c>Δ ≠ 0</c>，无阈值）的格标记，下标与网格一致。
+        /// <c>1</c> = 脏，<c>0</c> = 干净（<c>byte[]</c> 而非 <c>bool[]</c>：Burst 内核要求扁平可 blittable 的缓冲）。
+        /// 运动休眠的**热唤醒源**：运动决策读温度的类型（水对流、大气浮力 / 热压流）只有在温度变了
+        /// 才可能改主意，而热只在逻辑阶段变。世界在 <see cref="ParticleWorld.StepLogic"/> 末尾消费本记录、
+        /// 把这些格按半径 2 刷子并入候选位图，随后 <see cref="ClearDirty"/>。
+        /// </summary>
+        private byte[] _dirty;
+        private bool _anyDirty;
         private float _conductivity = DefaultConductivity;
         private float _voidHeatLoss = DefaultVoidHeatLoss;
         private float _radiativeLoss = DefaultRadiativeLoss;
@@ -148,6 +158,7 @@ namespace TapTap2026.Simulation
             _humidity = humidity;
             _heat = new float[width * height];
             _scratch = new float[width * height];
+            _dirty = new byte[width * height];
             _inverseCapacity = new float[width * height];
             _conductivityOf = new float[width * height];
             _emissivityOf = new float[width * height];
@@ -178,6 +189,46 @@ namespace TapTap2026.Simulation
         public float[] Values
         {
             get { return _heat; }
+        }
+
+        /// <summary>
+        /// 脏格标记缓冲（下标 = <c>y * Width + x</c>，<c>1</c> = 自上次 <see cref="ClearDirty"/> 以来 Q 变化过，<c>0</c> = 干净）。
+        /// <b>只读契约</b>：外部只允许读——置位由 <see cref="SetHeat"/> / <see cref="AddHeat"/> / <see cref="SwapHeat"/> /
+        /// <see cref="Step"/> 内部完成，消费后由世界调用 <see cref="ClearDirty"/>。用于运动休眠的热唤醒。
+        /// 类型是 <c>byte[]</c> 而非 <c>bool[]</c>：Burst 内核直接以 <c>byte*</c> 置位（见 <see cref="Step"/>）。
+        /// </summary>
+        public byte[] Dirty
+        {
+            get { return _dirty; }
+        }
+
+        /// <summary>是否任一格有未消费的热变化（<c>false</c> = 世界可跳过整趟脏格扫描）。</summary>
+        public bool AnyDirty
+        {
+            get { return _anyDirty; }
+        }
+
+        /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
+        public void ClearDirty()
+        {
+            if (!_anyDirty)
+            {
+                return;
+            }
+
+            Array.Clear(_dirty, 0, _dirty.Length);
+            _anyDirty = false;
+        }
+
+        /// <summary>把扁平下标标成脏格（Q 已精确变化）。热路径：一次字节读 + 两次写，无分配。</summary>
+        private void MarkDirty(int index)
+        {
+            if (_dirty[index] == 0)
+            {
+                _dirty[index] = 1;
+                _anyDirty = true;
+            }
+
         }
 
         /// <summary>
@@ -357,7 +408,13 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            _heat[y * _width + x] = heat;
+            int index = y * _width + x;
+            if (_heat[index] != heat)
+            {
+                _heat[index] = heat;
+                MarkDirty(index);
+            }
+
             return true;
         }
 
@@ -370,7 +427,14 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            _heat[y * _width + x] += delta;
+            int index = y * _width + x;
+            float updated = _heat[index] + delta;
+            if (updated != _heat[index])
+            {
+                _heat[index] = updated;
+                MarkDirty(index);
+            }
+
             return true;
         }
 
@@ -483,6 +547,14 @@ namespace TapTap2026.Simulation
             float swap = _heat[a];
             _heat[a] = _heat[b];
             _heat[b] = swap;
+
+            // 两格 Q 都变了才记脏（相等时交换是空操作）。Swap 的候选位已由世界按写路径置位，
+            // 这里记脏只是让热唤醒的记录保持一致（不依赖调用顺序）。
+            if (swap != _heat[a])
+            {
+                MarkDirty(a);
+                MarkDirty(b);
+            }
         }
 
         private float CapacityOf(ushort typeId)

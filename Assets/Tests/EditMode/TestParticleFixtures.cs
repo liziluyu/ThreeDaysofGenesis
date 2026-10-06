@@ -61,7 +61,9 @@ namespace TapTap2026.Tests
 
         public ParticleTypeInfo Info
         {
-            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, 1f, 1f, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle"); }
+            // 运动阅读盒：TryFlowHorizontal 沿同一行扫到 x ± MaxFlowSpread(= 4)，另经 TryFall / 斜落读 (x, y−1)
+            // 与 (x ± 1, y−1) ⇒ (4, 0, 1)。
+            get { return new ParticleTypeInfo(ParticleTags.Liquid, 1f, 1f, 1f, 1f, true, false, 4, 0f, 0f, Palette, "TestLiquidParticle", motionReadReach: new MotionReadBox(x: 4, up: 0, down: 1)); }
         }
 
         public void OnMotion(ParticleWorld world, int x, int y)

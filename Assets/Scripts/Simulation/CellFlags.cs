@@ -6,9 +6,10 @@ namespace TapTap2026.Simulation
     public static class CellFlags
     {
         /// <summary>
-        /// bit0：本格最后一次被改动的 tick 奇偶。
-        /// <see cref="ParticleWorld"/> 独占管理，用于「每格每 tick 至多被处理一次」，
-        /// 因此不需要每 tick 做一次 O(N) 清零 pass。类型代码永远不要整体赋值 <c>flags</c>。
+        /// bit0：本格最后一次被改动的 tick 奇偶——**历史标记**，<see cref="ParticleWorld"/> 的写操作负责维护。
+        /// 「每格每 tick 至多被处理一次」改由世界内部的逐扫描位图（<c>ParticleWorld._processedBits</c>）判定：
+        /// 运动休眠会跳过格，bit0 会残留成与当前 tick 同奇偶的旧值，单靠它判定会漏求值。
+        /// 类型代码永远不要整体赋值 <c>flags</c>（会破坏 bit0 与其它位），也不要自己读它判断处理状态。
         /// </summary>
         public const byte ProcessedParity = 0x01;
 
@@ -78,12 +79,6 @@ namespace TapTap2026.Simulation
 
         /// <summary>风向记忆：向右（+x）。</summary>
         public const byte DriftDirectionRight = 2;
-
-        /// <summary>该格在本 tick（由 <paramref name="stamp"/> 标识）是否已被处理过。</summary>
-        public static bool IsProcessed(byte flags, byte stamp)
-        {
-            return (flags & ProcessedParity) == (stamp & ProcessedParity);
-        }
 
         /// <summary>把 bit0 写成 <paramref name="stamp"/>，其余位原样保留。</summary>
         public static byte WithProcessed(byte flags, byte stamp)

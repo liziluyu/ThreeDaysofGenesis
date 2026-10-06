@@ -28,6 +28,26 @@ namespace TapTap2026.Simulation
 
         private const uint DefaultSeed = 0x9E3779B9u;
 
+        /// <summary>候选位图的 chunk 边长（格）。256 bit / chunk = <c>ulong[4]</c>，全 0 = 整块休眠。</summary>
+        private const int ChunkShift = 4;
+
+        /// <summary>chunk 边长（= <c>1 &lt;&lt; ChunkShift</c>，16）。</summary>
+        private const int ChunkSize = 1 << ChunkShift;
+
+        /// <summary>chunk 内的格掩码（低 <see cref="ChunkShift"/> 位）。</summary>
+        private const int ChunkMask = ChunkSize - 1;
+
+        /// <summary>每个 chunk 的位图字数（256 bit / 64）。</summary>
+        private const int WordsPerChunk = 4;
+
+        /// <summary>
+        /// 温度唤醒刷子半径（格，Chebyshev）：一处 Q 或湿度变化后，需要重新求值的运动决策最远读到几格温度。
+        /// 取 2 = <see cref="ParticleRules.TryThermalDrift"/> 的「连片」判据读 <c>(x ± 2, y)</c> 的温度；
+        /// 水对流 / 大气浮力只读相邻格（1）。温度唤醒与 <see cref="ParticleTypeInfo.MotionReadReach"/> 无关：
+        /// 前者只看温度读距，后者只算结构（<c>_cells</c>）读距。
+        /// </summary>
+        private const int HeatWakeRadius = 2;
+
         /// <summary>四邻偏移（<see cref="EvacuateHumidity"/> 用；提成静态数组避免每次降雨都分配）。</summary>
         private static readonly int[] NeighbourX = { -1, 1, 0, 0 };
         private static readonly int[] NeighbourY = { 0, 0, -1, 1 };
@@ -40,12 +60,34 @@ namespace TapTap2026.Simulation
         private readonly LightController _light;
         private readonly ParticleType[] _types;
 
+        // ── 运动休眠（阶段 B）──
+        // 候选位图：每 chunk 256 bit（ulong[4]），扁平一维；bit0 处理标记机制不变。
+        // _candidates 收集「写入 / 温度脏」置位的待求值格；StepMotion 开始时与 _scanCandidates 互换，
+        // 扫描期间的新写入继续落回 _candidates（留给下一帧），扫描末尾清空刚消费的 _scanCandidates。
+        private readonly int _chunkCols;
+        private readonly int _chunkCount;
+        private readonly ulong[] _processedBits;
+
+        // 写入唤醒集：类型表所有 MotionReadReach 盒**反转**后的并集（见 MotionReadBox）。并集按行表示——
+        // 每行 dy 上被唤醒的 x 恰好是一个关于写入格对称的连续区间（多个对称区间取并 = 最宽的那个），
+        // 所以只需存每行的半宽 _wakeHalf[dy]（-1 = 该行无格）。写入时逐行按 64 位字 OR，而不是逐格置位，
+        // 行内区间连续、通常只落在 1..2 个字里——比「全体最大值球」（41×41 = 1681 格）便宜两个数量级。
+        private readonly sbyte[] _wakeHalf;
+        private readonly int _wakeMinDy;
+        private readonly int _wakeMaxDy;
+        private ulong[] _candidates;
+        private ulong[] _scanCandidates;
+
         private int _tick;
         private uint _rng;
         private int _randomTicksPerStep;
         private byte _stamp;
         private Cell _outside;
         private bool _unknownTypeReported;
+        private bool _motionSleepEnabled = true;
+        private bool _motionScanActive;
+        private int _motionCellsEvaluatedLastStep;
+
 
         /// <summary>使用全局注册表 <see cref="ParticleRegistry.Types"/> 创建世界。</summary>
         public ParticleWorld(int width, int height, uint seed)
@@ -104,6 +146,94 @@ namespace TapTap2026.Simulation
             _tick = 0;
             _rng = seed == 0u ? DefaultSeed : seed;
             _stamp = OutsideStamp;
+
+            // 运动休眠：唤醒集 = 类型表所有 MotionReadReach 盒**反转**后的并集（见 MotionReadBox）。
+            // 反转：读者读 (x ± X, y−Down..y+Up) ⇒ 写在这些格的任一格都要唤醒它 ⇒ 写入唤醒盒 (X, Down, Up)，
+            // 即「行 dy ∈ [−Up, Down]、半宽 X」。并集按行取最宽半宽即可（对称区间求并仍是区间）。
+            // 初态整张位图置位——世界刚建好，所有格都还没被求值过，第一帧必须全扫描。
+            int reach = MotionReadBox.MaxReach;
+            var halfByDy = new sbyte[2 * reach + 1];
+            for (int i = 0; i < halfByDy.Length; i++)
+            {
+                halfByDy[i] = -1;
+            }
+
+            int minDy = reach + 1;
+            int maxDy = -reach - 1;
+            for (int i = 1; i < types.Length; i++)
+            {
+                ParticleType entry = types[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                MotionReadBox writeBox = entry.Info.MotionReadReach.Reversed;
+                for (int dy = -writeBox.Down; dy <= writeBox.Up; dy++)
+                {
+                    int slot = dy + reach;
+                    if (halfByDy[slot] < (sbyte)writeBox.X)
+                    {
+                        halfByDy[slot] = (sbyte)writeBox.X;
+                    }
+
+                    if (dy < minDy)
+                    {
+                        minDy = dy;
+                    }
+
+                    if (dy > maxDy)
+                    {
+                        maxDy = dy;
+                    }
+                }
+            }
+
+            if (maxDy < minDy)
+            {
+                // 类型表里没有任何带行为的类型：没有任何行需要唤醒。
+                minDy = 0;
+                maxDy = -1;
+            }
+
+            var wakeHalf = new sbyte[maxDy - minDy + 1];
+            for (int dy = minDy; dy <= maxDy; dy++)
+            {
+                wakeHalf[dy - minDy] = halfByDy[dy + reach];
+            }
+
+            _wakeHalf = wakeHalf;
+            _wakeMinDy = minDy;
+            _wakeMaxDy = maxDy;
+
+            _chunkCols = (width + ChunkMask) >> ChunkShift;
+            _chunkCount = _chunkCols * ((height + ChunkMask) >> ChunkShift);
+            _candidates = new ulong[_chunkCount * WordsPerChunk];
+            _scanCandidates = new ulong[_chunkCount * WordsPerChunk];
+            _processedBits = new ulong[(_cells.Length + 63) >> 6];
+            for (int i = 0; i < _candidates.Length; i++)
+            {
+                _candidates[i] = ulong.MaxValue;
+            }
+        }
+
+        /// <summary>写入唤醒集的格数（= 类型表所有运动阅读盒反转后的并集大小）。只读，供测试 / 诊断。</summary>
+        public int MotionWakeOffsetCount
+        {
+            get
+            {
+                int total = 0;
+                for (int dy = _wakeMinDy; dy <= _wakeMaxDy; dy++)
+                {
+                    sbyte half = _wakeHalf[dy - _wakeMinDy];
+                    if (half >= 0)
+                    {
+                        total += 2 * half + 1;
+                    }
+                }
+
+                return total;
+            }
         }
 
         /// <summary>类型表。<c>Types[0]</c> 为 <c>null</c>。</summary>
@@ -177,6 +307,46 @@ namespace TapTap2026.Simulation
         public int Tick
         {
             get { return _tick; }
+        }
+
+        /// <summary>
+        /// 运动休眠开关（默认 <c>true</c>）。为 true 时 <see cref="StepMotion"/> 只求值候选格
+        /// （被写格按类型表运动阅读盒并集唤醒的格 + 温度变化格半径 2 内的格），
+        /// 静止粒子整块 chunk 跳过；为 false 时退回**全网格旧路径**，用于 A/B 对照与回归验证。
+        /// </summary>
+        /// <remarks>
+        /// 语义等价性：候选格集合是「自上次求值以来输入可能变化」的格的超集，因此跳过静止粒子
+        /// 不改变任何模拟结果（<see cref="StepLogic"/> 的扫描始终是全网格，不受本开关影响）。
+        /// 运行中随时可改；休眠关闭期间不累积候选位，从 false 切回 true 时整张位图置位一次，
+        /// 等价于「刚构造完」的初态，不会漏唤醒。
+        /// </remarks>
+        public bool MotionSleepEnabled
+        {
+            get { return _motionSleepEnabled; }
+            set
+            {
+                if (value && !_motionSleepEnabled)
+                {
+                    // 关闭期间没有累积候选位（写路径整段跳过），重新打开时整张置位一次，
+                    // 等价于「刚构造完」的初态，避免漏唤醒。
+                    for (int i = 0; i < _candidates.Length; i++)
+                    {
+                        _candidates[i] = ulong.MaxValue;
+                    }
+                }
+
+                _motionSleepEnabled = value;
+            }
+        }
+
+        /// <summary>
+        /// 最近一次 <see cref="StepMotion"/> 实际求值的格数（= 调用过 <c>OnMotion</c> 的格数，不含被跳过的格）。
+        /// 静止场景应远小于 <see cref="CellCount"/>；<see cref="MotionSleepEnabled"/> 为 false 时约为粒子总数。
+        /// 逻辑帧（<see cref="StepLogic"/>）不更新它。
+        /// </summary>
+        public int MotionCellsEvaluatedLastStep
+        {
+            get { return _motionCellsEvaluatedLastStep; }
         }
 
         /// <summary>下一次（或正在进行的）<see cref="StepLogic"/> 的扫描方向奇偶：false = x 升序，true = x 降序。</summary>
@@ -306,6 +476,15 @@ namespace TapTap2026.Simulation
             byte stamp = _stamp;
             _cells[a].flags = CellFlags.WithProcessed(_cells[a].flags, stamp);
             _cells[b].flags = CellFlags.WithProcessed(_cells[b].flags, stamp);
+
+            // 运动休眠：被写格（两个都算）周围 R 内置候选位——移动后的粒子与两个格的邻居
+            // 都可能在下一运动帧改主意；本帧扫描中还要把写入格之外的邻居也立即唤醒（同帧级联）。
+            // 两个被写格本身标成「本帧已处理」：本帧稍后扫到它们时跳过（等价于旧 bit0 语义）。
+            MarkProcessed(a);
+            MarkProcessed(b);
+            MarkCandidates(x0, y0);
+            MarkCandidates(x1, y1);
+            MarkCandidatesThisScan(x0, y0, x1, y1);
             return true;
         }
 
@@ -401,6 +580,11 @@ namespace TapTap2026.Simulation
             ref Cell cell = ref _cells[index];
             cell.typeId = typeId;
             cell.flags = _stamp;
+            // 运动休眠：新物质落入本格——本格与周围 R 内的邻居都要重新求值（下一帧），
+            // 本帧扫描中邻居立即唤醒（同帧级联）；本格标成「本帧已处理」，本帧稍后扫到时跳过。
+            MarkProcessed(index);
+            MarkCandidates(x, y);
+            MarkCandidatesThisScan(x, y, x, y);
 
             // 新物质继承该格原有热量：旧物质离场，但它的热视作就地留给了新物质（新生成的有机物
             // 不会被拍成 0°——例如夜里发芽的草继承暖空气的 Q，不会当帧冻死）。相变要带走自己的热时用 SetPhase。
@@ -533,6 +717,11 @@ namespace TapTap2026.Simulation
             ref Cell cell = ref _cells[index];
             cell.typeId = typeId;
             cell.flags = _stamp;
+            // 运动休眠：相变后的新形态与周围邻居都要重新求值（下一帧），本帧扫描中邻居立即唤醒；
+            // 本格标成「本帧已处理」。
+            MarkProcessed(index);
+            MarkCandidates(x, y);
+            MarkCandidatesThisScan(x, y, x, y);
 
             // Q 跟着物质走，不重置（这正是与 Set 的区别）。
             _heat.SetHeat(x, y, heat);
@@ -765,14 +954,18 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 推进一个**运动帧**（60 Hz 的基本节拍）：只做一次全网格扫描，对每个粒子调用其
+        /// 推进一个**运动帧**（60 Hz 的基本节拍）：只做一次扫描，对每个粒子调用其
         /// <see cref="ParticleType.OnMotion"/>。**不跑相变、热传导、湿度、降水、光照或随机刻**——
         /// 那些都属于逻辑帧，见 <see cref="StepLogic"/>。
         /// </summary>
         /// <remarks>
-        /// 与渲染解耦：本方法不接触任何渲染资源，由上层决定跑完几次之后才上屏一次。
+        /// <para>与渲染解耦：本方法不接触任何渲染资源，由上层决定跑完几次之后才上屏一次。
         /// 运动帧是世界的唯一时基：<see cref="Tick"/> 无论走哪一个入口都每帧自增一次，
-        /// 扫描方向与 bit0 处理标记也随之交替。
+        /// 扫描方向与 bit0 处理标记也随之交替。</para>
+        /// <para><b>运动休眠</b>（<see cref="MotionSleepEnabled"/>，默认开）：只求值候选格——
+        /// 自上次求值以来输入可能变化的格（被写格按运动阅读盒并集唤醒、以及温度变化格周围 2 格）。静止粒子整个 chunk 跳过，因此静止场景的
+        /// <see cref="MotionCellsEvaluatedLastStep"/> 远小于 <see cref="CellCount"/>。
+        /// 候选集合是「输入可能变化」的超集，跳过静止粒子不改变任何模拟结果。</para>
         /// </remarks>
         public void StepMotion()
         {
@@ -786,6 +979,14 @@ namespace TapTap2026.Simulation
                 // 某个 OnMotion 抛异常时 _tick 未自增，此处按「旧 tick」恢复写入标记，
                 // 使异常后新建的粒子仍会被下一帧处理；正常路径则按自增后的 tick 恢复。
                 _stamp = OutsideStamp;
+
+                // 异常时休眠扫描提前退出，位图收尾与正常路径一致（本帧消费的位清空、标志复位）；
+                // 扫描期间已写入的候选位留在 _candidates，下一帧照常求值。
+                if (_motionScanActive)
+                {
+                    _motionScanActive = false;
+                    Array.Clear(_scanCandidates, 0, _scanCandidates.Length);
+                }
             }
         }
 
@@ -800,7 +1001,8 @@ namespace TapTap2026.Simulation
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
         /// <b>③湿度输送</b>（<see cref="HumidityField.Step"/>：扩散 + 水平冷→热 + 竖直越热越向上）→
         /// <b>③′降水</b>（湿度越过该温度饱和湿度的气体格凝结成雨，并按 <see cref="HumidityField.LatentHeat"/> 释放潜热）→
-        /// <b>④光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）。
+        /// <b>④光照</b>（<see cref="LightController.Step"/>，向每列最上面的非气体粒子施热）→
+        /// <b>⑤热唤醒并入</b>（把本阶段 Q 变化过的格按半径 2 刷子并入运动休眠的候选位图）。
         /// 因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
         /// 上层应让逻辑帧落在运动帧的节拍上——每 3 个运动帧跑一次本方法，即 60 Hz 运动 / 20 Hz 逻辑。
         /// </remarks>
@@ -824,6 +1026,12 @@ namespace TapTap2026.Simulation
                 _humidity.Step(this);
                 StepRain();
                 _light.Step(this);
+
+                // ⑤ 运动休眠的温度唤醒：本逻辑阶段内 Q 或湿度变化过的格，按半径 2 刷子并入候选位图
+                // （半径 2 = 运动决策的温度读距上界，见 HeatWakeRadius）。这些标记随其它写入一起
+                // 留到下一个 StepMotion 消费——两次逻辑帧之间温度场不变，因此唤醒一次求值后若粒子
+                // 没有位移，后续运动帧跳过它与全扫描精确等价。
+                FlushTemperatureDirty();
             }
             finally
             {
@@ -835,8 +1043,9 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 一次全网格扫描，世界的唯一处理入口。行从高到低、x 方向按 <see cref="Tick"/> 奇偶交替；
-        /// <paramref name="logic"/> 为 true 时每格先跑一次逻辑钩子。
+        /// 扫描入口。**逻辑帧**（<paramref name="logic"/> = true）与 <see cref="MotionSleepEnabled"/> 为 false 时
+        /// 走全网格扫描：行从高到低、x 方向按 <see cref="Tick"/> 奇偶交替，逐格 <see cref="ProcessCell"/>。
+        /// 运动帧且休眠开启时改走 <see cref="ScanSleeping"/>（同样顺序，只求值候选格）。
         /// </summary>
         private void Scan(bool logic)
         {
@@ -849,6 +1058,22 @@ namespace TapTap2026.Simulation
             int height = _height;
             bool reversed = (_tick & 1) != 0;
 
+            // 「本帧已处理」记录：每次扫描开始时整张清空（O(N/64)），扫描中逐格置位，
+            // 写入（Set / SetPhase / Swap）也立即置位，使本帧稍后扫到的被写格被跳过。
+            // 为什么不用 Cell.flags 的 bit0：bit0 只有 1 位奇偶，无法区分「本帧已处理」与
+            // 「偶数个 tick 之前处理过」——休眠跳过若干帧的格会残留同奇偶的 bit0，被误判成已处理
+            // 而漏求值（全扫描路径靠「每 tick 处理所有格」掩盖了这一点，休眠路径不能）。
+            // bit0 仍照旧由写入维护（类型作者契约与既有测试都依赖它），只是不再作为跳过判据。
+            Array.Clear(_processedBits, 0, _processedBits.Length);
+
+            if (!logic && _motionSleepEnabled)
+            {
+                ScanSleeping(stamp, reversed, cells, types, width, height);
+                return;
+            }
+
+            bool counting = !logic;
+            int evaluated = 0;
             for (int y = height - 1; y >= 0; y--)
             {
                 int rowBase = y * width;
@@ -856,14 +1081,358 @@ namespace TapTap2026.Simulation
                 {
                     for (int x = width - 1; x >= 0; x--)
                     {
-                        ProcessCell(x, y, rowBase + x, stamp, logic, cells, types);
+                        if (ProcessCell(x, y, rowBase + x, stamp, logic, cells, types))
+                        {
+                            evaluated++;
+                        }
                     }
                 }
                 else
                 {
                     for (int x = 0; x < width; x++)
                     {
-                        ProcessCell(x, y, rowBase + x, stamp, logic, cells, types);
+                        if (ProcessCell(x, y, rowBase + x, stamp, logic, cells, types))
+                        {
+                            evaluated++;
+                        }
+                    }
+                }
+            }
+
+            if (counting)
+            {
+                _motionCellsEvaluatedLastStep = evaluated;
+            }
+        }
+
+        /// <summary>
+        /// 运动休眠扫描：只求值候选格，扫描顺序与全网格扫描**逐格一致**（y 降序、x 随 Tick 奇偶交替），
+        /// 只是跳过位图未置位的格——因此确定性契约（同种子同命令逐格可复现）不受影响。
+        /// </summary>
+        /// <remarks>
+        /// 位图生命周期：本方法开始时把「待消费」的 <see cref="_candidates"/> 与 <see cref="_scanCandidates"/>
+        /// 互换（写入从此刻起落到 <see cref="_candidates"/>，留给下一帧），扫描只读 <see cref="_scanCandidates"/>，
+        /// 末尾把它整张清空。因此扫描期间的写操作不会丢、也不会影响本帧的读位图。
+        /// 以 16 格为粒度做快路径：某 chunk 在当前行的那 16 位全 0 就整段跳过（chunk 全 0 等价于每行都整段跳过）。
+        /// <b>段内必须每次重新读那一个 64 位字</b>：<see cref="MarkCandidatesThisScan"/> 会在扫描途中往同一段里补位
+        /// （本帧级联），把字缓存在局部变量里会让这些新位永远看不到 —— 表现为「同一 16 格段内的级联晚一帧」，
+        /// 与全扫描结果发散。段入口的那次判空仍然是新鲜的：能让本段置位的写入，要么在本段之前就已发生，
+        /// 要么必然来自本段自身的求值（那只有在段入口非空时才可能）。
+        /// </remarks>
+        private void ScanSleeping(
+            byte stamp, bool reversed, Cell[] cells, ParticleType[] types, int width, int height)
+        {
+            ulong[] candidates = _candidates;
+            _candidates = _scanCandidates;
+            _scanCandidates = candidates;
+
+            ulong[] bits = _scanCandidates;
+            int chunkCols = _chunkCols;
+            int evaluated = 0;
+
+            _motionScanActive = true;
+
+            for (int y = height - 1; y >= 0; y--)
+            {
+                int rowBase = y * width;
+                int chunkRowBase = (y >> ChunkShift) * chunkCols;
+                int wordInChunk = (y & ChunkMask) >> 2;
+                int bitBase = (y & 3) << 4;
+
+                if (reversed)
+                {
+                    for (int cx = chunkCols - 1; cx >= 0; cx--)
+                    {
+                        ulong word = bits[((chunkRowBase + cx) << 2) + wordInChunk];
+                        if (word == 0UL)
+                        {
+                            continue;
+                        }
+
+                        int wordIndex = ((chunkRowBase + cx) << 2) + wordInChunk;
+                        int xStart = cx << ChunkShift;
+                        int xEnd = xStart + ChunkSize;
+                        if (xEnd > width)
+                        {
+                            xEnd = width;
+                        }
+
+                        for (int x = xEnd - 1; x >= xStart; x--)
+                        {
+                            if ((bits[wordIndex] & (1UL << (bitBase + (x & ChunkMask)))) == 0UL)
+                            {
+                                continue;
+                            }
+
+                            if (ProcessCell(x, y, rowBase + x, stamp, false, cells, types))
+                            {
+                                evaluated++;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    for (int cx = 0; cx < chunkCols; cx++)
+                    {
+                        ulong word = bits[((chunkRowBase + cx) << 2) + wordInChunk];
+                        if (word == 0UL)
+                        {
+                            continue;
+                        }
+
+                        int wordIndex = ((chunkRowBase + cx) << 2) + wordInChunk;
+                        int xStart = cx << ChunkShift;
+                        int xEnd = xStart + ChunkSize;
+                        if (xEnd > width)
+                        {
+                            xEnd = width;
+                        }
+
+                        for (int x = xStart; x < xEnd; x++)
+                        {
+                            if ((bits[wordIndex] & (1UL << (bitBase + (x & ChunkMask)))) == 0UL)
+                            {
+                                continue;
+                            }
+
+                            if (ProcessCell(x, y, rowBase + x, stamp, false, cells, types))
+                            {
+                                evaluated++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            _motionCellsEvaluatedLastStep = evaluated;
+
+            _motionScanActive = false;
+            Array.Clear(_scanCandidates, 0, _scanCandidates.Length);
+        }
+
+        /// <summary>本帧是否已处理过 <paramref name="index"/>；未处理则置位并返回 true（至多处理一次）。</summary>
+        private bool TakeProcessed(int index)
+        {
+            int word = index >> 6;
+            ulong mask = 1UL << (index & 63);
+            if ((_processedBits[word] & mask) != 0UL)
+            {
+                return false;
+            }
+
+            _processedBits[word] |= mask;
+            return true;
+        }
+
+        /// <summary>把 <paramref name="index"/> 标成「本帧已处理」。写入（Set / SetPhase / Swap）调用，
+        /// 使本帧稍后扫到的被写格不会被再次求值（等价于旧的 bit0 语义）。</summary>
+        private void MarkProcessed(int index)
+        {
+            _processedBits[index >> 6] |= 1UL << (index & 63);
+        }
+
+        /// <summary>
+        /// 把写入格 (x,y) 的唤醒偏移集（类型表所有运动阅读盒反转后的并集，见 <see cref="MotionReadBox"/>）
+        /// 并入**下一帧**的候选位图。写操作（<see cref="Set"/> / <see cref="SetPhase"/> / <see cref="Swap"/>，
+        /// <see cref="Clear"/> 经 <see cref="Set"/>）走这里。
+        /// </summary>
+        /// <remarks>休眠关闭时位图不被消费，整个遍历都跳过（A/B 对照走的就是这条快路径）；
+        /// 重新打开时由 <see cref="MotionSleepEnabled"/> 的 setter 整张置位，保证不丢唤醒。
+        /// 热路径：按固定偏移数组置位，无分配、无边界裁剪循环。</remarks>
+        private void MarkCandidates(int x, int y)
+        {
+            if (!_motionSleepEnabled)
+            {
+                return;
+            }
+
+            MarkOffsets(_candidates, x, y, -1, -1, -1, -1);
+        }
+
+        /// <summary>
+        /// 写操作期间同步更新**本帧正在扫描**的候选位图：被写格唤醒集内的格（不含被写格自身）本帧立即重新求值。
+        /// </summary>
+        /// <remarks>
+        /// 这是「同帧级联」的复现：全扫描里，某格改动后，扫描顺序在其**之后**的邻居会在同一帧用新状态决策；
+        /// 只写下一帧的位图会让这些邻居晚一帧才看到改动，逐格结果就会与全扫描不同（实测：静止水面 + 落雨场景
+        /// 在 ~37 个逻辑周期后出现水位差）。被写格自身**不置位**——它由 <see cref="_processedBits"/> 的
+        /// 「本帧已处理」跳过，等价于全扫描的行为；下一帧再靠 <see cref="MarkCandidates"/> 重新求值。
+        /// 已扫描过的格置位无害（本帧不会回头），下一帧的位图里本来就有它。
+        /// </remarks>
+        private void MarkCandidatesThisScan(int x0, int y0, int x1, int y1)
+        {
+            if (!_motionScanActive)
+            {
+                return;
+            }
+
+            MarkOffsets(_scanCandidates, x0, y0, x0, y0, x1, y1);
+            if (x0 != x1 || y0 != y1)
+            {
+                MarkOffsets(_scanCandidates, x1, y1, x0, y0, x1, y1);
+            }
+        }
+
+        /// <summary>把写入格 (x,y) 的唤醒集置入 <paramref name="bits"/>；两个 <paramref name="skip"/>
+        /// 坐标（写操作自己的写入格）不置位。</summary>
+        /// <remarks>按行（dy）扫、行内按 64 位字 OR——唤醒集是逐行的对称 x 区间，见 <see cref="_wakeHalf"/>。</remarks>
+        private void MarkOffsets(
+            ulong[] bits, int x, int y, int skipX0, int skipY0, int skipX1, int skipY1)
+        {
+            sbyte[] halfs = _wakeHalf;
+            int minDy = _wakeMinDy;
+            int maxDy = _wakeMaxDy;
+            if (maxDy < minDy)
+            {
+                return;
+            }
+
+            int width = _width;
+            int height = _height;
+            int chunkCols = _chunkCols;
+            for (int dy = minDy; dy <= maxDy; dy++)
+            {
+                int half = halfs[dy - minDy];
+                if (half < 0)
+                {
+                    continue;
+                }
+
+                int ny = y + dy;
+                if ((uint)ny >= (uint)height)
+                {
+                    continue;
+                }
+
+                int x0 = x - half;
+                int x1 = x + half;
+                if (x0 < 0)
+                {
+                    x0 = 0;
+                }
+
+                if (x1 >= width)
+                {
+                    x1 = width - 1;
+                }
+
+                if (x0 > x1)
+                {
+                    continue;
+                }
+
+                int wordBase = (((ny >> ChunkShift) * chunkCols) << 2) + ((ny & ChunkMask) >> 2);
+                int bitBase = (ny & 3) << 4;
+                int cx0 = x0 >> ChunkShift;
+                int cx1 = x1 >> ChunkShift;
+                for (int cx = cx0; cx <= cx1; cx++)
+                {
+                    int lo = cx == cx0 ? (x0 & ChunkMask) : 0;
+                    int hi = cx == cx1 ? (x1 & ChunkMask) : ChunkMask;
+                    ulong mask = ((1UL << (hi - lo + 1)) - 1UL) << lo;
+
+                    // 写入格自身不唤醒（它们本帧由「已处理」跳过，下一帧再由普通通道置位）。
+                    if (skipY0 == ny && (skipX0 >> ChunkShift) == cx)
+                    {
+                        mask &= ~(1UL << (skipX0 & ChunkMask));
+                    }
+
+                    if (skipY1 == ny && (skipX1 >> ChunkShift) == cx)
+                    {
+                        mask &= ~(1UL << (skipX1 & ChunkMask));
+                    }
+
+                    bits[wordBase + (cx << 2)] |= mask << bitBase;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 消费热图与湿度场的温度脏记录：Q 变化过的格（Δ ≠ 0）与湿度变化过的格（Δ ≠ 0，因
+        /// <c>T = Q / C</c> 且 C 含湿度项）都并入候选位图（chunk 粒度，见 <see cref="FlushDirty"/>），
+        /// 随后清空记录。由 <see cref="StepLogic"/> 每逻辑帧末尾调用一次。
+        /// </summary>
+        /// <remarks>
+        /// 这是「温度变化 ⇒ 唤醒读温度的运动决策」的完整闭环：热图管传导 / 散热 / 光照 / 潜热，
+        /// 湿度场管扩散与温度定向平流——后者不经任何写入就能改变空气格的热容，因此必须一并记账，
+        /// 否则大气浮力 / 热压流可能在温度已变的情况下被休眠跳过。
+        /// </remarks>
+        private void FlushTemperatureDirty()
+        {
+            if (_heat.AnyDirty)
+            {
+                FlushDirty(_heat.Dirty);
+                _heat.ClearDirty();
+            }
+
+            if (_humidity.AnyDirty)
+            {
+                FlushDirty(_humidity.Dirty);
+                _humidity.ClearDirty();
+            }
+        }
+
+        /// <summary>
+        /// 把一张脏格标记（<c>byte[]</c>，非 0 = 脏）并入候选位图：**每个脏格把它半径
+        /// <see cref="HeatWakeRadius"/> 唤醒球覆盖到的 chunk 整块置位**，而不是逐格刷 5×5 的球。
+        /// </summary>
+        /// <remarks>
+        /// 位级安全：旧实现把每个脏格周围 Chebyshev 半径 2 的球逐格置位；新实现把该球覆盖到的每个
+        /// chunk（16×16）**整块**置位——整块 ⊇ 球，因此候选集仍是「输入可能变化的格」的超集，
+        /// 而多求值一些输入未变的格不改变任何模拟结果（与 <see cref="MotionSleepEnabled"/> 的
+        /// 「超集即安全」同一依据）。收益来自密集脏区：一片连续脏格往往只落在少数 chunk 里，
+        /// 逐格 25 次置位被摊成「每 chunk 4 个字 OR、且整块已满即跳过」，稳态扫描成本大降。
+        /// </remarks>
+        private void FlushDirty(byte[] dirty)
+        {
+            if (!_motionSleepEnabled)
+            {
+                return;
+            }
+
+            int width = _width;
+            int chunkCols = _chunkCols;
+            int chunkRows = _chunkCount / chunkCols;
+            ulong[] bits = _candidates;
+
+            for (int index = 0; index < dirty.Length; index++)
+            {
+                if (dirty[index] == 0)
+                {
+                    continue;
+                }
+
+                int y = index / width;
+                int x = index - y * width;
+
+                // 唤醒球可能跨 chunk 边界（脏格离边界不足 HeatWakeRadius），故取其覆盖到的 chunk 区间。
+                int cx0 = (x - HeatWakeRadius) >> ChunkShift;
+                int cx1 = (x + HeatWakeRadius) >> ChunkShift;
+                int cy0 = (y - HeatWakeRadius) >> ChunkShift;
+                int cy1 = (y + HeatWakeRadius) >> ChunkShift;
+                if (cx0 < 0) cx0 = 0;
+                if (cy0 < 0) cy0 = 0;
+                if (cx1 >= chunkCols) cx1 = chunkCols - 1;
+                if (cy1 >= chunkRows) cy1 = chunkRows - 1;
+
+                for (int cy = cy0; cy <= cy1; cy++)
+                {
+                    int rowBase = (cy * chunkCols) << 2;
+                    for (int cx = cx0; cx <= cx1; cx++)
+                    {
+                        int word = rowBase + (cx << 2);
+                        // 整块已满（之前已并入过）就跳过，避免对同一 chunk 重复 OR。
+                        if (bits[word] == ulong.MaxValue && bits[word + 1] == ulong.MaxValue
+                            && bits[word + 2] == ulong.MaxValue && bits[word + 3] == ulong.MaxValue)
+                        {
+                            continue;
+                        }
+
+                        bits[word] = ulong.MaxValue;
+                        bits[word + 1] = ulong.MaxValue;
+                        bits[word + 2] = ulong.MaxValue;
+                        bits[word + 3] = ulong.MaxValue;
                     }
                 }
             }
@@ -906,24 +1475,25 @@ namespace TapTap2026.Simulation
             }
         }
 
-        private void ProcessCell(
+        /// <summary>处理一格。返回是否真的调用了该格的 <c>OnMotion</c>（用于休眠路径的求值计数）。</summary>
+        private bool ProcessCell(
             int x, int y, int index, byte stamp, bool logic, Cell[] cells, ParticleType[] types)
         {
             ushort id = cells[index].typeId;
             if (id == ParticleRegistry.AirTypeId || id >= types.Length)
             {
-                return;
+                return false;
             }
 
             ParticleType type = types[id];
             if (type == null || type.Info.IsStatic)
             {
-                return;
+                return false;
             }
 
-            if (CellFlags.IsProcessed(cells[index].flags, stamp))
+            if (!TakeProcessed(index))
             {
-                return;
+                return false;
             }
 
             cells[index].flags = CellFlags.WithProcessed(cells[index].flags, stamp);
@@ -941,11 +1511,12 @@ namespace TapTap2026.Simulation
                 type.OnLogic(this, x, y);
                 if (cells[index].typeId != id)
                 {
-                    return;
+                    return false;
                 }
             }
 
             type.OnMotion(this, x, y);
+            return true;
         }
 
         private void ReportUnknownType(ushort typeId)

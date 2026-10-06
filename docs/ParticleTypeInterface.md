@@ -76,7 +76,7 @@ public struct Cell
 
 | 位 | 名称 | 归属 | 语义 |
 |---|---|---|---|
-| bit0 | `ProcessedParity` | **模拟系统独占** | 存「该格最后一次变动的 tick 奇偶」。`(flags & 1) != (Tick & 1)` 即本 tick 尚未被处理 |
+| bit0 | `ProcessedParity` | **模拟系统独占** | 存「该格最后一次被改动的 tick 奇偶」——**历史标记**，类型代码必须原样保留。世界内部的「本帧已处理」判据另有一张逐扫描清零的位图（见 §7「运动休眠」），因为 bit0 只有 1 位奇偶、无法区分「本帧已处理」与「偶数帧前处理过」（休眠会跳过格，这个歧义会真的出现） |
 | bit1 | `Burning` | 通用（类型无关） | 燃烧中 |
 | bit2 | `Forced` | 通用（类型无关） | 受外部作用力 / 被推动 |
 | bit3-7 | 类型私有 | 各类型自行定义 | 必须在**该类型文件头部注释**里登记占用位 |
@@ -85,9 +85,9 @@ public struct Cell
 
 规则：
 
-- **bit0 使用奇偶存储，因此不需要每帧做 O(N) 清零 pass。** 类型代码**永远不要**直接写 `flags`，用 `world.At(x,y).flags |= CellFlags.Burning;`（OR 保留 bit0）这类写法；整体赋值 `flags = ...` 会破坏 bit0，属于违规。
+- **世界内部用逐扫描清零的位图记录「本帧已处理」**（`ParticleWorld._processedBits`，O(N/64) 一次清零），不再依赖 bit0 的奇偶——休眠会跳过格，bit0 会残留成与当前帧同奇偶的旧值，用它判定会漏求值。bit0 仍由写操作按旧语义维护（`Set` / `SetPhase` / `Swap` 写成当前 parity），类型代码**永远不要**直接整体赋值 `flags`：用 `world.At(x,y).flags |= CellFlags.Burning;`（OR 保留 bit0）这类写法，整体赋值 `flags = ...` 会破坏 bit0，属于违规。
 - 类型私有位是安全的：一格在同一时刻只属于一个类型。
-- 类型在 `OnMotion` / `OnLogic` 里**不需要**检查 bit0 —— 模拟系统在派发前已经跳过本帧已处理的格。
+- 类型在 `OnMotion` / `OnLogic` 里**不需要**检查「本帧是否已处理」——模拟系统在派发前已经跳过本帧已处理的格。
 
 ### 关于 `vx` / `vy`（速度场，可选）
 
@@ -130,6 +130,7 @@ public readonly struct ParticleTypeInfo
     public readonly bool     AffectedByGravity;  // 是否受重力
     public readonly bool     IsStatic;           // 静态：扫描直接跳过，不进入 OnMotion / OnLogic
     public readonly byte     MaxFlowSpread;      // 最大横流格数；水的带闸门横流把它用作「落差视野」扫描范围（每 tick 只横移 1 格）
+    public readonly MotionReadBox MotionReadReach; // OnMotion 对 _cells 的轴对齐阅读盒 (x±X, y−Down..y+Up)，默认 (1,1,1)。世界把各类型的盒反转求并集作为运动休眠的写入唤醒集，见 §7「运动休眠」
     public readonly float    Friction;           // 摩擦度 0..1，只读于固体运动规则（见下）
     public readonly float    Stickiness;         // 粘性 0..1，只读于固体运动规则（见下）
     public readonly float    LightAbsorption;    // 光照吸收率 ∈ [0,1]（可选，默认 1）：光照注入本格时按它缩放，只读于 LightController
@@ -137,6 +138,27 @@ public readonly struct ParticleTypeInfo
     public readonly string   DebugName;          // 仅调试显示，热路径禁用
 }
 ```
+
+### 运动阅读盒（MotionReadReach）：运动休眠的作者契约
+
+**每个类型必须声明自己的 `MotionReadReach`**——一个轴对齐盒 `(X, Up, Down)`：该类型 `OnMotion`（含它调用的 `ParticleRules` helper）的决策**最远读到** `_cells` 的哪些格，即 `(x ± X, y − Down .. y + Up)`（含边界）。默认 `(1, 1, 1)`（八邻）。
+
+世界把类型表里所有盒**反转**求并集，作为运动休眠的写入唤醒集：写入格 W 时，所有「读得到 W」的格都要重新求值。反转规则是 `(X, Up, Down) → (X, Down, Up)`（读者读 `(x ± X, y − Down .. y + Up)` ⇔ 写在 `(W ± X, W − Up .. W + Down)` 里都要唤醒它），详见 §7「运动休眠」。
+
+- 声明值**必须 ≥ 实际读距（宁大勿小）**：偏小会让读得到被写格的粒子在邻居变化后唤不醒，模拟结果与全扫描路径不一致；偏大只是多求值几格。
+- 语义是「最远**读**到」，不是「最远写到」——写操作自己就会唤醒周围。
+- **不要把「读温度」算进盒里**：温度读距由世界的温度脏路径（Q / 湿度变化格按 chunk 粒度并入候选位图，覆盖半径 2 唤醒球）单独覆盖，与结构读距是两条独立通道。所以大气 `TryThermalDrift` 的 `x ± 2` **不进盒**（它只读温度），石头的 `TrySlope` 净空链**要进盒**（它读 `_cells` 的结构）。
+- 只读 `_cells` 的读者与只读它的写法是同一份盒：世界在每次写入时按并集置位。
+- 当前生产类型的声明与依据：
+
+| 类型 | 盒 | 依据 |
+|---|---|---|
+| 沙 | `(1, 0, 1)` | 0/0 摩擦粘性 → 斜滑净空 1，只读正下与斜下 1 格 |
+| 土 / 湿土 / 腐殖质 / 腐殖土 / 草种子 / 水生态种子 | `(1, 0, 3)` | 0.5/0.5 → 粘住时净空 `1/(1−0.5) + 1/(1−0.5) − 1 = 3` |
+| 水 | `(5, 1, 1)` | 落差视野扫描 `MaxFlowSpread = 5`（同行 `x ± 5`、读 `(scanX, y−1)`）；对流读 `(x, y+1)` |
+| 石头 | `(1, 0, 19)` | 粘住时净空 19，斜滑净空链读 `(x ± 1, y−1 … y−19)` |
+| 大气 | `(1, 1, 1)` | 浮力读四邻；热压流的 `x ± 2` 只读温度，不进盒 |
+| 草 / 水生植物 / 火 | 默认 `(1, 1, 1)` | `OnMotion` 为空，无需放宽 |
 
 ### 摩擦度（Friction）与粘性（Stickiness）：固体的安息角
 
@@ -370,7 +392,7 @@ public interface IParticleType
 
 | 钩子 | 何时被调用 | 应该做什么 | 不应该做什么 |
 |---|---|---|---|
-| `OnMotion` | **每运动帧**（60 Hz）扫描到该类型且该格本帧未被处理时，**每帧至多一次** | 只做移动：查邻居 → 判断 → 调用 `Swap` 实现下落、斜落、横流、浮力位移 | 相变 / 反应（那是 `OnLogic`）；不做渲染、不读 `Time.*`、不分配 |
+| `OnMotion` | **每运动帧**（60 Hz）扫描到该类型且该格本帧未被处理时，**每帧至多一次**（休眠开启时只对候选格调用，见 §7「运动休眠」） | 只做移动：查邻居 → 判断 → 调用 `Swap` 实现下落、斜落、横流、浮力位移；并在 `Info.MotionReadReach` 里声明决策的轴对齐阅读盒（§4） | 相变 / 反应（那是 `OnLogic`）；不做渲染、不读 `Time.*`、不分配；**禁止消耗世界随机流**（`NextUInt`/`NextInt`/`NextByte`）——方向等随机决策用 `HashNoise` 坐标哈希（见下「随机与坐标哈希」）；**不得读湿度 / 光照等「非写入即变」的状态**（免得被休眠跳过时决策过期） |
 | `OnLogic` | **每逻辑帧**（20 Hz）扫描到该类型且该格本帧未被处理时，**在同格 `OnMotion` 之前** | 相变 / 反应 / 邻域写入：`SetPhase` / `Set` / `Clear`、把水汽或热写给邻居 | **移动**（默认不要 `Swap`，那是 `OnMotion` 的职责；**已定稿的唯一例外是 `FireParticle` 的游离火上升**——写在 `OnLogic` 末尾、`OnMotion` 留空，见 §4「火」）；做渲染、读 `Time.*`、分配 |
 | `OnRandomTick` | 每逻辑帧世界随机抽 `RandomTicksPerStep` 个格时被命中，**同一次逻辑帧内同一格可能被命中多次**（也可能一次都不中） | 「缓慢、按概率发生」的局部过程：生长、蔓延、渗流、腐化——一次只处理自己这一格 | 塞进本该每帧发生的运动（那是 `OnMotion`）；指望它每帧都跑 |
 | `OnSpawn` | **每次**通过 `Set` 创建该类型格之后（`Swap` 不会触发） | 额外初始化：`vx/vy`、类型私有 flag 位、需要特定 `shade` 时覆盖默认抽样 | 不把新格再挪走（它已标记为本 tick 已处理） |
@@ -927,9 +949,9 @@ flowchart LR
     B --> B1[y 从高到低逐行 / x 方向按 Tick 奇偶交替]
     B1 --> B3{typeId==0 或 IsStatic?}
     B3 -- 是 --> B4[跳过]
-    B3 -- 否 --> B5{bit0 已是本帧?}
+    B3 -- 否 --> B5{本帧已处理?}
     B5 -- 是 --> B4
-    B5 -- 否 --> B6[标记 bit0 = 本帧奇偶<br/>OnLogic -> 若未换类型再 OnMotion]
+    B5 -- 否 --> B6[标记本帧已处理<br/>OnLogic -> 若未换类型再 OnMotion]
     B6 --> R[①′ 随机刻: 随机抽 RandomTicksPerStep 个格<br/>命中非空气非静态 -> 调 OnRandomTick]
     R --> C[② HeatMap.Step 全格四邻热传导 + 顶行向虚空散热]
     C --> C2[③ HumidityField.Step 湿度输送]
@@ -937,13 +959,40 @@ flowchart LR
     C3 --> D[④ LightController.Step 维护每列云量 + 向每列最上面的非气体粒子施热（按云量衰减）]
 ```
 
-- **运动帧 `StepMotion`**：一次全网格扫描，只对每个非空气、非静态且本帧未处理的格调用 `OnMotion`（移动）。**不跑**逻辑、随机刻、热、湿度、降水、光照。
-- **逻辑帧 `StepLogic`**：同一次扫描里每格**先 `OnLogic`**（相变 / 反应 / 邻域写入）——若它把本格换成了别的类型（`Set` / `SetPhase` 已把新格标成已处理），本帧**跳过该格的运动**；否则继续 `OnMotion`。扫描后再依次跑 **①′ 随机刻**（抽 `RandomTicksPerStep` 个格调 `OnRandomTick`，见 §6「随机刻」，按**逻辑帧**计）→ **② 热传导 + 顶行散热** → **③ 湿度输送** → **③′ 降水** → **④ 光照**。因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
+- **运动帧 `StepMotion`**：一次扫描，只对每个非空气、非静态且本帧未处理的格调用 `OnMotion`（移动）。**不跑**逻辑、随机刻、热、湿度、降水、光照。休眠开启（`MotionSleepEnabled`，默认）时只扫候选格，见上方「运动休眠」。
+- **逻辑帧 `StepLogic`**：同一次扫描里每格**先 `OnLogic`**（相变 / 反应 / 邻域写入）——若它把本格换成了别的类型（`Set` / `SetPhase` 已把新格标成已处理），本帧**跳过该格的运动**；否则继续 `OnMotion`。扫描后再依次跑 **①′ 随机刻**（抽 `RandomTicksPerStep` 个格调 `OnRandomTick`，见 §6「随机刻」，按**逻辑帧**计）→ **② 热传导 + 顶行散热**（热场已到不动点且输入未变时整趟跳过，见 §7）→ **③ 湿度输送** → **③′ 降水** → **④ 光照**。因此逻辑帧注入的热 / 湿度会在下一个逻辑帧被粒子读到、并参与下一轮扩散。
 - 两个入口都推进 `world.Tick` 并交替扫描方向（`Parity`）与 bit0 标记，因此**运动帧才是世界的时基**；`Tick` 数 = 运动帧数。
 - **固定时间步长**，与渲染帧率解耦：驱动每帧最多跑 `MaxStepsPerFrame` 个运动帧，防止死亡螺旋。
 - **暂停/恢复**：驱动只暴露状态与方法——`Pause()` / `Resume()`（幂等）与 `Simulate` / `Paused` 属性，**不含任何输入判断**（何时暂停由调用方决定）。暂停时整个推进分支跳过：不累加 `Time.deltaTime`、不跑 `StepMotion` / `StepLogic`、不上屏，因此**所有帧一起冻结**，恢复后也不会补跑暂停期间堆积的时间。热键（默认空格，`ParticleEditor._pauseKey`，设 `None` 关闭）写在 `ParticleEditor.Update`：按下即按当前状态调 `Pause()` 或 `Resume()`。暂停中仍可 `PresentNow()` 手动上屏（`ParticleEditor` 画完自动补一下）。
 - 扫描顺序：**行永远从上到下**；**水平方向逐帧交替**（偶帧 x 升序、奇帧 x 降序）以消除重力/流动的方向偏置。交替由扫描循环内部完成，类型代码不感知。
 - 空气格与 `IsStatic` 类型**直接跳过**，不进行为调用（随机刻抽取同样跳过它们；静态类型仍会收到 `OnSpawn` / `OnKill`）。
+
+### 运动休眠（阶段 B）：StepMotion 只求值候选格
+
+**目标**：纯 `StepMotion` 不再逐格求值静止粒子。`StepLogic` 的融合扫描**始终是全网格**，语义完全不变。
+
+**机制**：候选位图 = 每 chunk（16×16）一块 `ulong[4]`（256 bit），扁平存一维数组。
+
+- **唤醒源一（写入）**：`Set` / `SetPhase` / `Clear` / `Swap`（两个格都算）按类型表所有 `MotionReadReach` 盒**反转后的并集**置候选位（见 §4「运动阅读盒」）。并集按行表示为「行 dy 上关于写入格对称的连续 x 区间」，因此实现上是逐行按 64 位字 OR，而不是逐格置位：生产类型表共 **87 格**（`dy ∈ [−1,1]` 半宽 5、`dy ∈ [2,19]` 半宽 1），比「全体最大值的 Chebyshev 球」（41×41 = 1681 格）便宜两个数量级。
+- **唤醒源二（温度）**：`HeatMap` 记录本逻辑阶段内 **Q 精确变化（Δ ≠ 0，无阈值）** 的格（传导 / 光照 / 潜热 / 降水；`Swap` 搬热走写入路径），`HumidityField` 记录**湿度精确变化**的格——<c>T = Q / C</c> 而 C 含湿度附加项，所以湿度变了温度就变了，这条通道不能漏。`StepLogic` 末尾把这两类格**按 chunk 粒度**并入候选位图（每个脏格半径 2 唤醒球覆盖到的 16×16 chunk 整块置位——整块 ⊇ 球，仍是超集），随后清空记录。数学依据：两次逻辑帧之间热场不变，被唤醒求值一次后若没有位移，后续运动帧跳过它与全扫描精确等价。
+- **同帧级联**：写入时还会把被写格周围 R 内**本帧尚未扫到**的格并入本帧的候选位图——全扫描里扫描顺序在被写格之后的邻居会在同一帧用新状态决策，只写下一帧的位图会让它们晚一帧才看到改动（实测在落雨 + 水面场景约 37 个逻辑周期后出现水位差）。被写格自身不并入本帧（等价于「本帧已处理」跳过），下一帧照常重新求值。
+- **位图生命周期**：写入 / 热标记随时置位（休眠关闭时不置位，A/B 对照走的就是旧快路径）；`StepMotion` 开始时把「待消费」位图与「本帧扫描」位图互换、只读后者、扫描末尾清空后者。`StepLogic` 的融合扫描保持全网格、不动位图，其间的写入继续累积给下一个 `StepMotion`。
+- **初态**：构造后整张位图置位（第一帧必须全扫描）；`MotionSleepEnabled` 从 false 切回 true 时同样整张置位。
+- **扫描顺序不变**：仍然是 y 降序、x 随 `Tick` 奇偶交替，只对非候选格快速跳过（按 chunk 行 16 位判空整段跳过）。
+- **「本帧已处理」的判据**：世界内部用一张逐扫描清零的位图（`ParticleWorld._processedBits`），而不是 `Cell.flags` 的 bit0——bit0 只有 1 位奇偶，休眠跳过若干帧的格会残留成与当前帧同奇偶的旧值，用它判定会漏求值（全扫描路径靠「每 tick 处理所有格」掩盖了这一点）。bit0 仍由写操作按旧语义维护（类型作者契约与既有测试依赖它）。
+- **同帧级联必须在段内可见**：休眠扫描按 16 格一段读 64 位字做快路径，但**段内每格都要重新读那个字**——扫描途中的写入会往同一段补候选位（本帧级联，与全扫描里「扫描顺序在后的邻居立刻看到改动」等价），把字缓存在局部变量里会让新位永远看不到、级联晚一帧。
+- **不变量**（任何类型的 `OnMotion` 都必须满足，否则休眠会与全扫描不等价）：① 单步位移 ≤ 1 格；② 除温度外不读任何「非写入即变」的状态（湿度、光照、`RandomTicksPerStep` 等）——温度由世界的温度唤醒覆盖；③ **不消耗世界随机流**（用 `HashNoise` 坐标哈希，见 §5「随机与坐标哈希」）。
+
+```csharp
+// 休眠开关（默认 true；false = 忽略位图、回退全网格旧路径，用于 A/B 对照）与观测计数
+public bool MotionSleepEnabled { get; set; }
+public int  MotionCellsEvaluatedLastStep { get; }   // 最近一次 StepMotion 实际调用 OnMotion 的格数
+```
+
+> **实测**（阶段 B 落地时记录，200×100、.NET 9 独立编译）：静止水池求值数直接降到 0；LogicBench 同款场景（热 / 光照开、1800 运动帧）sleep on/off ≈ **0.96–1.05×**（不再慢于全扫描）；预热后的倾泻场景 ≈ **0.71–0.85×**。最坏情况是「整块沙 + 水同时崩落」的冷启动瞬态（每帧约一半格子都在动、每动一格都要置 87 个候选位），≈ 1.45×——这是瞬态而非稳态。
+>
+> 记录：实现初期用「全体最大值的 Chebyshev 球」（41×41 = 1681 格/写）时，动态场景实测慢 12–33×；换成逐类型的反向阅读盒并集（87 格）并按行做 64 位字 OR 后才拿回收益。
+
 - 扫描循环在**访问那一刻**从扁平数组读 `typeId` 再取委托，不做跨帧缓存。
 - 单线程，主线程。不存在并行扫描。
 - `StepMotion` / `StepLogic` 都用 `try/finally` 恢复写入标记：某个钩子抛异常时 `_tick` 不自增、`_stamp` 按「旧 tick」恢复，因此异常后新建的粒子仍会在下一帧被处理，不会白等一帧。
@@ -1080,6 +1129,7 @@ Assets/Scripts/
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
+    MotionReadBox.cs                          类型的运动阅读盒 (X, Up, Down)：OnMotion 对 _cells 的轴对齐读距，世界求反转并集作为运动休眠的写入唤醒集
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
     Particles/
       StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
@@ -1120,6 +1170,7 @@ Assets/Tests/EditMode/
   ThermalDriftTests.cs                        大气水平热压流的风向记忆（隔离类型表，直接调 TryThermalDrift / OnMotion）：两格走廊不再逐帧往返（B1 回归）/ 大温差净输运保留 / 梯度消失即清记忆允许新方向 / 写记忆不破坏 bit0 处理标记 / 浮力换行清记忆 / 反向漂移被挡且记忆保留
   AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填 / 沉水 + 软底才发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 9D 位移抽茎守恒且水位上升 / 水柱封顶停 / 脱水（八邻无液体）/ 被压死 / 液体上方不算压 / 失去扎根向上清整段 / 温度致死 / 环境低温（T=0）不冻死 / 不移动 / 随机刻撒种 / 死亡不产不灭水
   FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、不浮空；锚点含火链——贴地圆刷 13 格全落、悬空 0 格；大气可投、越界不可投）+ 烤热沙石与 1/20 淬熄 + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/5 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
+  MotionSleepTests.cs                        运动休眠（阶段 B）：休眠透明性（同一受热场景 sleep on/off 跑 200 周期后逐格 typeId / shade / 非 bit0 flags、热场、湿度场一致）/ 静止水池求值数为 0（写入后回升）/ 石头净空链的 19 格远写唤醒（清空最远那格后石头正确滑动）/ 湿度变化（无写入）也唤醒读温度的决策 / MotionSleepEnabled=false 回退全扫描且与 true 逐格一致（含来回切换）
 ```
 
 测试总数 **195**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24。
@@ -1166,6 +1217,7 @@ Particle Sandbox
 
 1. 在 `Assets/Scripts/Simulation/Particles/` 新建 `XxxParticle.cs`，`public sealed class XxxParticle : IParticleType`，实现 `Info` / `OnMotion`（运动，60 Hz）/ `OnLogic`（相变反应，20 Hz）/ `OnRandomTick` / `OnSpawn` / `OnKill`。没有对应行为的钩子留空——它们必存在，但可以什么都不做（`OnLogic` 留空是常态）。
 2. 在文件头注释里登记：占用的 flags 私有位、需要的邻居查询范围、与哪些 `ParticleIds` 交互。
+2′. 在 `Info` 里声明 `motionReadReach:` ——该类型 `OnMotion` 对 `_cells` 的轴对齐阅读盒（默认 `(1,1,1)`，见 §4「运动阅读盒」）；步进固体按斜滑净空链、流体按视野扫描的实际格数声明，读温度不计入。
 3. 在 `ParticleRegistration.RegisterAll()` 里追加一行 `ParticleIds.Xxx = ParticleRegistry.Register(new XxxParticle());`（**只能追加，不能插队重排**）。
 4. 在 `ParticleIds` 里加对应 `public static ushort Xxx;` 字段。
 5. 自测：EditMode 测试里 `new ParticleWorld(w, h, seed)`，手动 `Set` 若干格，跑 N 次 `StepLogic()`（或 `StepMotion()` 隔离运动），断言最终 `GetCell` 分布（不依赖渲染、不依赖场景）。
@@ -1181,6 +1233,7 @@ Particle Sandbox
 - [ ] 越界坐标先经 `IsInBounds` 判断，而不是依赖写操作静默失败。
 - [ ] 调色板 1..256 项，`shade` 语义一致。
 - [ ] `Info.HeatCapacity` 是有限正数（热容，决定同一份热量下的温度）；`Info.ThermalConductivity` 与 `Info.ThermalEmissivity` 都在 `[0, 1]` 内（相对导热率，界面取两侧平均；相对辐射率，只在暴露面生效）；`OnLogic` 内读温度用 `world.Heat.GetTemperature`、改热量用 `AddHeat` / `SetHeat`，不要自己再做一遍四邻热传导（世界每逻辑帧已做）。
+- [ ] `Info.MotionReadReach` ≥ `OnMotion` 对 `_cells` 的实际阅读盒（宁大勿小，默认 `(1,1,1)`）：运动休眠的写入唤醒集 = 所有类型盒反转后的并集，声明偏小会让读得到被写格的粒子唤不醒（见 §4「运动阅读盒」）。读温度不进盒。
 - [ ] 固体类型：`Info.Friction` 与 `Info.Stickiness` 都在 `[0, 1]` 内，`OnMotion` 走 `ParticleRules.StepSolid(world, x, y)`（自行实现则要在注释里说明为何不走共享规则）。
 - [ ] 跨类型判断只走 `ParticleTags`（`TagsAt` / `HasTag` / `IsSolid` / `CanDisplace` / …），不特判 typeId；**例外是"一对具体类型之间的反应"**（如土吸湿土、湿土吐干土），那种情况按约定用 `ParticleIds` 双向引用。
 - [ ] 静态类型的 `OnMotion` / `OnLogic` / `OnRandomTick` 都不会被调用——留空并注明原因，不要往里写逻辑。

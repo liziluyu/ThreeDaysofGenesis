@@ -93,6 +93,20 @@ namespace TapTap2026.Simulation
         /// </summary>
         public readonly float LightAbsorption;
 
+        /// <summary>
+        /// `OnMotion` 对 <see cref="ParticleWorld.Cells"/> 的**轴对齐阅读盒**：决策最远读到的格范围
+        /// = <c>(x ± X, y − Down .. y + Up)</c>。世界把所有类型的盒**反转**求并集，用于运动休眠的写入唤醒
+        /// （见 <see cref="MotionReadBox"/>）。默认 <c>(1, 1, 1)</c>（八邻）。
+        /// </summary>
+        /// <remarks>
+        /// 语义是「最远**读**到」（不是「最远写到」——写操作自己就会唤醒周围），且**不含读温度**：
+        /// 温度读距由世界的热脏路径（Q / 湿度变化格周围半径 2）覆盖。
+        /// 典型值：只用 <see cref="ParticleRules.StepSolid"/> 的粉末 <c>(1, 0, 3)</c>（0.5/0.5 净空 3）；
+        /// 沙 <c>(1, 0, 1)</c>；水 <c>(5, 0, 1)</c>（落差视野 <see cref="MaxFlowSpread"/> 且看斜下一格）；
+        /// 大气 <c>(1, 1, 1)</c>（浮力四邻；热压流的 <c>x ± 2</c> 只读温度）；石头 <c>(1, 0, 19)</c>（净空链 19 格）。
+        /// </remarks>
+        public readonly MotionReadBox MotionReadReach;
+
         /// <summary>调色板，长度 1..256。<see cref="Cell.shade"/> 直接作为下标。</summary>
         public readonly Color32[] Palette;
 
@@ -112,7 +126,8 @@ namespace TapTap2026.Simulation
             float stickiness,
             Color32[] palette,
             string debugName,
-            float lightAbsorption = 1f)
+            float lightAbsorption = 1f,
+            MotionReadBox motionReadReach = default)
         {
             Tags = tags;
             Density = density;
@@ -127,6 +142,7 @@ namespace TapTap2026.Simulation
             Palette = palette;
             DebugName = debugName;
             LightAbsorption = lightAbsorption;
+            MotionReadReach = motionReadReach.IsUnspecified ? MotionReadBox.Default : motionReadReach;
         }
     }
 }

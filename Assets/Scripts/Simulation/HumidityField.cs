@@ -127,6 +127,15 @@ namespace TapTap2026.Simulation
         private float[] _scratch;
         private float[] _budget;
 
+        /// <summary>
+        /// 本逻辑阶段内湿度发生过变化（精确 <c>Δ ≠ 0</c>，无阈值）的格标记，下标与场同形。
+        /// <c>1</c> = 脏，<c>0</c> = 干净（<c>byte[]</c> 而非 <c>bool[]</c>：Burst 内核要求扁平可 blittable 的缓冲）。
+        /// 运动休眠的**温度唤醒**用它：<c>T = Q / C</c> 而 C 含湿度附加项（<see cref="HeatMap.HumidityHeatCapacity"/>），
+        /// 所以湿度变了温度就变了。世界在 <see cref="ParticleWorld.StepLogic"/> 末尾消费并清空。
+        /// </summary>
+        private readonly byte[] _dirty;
+        private bool _anyDirty;
+
         private float _diffusion = DefaultDiffusion;
         private float _horizontalBias = DefaultHorizontalBias;
         private float _riseBias = DefaultRiseBias;
@@ -149,6 +158,7 @@ namespace TapTap2026.Simulation
             _width = width;
             _height = height;
             _humidity = new float[width * height];
+            _dirty = new byte[width * height];
         }
 
         /// <summary>场宽（格数），与世界网格一致。</summary>
@@ -167,6 +177,45 @@ namespace TapTap2026.Simulation
         public int CellCount
         {
             get { return _humidity.Length; }
+        }
+
+        /// <summary>
+        /// 脏格标记缓冲（下标 = <c>y * Width + x</c>，<c>1</c> = 自上次 <see cref="ClearDirty"/> 以来湿度变化过，<c>0</c> = 干净）。
+        /// <b>只读契约</b>：置位由场内部完成，消费后由世界调用 <see cref="ClearDirty"/>。
+        /// 用于运动休眠的温度唤醒（湿度改变热容 ⇒ 改变温度）。类型是 <c>byte[]</c> 而非 <c>bool[]</c>：
+        /// Burst 内核直接以 <c>byte*</c> 置位（见 <see cref="Step"/>）。
+        /// </summary>
+        public byte[] Dirty
+        {
+            get { return _dirty; }
+        }
+
+        /// <summary>是否任一格有未消费的湿度变化（<c>false</c> = 世界可跳过整趟脏格扫描）。</summary>
+        public bool AnyDirty
+        {
+            get { return _anyDirty; }
+        }
+
+        /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
+        public void ClearDirty()
+        {
+            if (!_anyDirty)
+            {
+                return;
+            }
+
+            Array.Clear(_dirty, 0, _dirty.Length);
+            _anyDirty = false;
+        }
+
+        /// <summary>把扁平下标标成脏格（湿度已精确变化）。热路径：一次字节读 + 两次写，无分配。</summary>
+        private void MarkDirty(int index)
+        {
+            if (_dirty[index] == 0)
+            {
+                _dirty[index] = 1;
+                _anyDirty = true;
+            }
         }
 
         /// <summary>扩散系数，夹在 <c>[0, 1]</c>。</summary>
@@ -223,7 +272,14 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            _humidity[y * _width + x] = Floor(value);
+            int index = y * _width + x;
+            float updated = Floor(value);
+            if (_humidity[index] != updated)
+            {
+                _humidity[index] = updated;
+                MarkDirty(index);
+            }
+
             return true;
         }
 
@@ -235,7 +291,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            _humidity[index] = Floor(_humidity[index] + delta);
+            float updated = Floor(_humidity[index] + delta);
+            if (_humidity[index] != updated)
+            {
+                _humidity[index] = updated;
+                MarkDirty(index);
+            }
         }
 
         /// <summary>给 (x,y) 累加湿度（下界 0）。越界无操作。</summary>
@@ -247,7 +308,14 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            _humidity[y * _width + x] = Floor(_humidity[y * _width + x] + delta);
+            int index = y * _width + x;
+            float updated = Floor(_humidity[index] + delta);
+            if (_humidity[index] != updated)
+            {
+                _humidity[index] = updated;
+                MarkDirty(index);
+            }
+
             return true;
         }
 
@@ -608,15 +676,26 @@ namespace TapTap2026.Simulation
         /// 固/液不持有湿度，新物质也不含旧物质的水汽（相变路径用 <c>SetPhase</c> 显式搬运，不走这里）。</summary>
         internal void ResetAt(int index)
         {
-            _humidity[index] = 0f;
+            if (_humidity[index] != 0f)
+            {
+                _humidity[index] = 0f;
+                MarkDirty(index);
+            }
         }
 
         /// <summary><see cref="ParticleWorld.Swap"/> 交换两格时同步搬运湿度（湿度随风平移的机制）。</summary>
         internal void Swap(int a, int b)
         {
             float swap = _humidity[a];
+            if (swap == _humidity[b])
+            {
+                return;
+            }
+
             _humidity[a] = _humidity[b];
             _humidity[b] = swap;
+            MarkDirty(a);
+            MarkDirty(b);
         }
     }
 }

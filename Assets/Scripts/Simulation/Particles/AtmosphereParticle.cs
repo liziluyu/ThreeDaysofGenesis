@@ -8,7 +8,7 @@ namespace TapTap2026.Simulation
     //        DriftDirectionShift / DriftDirectionNone/Left/Right，已在 CellFlags.cs 登记为「大气私有」）。
     //        bit5-7 空闲。读写记忆位用 CellFlags 的掩码常量：读取 DriftDirectionMask、清除
     //        DriftDirectionClearMask、写入 |，绝不整体赋值 flags（会破坏 bit0 处理标记）。
-    // 邻居查询范围：四邻（浮力比温）、上下/斜向各 1 格、同行左右各 1 格
+    // 邻居查询范围：四邻（浮力比温）、上下/斜向各 1 格、同行左右各 1 格；热压流的「连片」判据读同行左右各 2 格
     // 交互的 ParticleIds：无 —— 只比温度，不特判类型
     //
     // 行为：浮力（比四邻热 → 升，冷 → 沉）→ 水平热压流（流向暖侧）。
@@ -61,7 +61,10 @@ namespace TapTap2026.Simulation
             friction: 0f,
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(AtmosphereParticle));
+            debugName: nameof(AtmosphereParticle),
+            // 运动阅读盒：TryBuoyantStep 只读四邻 ⇒ (1, 1, 1)。TryThermalDrift 的「连片」判据读
+            // (x ± 2, y) 的**温度**——温度读距不进盒（走世界的热脏路径，半径 2），故这里只声明结构读距。
+            motionReadReach: new MotionReadBox(x: 1, up: 1, down: 1));
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {

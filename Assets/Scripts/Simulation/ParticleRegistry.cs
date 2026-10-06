@@ -86,7 +86,7 @@ namespace TapTap2026.Simulation
         /// 校验一份类型属性。注册流程与自定义类型表（<see cref="ParticleWorld"/> 的四参构造）共用本方法，
         /// 保证任何进入运行期的类型都经过同一套检查。
         /// </summary>
-        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、HeatCapacity 非有限正数、ThermalConductivity 不在 [0, <see cref="HeatMap.MaxThermalConductivity"/>]、ThermalEmissivity 不在 [0, <see cref="HeatMap.MaxThermalEmissivity"/>]、Friction 或 Stickiness 不在 [0,1]、LightAbsorption 不在 [0,1]、或未带任何类别标签。</exception>
+        /// <exception cref="InvalidOperationException">调色板长度不在 1..256、Density 非有限值、HeatCapacity 非有限正数、ThermalConductivity 不在 [0, <see cref="HeatMap.MaxThermalConductivity"/>]、ThermalEmissivity 不在 [0, <see cref="HeatMap.MaxThermalEmissivity"/>]、Friction 或 Stickiness 不在 [0,1]、LightAbsorption 不在 [0,1]、MotionReadReach 分量超出 0..<see cref="MotionReadBox.MaxReach"/>、或未带任何类别标签。</exception>
         public static void ValidateTypeInfo(ParticleTypeInfo info, string description)
         {
             string name = string.IsNullOrEmpty(description) ? "<未命名类型>" : description;
@@ -150,6 +150,14 @@ namespace TapTap2026.Simulation
                 throw new InvalidOperationException(
                     $"[ParticleRegistry] {name} 必须至少带一个类别标签（Solid / Liquid / Gas）：" +
                     "None 的 rank 为 0，会被任何粒子置换、且置换不了任何东西，等同于空气。");
+            }
+
+            MotionReadBox readReach = info.MotionReadReach;
+            if (readReach.X > MotionReadBox.MaxReach || readReach.Up > MotionReadBox.MaxReach
+                || readReach.Down > MotionReadBox.MaxReach)
+            {
+                throw new InvalidOperationException(
+                    $"[ParticleRegistry] {name} 的 MotionReadReach 分量必须在 0..{MotionReadBox.MaxReach} 内，实际为 {readReach}。");
             }
         }
 

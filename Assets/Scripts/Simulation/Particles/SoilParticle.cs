@@ -41,7 +41,10 @@ namespace TapTap2026.Simulation
             friction: 0.5f,
             stickiness: 0.5f,
             palette: Palette,
-            debugName: nameof(SoilParticle));
+            debugName: nameof(SoilParticle),
+            // 运动阅读盒：0.5/0.5 的 StepSolid，粘住时净空 = 1/(1−0.5) + 1/(1−0.5) − 1 = 3，
+            // 斜滑净空链读到斜下 3 格 ⇒ (1, 0, 3)。
+            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3));
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
