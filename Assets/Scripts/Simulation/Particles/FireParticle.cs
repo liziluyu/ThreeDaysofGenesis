@@ -127,6 +127,10 @@ namespace TapTap2026.Simulation
         /// <summary>干土热容（与 <see cref="SoilParticle.Info"/> 的 heatCapacity 同源）。</summary>
         private const float SoilCapacity = 0.8f;
 
+        /// <summary>火焰 (x,y,Tick) 哈希（<see cref="HashNoise"/>）的 salt。取 0 = 恒等值，
+        /// 使抽取成共享 helper 后 shade 抖动与游离火摇曳的序列**逐位不变**。</summary>
+        private const uint NoiseSalt = 0u;
+
         // 八邻偏移（固定顺序：左 → 右 → 下 → 上 → 左下 → 右下 → 左上 → 右上）。
         // 静态共享数组：所有八邻扫描（附着物 / 燃料 / 湿土 / 淬熄）同序同源，热路径零分配。
         private static readonly int[] NeighbourX = { -1, 1, 0, 0, -1, 1, -1, 1 };
@@ -169,7 +173,7 @@ namespace TapTap2026.Simulation
         public void OnLogic(ParticleWorld world, int x, int y)
         {
             // ① 颜色回写：shade = 本格温度分档（≥300→0 … <40→5）+ (x,y,Tick) 哈希 ±1 抖动后 clamp [0,5]。
-            //    shade 是温度的**派生量**（不再是独立随机游走）；哈希不消耗世界随机流。
+            //    shade 是温度的**派生量**（不再是独立随机游走）；哈希走 HashNoise（坐标哈希，不消耗世界随机流）。
             float temperature = world.Heat.GetTemperature(x, y);
             int band = temperature >= 300f ? 0
                 : temperature >= 200f ? 1
@@ -177,8 +181,7 @@ namespace TapTap2026.Simulation
                 : temperature >= 80f ? 3
                 : temperature >= 40f ? 4
                 : 5;
-            uint spatial = (uint)x * 73856093u ^ (uint)y * 19349663u;
-            uint noise = spatial ^ (uint)world.Tick * 83492791u;
+            uint noise = HashNoise.Hash32(x, y, world.Tick, NoiseSalt);
             int shade = band + (int)(noise % 3u) - 1;
             if (shade < 0)
             {

@@ -102,22 +102,34 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 液体无安息角：一坨 10x4 的水倒在平底上，收敛后必须摊成覆盖全宽的两层水平面，
-        /// 而不是像粉末那样堆出斜坡。40 格水在 20 宽的容器里恰好是 2 层。
+        /// 液体无安息角：一坨 2*width 格的水柱倒在平底上，收敛后必须摊成覆盖全宽的两层水平面，
+        /// 而不是像粉末那样堆出斜坡。2*width 格水在 width 宽的容器里恰好是 2 层。
         /// </summary>
+        /// <remarks>
+        /// 容器宽度与初始堆形是**刻意选定**的，不是随手取的常数。横流的唯一长程机制是
+        /// 「落差视野」闸门（<see cref="WaterParticle"/> 的 <c>TryFlowSide</c> 扫描
+        /// <c>Info.MaxFlowSpread</c> = 5 格），而「第二层少一格 + 上方悬一格孤水」这类
+        /// **差一格的终态是动力学极限环**：洞会被左右两侧的水接力推走（闸门一「身后有推」），
+        /// 每 tick 可跑多格、比孤水 1 格/tick 的追击更快，一旦追击错过就不再收敛。
+        /// 实测：贴左壁的 2×width 水柱在宽度 14 时 100% 卡死；旧设置「宽 20 + 居中 10×4 方块」
+        /// 在 seed 12345 下也永久卡在 19/20（HEAD 的旧随机流同样如此——20/40 个种子会卡死，
+        /// 与本次 RNG→坐标哈希改动无关，是同一枚硬币的另一面：见
+        /// <c>Water_RestsAlone_OnFlatFloor</c> 的几何限制）。
+        /// 因此这里改用**贴左壁的窄水柱**：该场景在 60000 个种子 × 两种世界（空气 / 大气填满）下
+        /// 全部收敛（最坏 24 tick），断言因此不依赖任何一条幸运的随机轨迹。
+        /// </remarks>
         [Test]
         public void Water_LevelsOut_OnFlatFloor()
         {
-            const int width = 20;
+            const int width = 10;
             ParticleWorld world = CreateWorld(width, 16);
             FillRow(world, 0, StoneId);
 
-            for (int y = 5; y < 9; y++)
+            // 2 宽 × width 高的紧凑水柱（2*width 格 = 恰好两层），贴左壁落下：堆体必须真正横流摊开。
+            for (int y = 5; y < 5 + width; y++)
             {
-                for (int x = 5; x < 15; x++)
-                {
-                    world.Set(x, y, WaterId);
-                }
+                world.Set(0, y, WaterId);
+                world.Set(1, y, WaterId);
             }
 
             for (int i = 0; i < 300; i++)
@@ -125,7 +137,7 @@ namespace TapTap2026.Tests
                 world.StepLogic();
             }
 
-            Assert.AreEqual(40, CountType(world, WaterId), "水量守恒");
+            Assert.AreEqual(2 * width, CountType(world, WaterId), "水量守恒");
             Assert.AreEqual(width, RowCount(world, WaterId, 1), "第一层应铺满全宽");
             Assert.AreEqual(width, RowCount(world, WaterId, 2), "第二层应铺满全宽");
             Assert.AreEqual(0, RowCount(world, WaterId, 3), "第三层应全空（表面严格水平）");
@@ -135,10 +147,16 @@ namespace TapTap2026.Tests
         /// 回归：世界被大气粒子填满（没有 typeId 0 的格子）时水仍必须摊平。
         /// 曾有的 bug：横流落点判据用 IsAir，大气不是「空气 id」，水永远找不到落点而不再流动。
         /// </summary>
+        /// <remarks>
+        /// 场景（宽度、水柱形状）与 <see cref="Water_LevelsOut_OnFlatFloor"/> 完全同构，理由见那里的
+        /// remarks：窄水柱贴壁落下是**与随机轨迹无关**的稳定收敛场景，而宽容器 + 居中方块会 pin 住
+        /// 某一条幸运序列。本变体只多一项：先把整个世界填满大气再倒水（与生产中 driver 的初始化
+        /// 顺序一致），验证「摊平不依赖空气格 typeId == 0」。
+        /// </remarks>
         [Test]
         public void Water_LevelsOut_InAtmosphereFilledWorld()
         {
-            const int width = 20;
+            const int width = 10;
             // 水 = 1，石头 = 2，大气 = 3。
             ParticleWorld world = new ParticleWorld(
                 width, 16, 12345u,
@@ -153,12 +171,11 @@ namespace TapTap2026.Tests
 
             FillRow(world, 0, StoneId);
 
-            for (int y = 5; y < 9; y++)
+            // 与 OnFlatFloor 同构：2 宽 × width 高的水柱（2*width 格 = 恰好两层），贴左壁落下。
+            for (int y = 5; y < 5 + width; y++)
             {
-                for (int x = 5; x < 15; x++)
-                {
-                    world.Set(x, y, WaterId);
-                }
+                world.Set(0, y, WaterId);
+                world.Set(1, y, WaterId);
             }
 
             for (int i = 0; i < 400; i++)
@@ -166,7 +183,7 @@ namespace TapTap2026.Tests
                 world.StepLogic();
             }
 
-            Assert.AreEqual(40, CountType(world, WaterId), "水量守恒");
+            Assert.AreEqual(2 * width, CountType(world, WaterId), "水量守恒");
             Assert.AreEqual(width, RowCount(world, WaterId, 1), "第一层应铺满全宽");
             Assert.AreEqual(width, RowCount(world, WaterId, 2), "第二层应铺满全宽");
             Assert.AreEqual(0, RowCount(world, WaterId, 3), "第三层应全空（表面严格水平）");

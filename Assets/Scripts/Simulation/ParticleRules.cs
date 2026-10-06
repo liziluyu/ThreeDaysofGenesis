@@ -19,6 +19,16 @@ namespace TapTap2026.Simulation
         /// <summary>固体的 rank。固体不得与同类互相穿行（见 <see cref="TryFlowHorizontal"/>）。</summary>
         public const int SolidRank = 3;
 
+        // ── 运动路径的坐标哈希 salt（见 HashNoise）──
+        // OnMotion 上的「左右顺序随机」一律用 (x,y,Tick) 坐标哈希而非世界随机流，这样被跳过求值的
+        // 粒子不会影响其它粒子的决策（运动休眠的前置，见 docs/ParticleTypeInterface.md）。
+        // 值只需互不相同：HashNoise.Bit 的雪崩会把 salt 摊到整个 32 位，不同调用点得到互不相关的流。
+        private const uint DiagonalFallSalt = 1u;    // TryDiagonalFall：斜落选向
+        private const uint CohesiveFallSalt = 2u;    // TryCohesiveFall：内聚固体斜滑选向
+        private const uint FlowHorizontalSalt = 3u;  // TryFlowHorizontal：横向流动选向
+        private const uint DiagonalRiseSalt = 4u;    // TryDiagonalRise：气体斜上升选向
+        private const uint DiagonalSinkSalt = 5u;    // TryDiagonalSink：气体斜下沉选向
+
         /// <summary>
         /// 类别标签的轻重次序：<c>Solid(3) &gt; Liquid(2) &gt; Gas(1) &gt; 空气(0)</c>。
         /// 一个字节能带多个标签时取最高的一个。
@@ -154,7 +164,7 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            bool leftFirst = HashNoise.Bit(x, y, world.Tick, DiagonalFallSalt);
             return leftFirst
                 ? TrySlide(world, x, y, -1, clearance) || TrySlide(world, x, y, 1, clearance)
                 : TrySlide(world, x, y, 1, clearance) || TrySlide(world, x, y, -1, clearance);
@@ -195,7 +205,7 @@ namespace TapTap2026.Simulation
         public static bool TryCohesiveFall(
             ParticleWorld world, int x, int y, float friction, float stickiness)
         {
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            bool leftFirst = HashNoise.Bit(x, y, world.Tick, CohesiveFallSalt);
             return leftFirst
                 ? TrySlope(world, x, y, -1, friction, stickiness) || TrySlope(world, x, y, 1, friction, stickiness)
                 : TrySlope(world, x, y, 1, friction, stickiness) || TrySlope(world, x, y, -1, friction, stickiness);
@@ -280,7 +290,7 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            bool leftFirst = HashNoise.Bit(x, y, world.Tick, FlowHorizontalSalt);
             return leftFirst
                 ? TryFlowSide(world, x, y, -1, maxSpread) || TryFlowSide(world, x, y, 1, maxSpread)
                 : TryFlowSide(world, x, y, 1, maxSpread) || TryFlowSide(world, x, y, -1, maxSpread);
@@ -491,7 +501,7 @@ namespace TapTap2026.Simulation
         /// <summary>上方被挡住时尝试斜上方，左右顺序随机以消除方向偏置。</summary>
         public static bool TryDiagonalRise(ParticleWorld world, int x, int y)
         {
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            bool leftFirst = HashNoise.Bit(x, y, world.Tick, DiagonalRiseSalt);
             return leftFirst
                 ? TryRiseSide(world, x, y, -1) || TryRiseSide(world, x, y, 1)
                 : TryRiseSide(world, x, y, 1) || TryRiseSide(world, x, y, -1);
@@ -513,7 +523,7 @@ namespace TapTap2026.Simulation
         /// <summary>下方被挡住时尝试斜下方（气体版），左右顺序随机。</summary>
         public static bool TryDiagonalSink(ParticleWorld world, int x, int y)
         {
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            bool leftFirst = HashNoise.Bit(x, y, world.Tick, DiagonalSinkSalt);
             return leftFirst
                 ? TrySinkSide(world, x, y, -1) || TrySinkSide(world, x, y, 1)
                 : TrySinkSide(world, x, y, 1) || TrySinkSide(world, x, y, -1);

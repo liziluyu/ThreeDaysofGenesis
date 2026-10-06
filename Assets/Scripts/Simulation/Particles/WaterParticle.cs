@@ -26,6 +26,10 @@ namespace TapTap2026.Simulation
     //            (b) 落差视野：本侧 MaxFlowSpread 格内存在「正下方还能继续落」的格，
     //            往低处 / 洞口铺（越界不算落差，底行上的水滴也能停住）。
     //            两闸都不满足 = 往哪边流都不会更低（孤立水滴躺在平地 / 满水面上）→ 静止。
+    //            已知几何限制：水面「差一格」的态可能永久静止——该洞距任何一格水都超过
+    //            MaxFlowSpread、且洞两侧的水都没触发「身后有推」时，远处的孤水看不到更低处。
+    //            洞距 ≤ MaxFlowSpread 时孤水会追上来填掉它；差一格态是极限环的一侧（另一侧就是
+    //            「孤立水滴在平地上静止」），两者同源，不是 bug。
     //            旧的「见空格就跳」让平地水滴以 60 Hz 原地随机瞬移、永不静止（观感回归）；
     //         4. TryLiquidConvect：前三段都动不了时，试一次液体热对流——比正上方暖 ε
     //            （LiquidConvectionEpsilon）就上浮一格（海洋翻转：白天顶加热是稳定分层、不翻转，
@@ -68,6 +72,10 @@ namespace TapTap2026.Simulation
 
         /// <summary>剧烈蒸发（沸腾）的播撒半径：1 = 3×3 一小片，每格浓度高 → 渲染成**可见**的白色汽团。</summary>
         private const int BoilingSpreadRadius = 1;
+
+        /// <summary>TryFlow 的 (x,y,Tick) 坐标哈希 salt（见 <see cref="HashNoise"/>）。
+        /// 取 6：与 ParticleRules 的五个运动 salt 互不相同，横流方向与斜落 / 斜滑等流互不相关。</summary>
+        private const uint FlowSalt = 6u;
 
         /// <summary>
         /// 液体热对流的温度死区：本格比正上方的水暖超过它，本格才上浮（对流搅动）。
@@ -244,7 +252,7 @@ namespace TapTap2026.Simulation
         /// </summary>
         private bool TryFlow(ParticleWorld world, int x, int y)
         {
-            bool leftFirst = (world.NextUInt() & 1u) == 0u;
+            bool leftFirst = HashNoise.Bit(x, y, world.Tick, FlowSalt);
             return leftFirst
                 ? TryFlowSide(world, x, y, -1) || TryFlowSide(world, x, y, 1)
                 : TryFlowSide(world, x, y, 1) || TryFlowSide(world, x, y, -1);

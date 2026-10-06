@@ -380,6 +380,18 @@ public interface IParticleType
 
 `OnMotion` / `OnLogic` / `OnSpawn` 的 `(x, y)` 是调用时刻该粒子的坐标，**就是 `world.Index` 反算的坐标**，不需要类型自己做除法。
 
+### 随机与坐标哈希（运动路径 vs 逻辑路径）
+
+| 路径 | 随机源 |
+|---|---|
+| `OnMotion`（运动帧 60 Hz，含它调用的 helper） | **只能用 `HashNoise`**（`Hash32` / `Bit`，`(x, y, world.Tick)` 坐标哈希）；**禁止** `world.NextUInt` / `NextInt` / `NextByte` |
+| `OnLogic`（逻辑帧 20 Hz） | 世界随机流 `world.NextUInt` 等 |
+| `OnRandomTick` | 世界随机流 `world.NextUInt` 等 |
+
+**为什么**：世界随机流是一条**有状态的序列**，「谁消耗了一个数」会改变其后所有格子的决策。运动阶段将来会做**运动休眠**（跳过静止粒子、不重新求值），跳过哪些粒子绝不能改变其余粒子的行为；一旦 `OnMotion` 消耗世界流，流的位置就依赖「本帧哪些粒子被求值」，同种子同命令逐格可复现的契约随之破裂。坐标哈希是 `(x, y, Tick)` 的纯函数，与求值顺序、求值与否都无关，因此运动路径上的一切方向选择（斜落左右先后、横流左右先后、气体斜升 / 斜沉左右先后）一律改用它。逻辑帧与随机刻每逻辑帧都会覆盖全部应处理的格，不参与休眠，继续共享世界流。
+
+`HashNoise.Hash32(x, y, tick, salt)` 就是把火焰 v2 既有的 `(x,y,Tick)` 哈希（shade 抖动 / 游离火摇曳）原样提取出来；`HashNoise.Bit(x, y, tick, salt)` 在其上跑一轮 Murmur3 雪崩再取一位（不能直接取 `Hash32` 的 bit0——乘法不进位到低位，bit0 只含坐标奇偶信息，会造成方向的对角偏置）。**每个调用点必须传互不相同的 `salt` 常量**，否则不同用途会共享同一条位序列。`world.Tick` 每步（运动或逻辑帧）自增，同一格逐帧换方向。
+
 ### 单例实例上的字段
 
 允许且推荐：类型级只读配置、调色板、邻域暂存缓冲。
@@ -831,6 +843,11 @@ public void OnLogic(ParticleWorld world, int x, int y)
 > 两闸都不满足 = 往哪边流都不会更低（孤立水滴躺在平地 / 满水面上）→ **静止**。
 > 旧实现让平地水滴以 60 Hz 在原地随机瞬移抖动，由 `Water_RestsAlone_OnFlatFloor` /
 > `Water_RestsAlone_OnWorldBottomRow` 锁定回归。
+>
+> **已知几何限制**：水面「差一格」的态可能永久静止——该洞距任何一格水都超过 `MaxFlowSpread`、
+> 且洞两侧的水都没触发「身后有推」时，远处的孤水看不到更低处。它与「孤立水滴静止」同源
+> （都是视野不足时的静止），不是 bug；因此摊平测试的容器宽度与初始堆形是刻意选定的稳定场景
+> （见 `WaterParticleTests.Water_LevelsOut_OnFlatFloor` 的 remarks）。
 
 ### 写操作的钩子与副作用（精确定义）
 
@@ -975,7 +992,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 
 约定：
 
-- 随机一律用 `world.NextUInt/NextInt/NextByte`，**禁止 `UnityEngine.Random`**（会破坏确定性与可复现回放）。
+- 随机一律用世界随机流 `world.NextUInt/NextInt/NextByte`（**禁止 `UnityEngine.Random`**，会破坏确定性与可复现回放）；**例外**：`OnMotion`（含它调用的 helper）**禁止消耗世界流**，方向等随机决策一律用 `HashNoise` 坐标哈希——见 §7「随机与坐标哈希」。
 - 禁止 `Time.deltaTime` / `Time.time`：时间语义只有 `world.Tick`。
 - 禁止在 `OnMotion` / `OnLogic` 里 `new`、装箱、捕获局部变量的 lambda、LINQ、字符串拼接。
 - 重复的移动规则（下落、斜落、横流）应抽成**静态无状态帮助方法**（例如 `ParticleRules.*`），而不是继承基类；帮助方法同样只在参数里传 `world`/坐标，不持有每格状态。
@@ -1062,6 +1079,7 @@ Assets/Scripts/
     HumidityField.cs                          与网格同形的湿度场（float/格）：扩散 + 水平冷→热 + 竖直越热越向上（RiseStopHumidity 只门控平流项、x 扫描按 Parity 交替）；云 = 湿度高的空气；蒸发的唯一入口 SpreadUnitIntoAir（5 参含 maxShare 份额门控）与饱和判据 IsAirSaturated / SaturationHumidity（降雨用指数饱和曲线）；潜热 LatentHeat(T) = LatentHeatPerDegree × T（5.5/度，20° 锚点 = 110）
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
+    HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
     Particles/
       StoneParticle.cs                        石头（摩擦度 0.9 / 高粘性 0.9 ⇒ 靠着石头时 19:1，近乎垂直的石垛）
