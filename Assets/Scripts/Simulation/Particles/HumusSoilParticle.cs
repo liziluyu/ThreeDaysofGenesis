@@ -37,7 +37,8 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(HumusSoilParticle),
             // 运动阅读盒：与干土同款 0.5/0.5 StepSolid ⇒ 斜滑净空链 3 格，即 (1, 0, 3)。
-            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3));
+            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3),
+            hasLogic: false); // OnLogic 严格空体：腐殖土是稳定终态
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {

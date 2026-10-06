@@ -40,7 +40,8 @@ namespace TapTap2026.Simulation
             // 运动阅读盒：TrySlope 的净空链。粘住（同排反侧有固体）时
             // clearance = 1/(1−0.9) + 1/(1−0.9) − 1 = 19，TrySlide 逐格读 (x ± 1, y−1 … y−19)
             // 的 _cells；不粘住时为 10。水平只读斜滑那一侧（X = 1）、向上不读（Up = 0）。
-            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 19));
+            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 19),
+            hasLogic: false); // OnLogic 严格空体：石头只有运动与热学
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {

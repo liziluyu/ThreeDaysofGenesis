@@ -325,6 +325,19 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
+        /// 每有一个格被 <see cref="MarkDirty"/> 标脏时回调（参数 = 扁平下标）。默认 <c>null</c>。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="ParticleWorld"/> 用它把**逻辑帧扫描进行中**的热变化同帧并入候选位图：全网格旧路径里，
+        /// 先扫到的格 <c>OnLogic</c> 改了热量后，扫描序在其后的格**同帧**就能在新温度下做 <c>OnMotion</c>
+        /// （火注热 250Q 直接越过浮力死区）；混合扫描若不即时唤醒这些格，就会晚一帧、逐位发散。
+        /// 非扫描期（热 pass 之后的光照 / 降水 / 潜热等）回调是空操作，仍由帧末
+        /// <c>FlushTemperatureDirty</c> 的 chunk 粒度唤醒统一处理。<b>Burst 内核不经过本方法</b>
+        /// （传导路径直接写 <c>dirty[]</c>），因此这里可以安全地调托管委托。
+        /// </remarks>
+        internal Action<int> DirtiedHook;
+
+        /// <summary>
         /// 最近一次 <see cref="Step"/> 是否整趟跳过（场已到不动点且所有输入未变，直接返回）。只读，供测试 / 诊断。
         /// </summary>
         public bool LastStepSkipped { get; private set; }
@@ -362,7 +375,7 @@ namespace TapTap2026.Simulation
             _anyDirty = false;
         }
 
-        /// <summary>把扁平下标标成脏格（Q 已精确变化）。热路径：一次字节读 + 两次写，无分配。</summary>
+        /// <summary>把扁平下标标成脏格（Q 已精确变化）。热路径：一次字节读 + 两次写 + 一次委托判空，无分配。</summary>
         private void MarkDirty(int index)
         {
             if (_dirty[index] == 0)
@@ -372,6 +385,9 @@ namespace TapTap2026.Simulation
             }
 
             _qVersion++;
+
+            // 扫描进行中（世界已绑定 hook）时，同帧并入本帧候选位图；非扫描期是空操作。
+            DirtiedHook?.Invoke(index);
         }
 
         /// <summary>

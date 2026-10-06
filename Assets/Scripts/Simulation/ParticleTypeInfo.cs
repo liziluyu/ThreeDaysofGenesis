@@ -113,6 +113,16 @@ namespace TapTap2026.Simulation
         /// <summary>仅用于编辑器与日志显示。**永不出现在模拟热路径**。</summary>
         public readonly string DebugName;
 
+        /// <summary>
+        /// 本类型的 <c>OnLogic</c> 是否含真实行为（默认 <c>true</c>）。为 <c>false</c> 时逻辑帧扫描会**整段跳过**
+        /// 本格的 <c>OnLogic</c> 调用与相变后跳过运动的判定——语义等价的前提是 <c>OnLogic</c> 是**严格空体**
+        /// （不读、不写、不消耗随机流），因此跳过它逐位等价，只是省下一次空调用。
+        /// 默认取 <c>true</c> 是保守选择：新类型忘设只是多一次空调用，绝不会静默丢掉逻辑。
+        /// 世界另有一张逐格位图（<see cref="ParticleWorld"/> 逻辑帧混合扫描用）按本标志维护，见
+        /// <c>docs/ParticleTypeInterface.md</c> §7「逻辑帧混合扫描」。
+        /// </summary>
+        public readonly bool HasLogic;
+
         public ParticleTypeInfo(
             ParticleTags tags,
             float density,
@@ -127,7 +137,8 @@ namespace TapTap2026.Simulation
             Color32[] palette,
             string debugName,
             float lightAbsorption = 1f,
-            MotionReadBox motionReadReach = default)
+            MotionReadBox motionReadReach = default,
+            bool hasLogic = true)
         {
             Tags = tags;
             Density = density;
@@ -143,6 +154,7 @@ namespace TapTap2026.Simulation
             DebugName = debugName;
             LightAbsorption = lightAbsorption;
             MotionReadReach = motionReadReach.IsUnspecified ? MotionReadBox.Default : motionReadReach;
+            HasLogic = hasLogic;
         }
     }
 }

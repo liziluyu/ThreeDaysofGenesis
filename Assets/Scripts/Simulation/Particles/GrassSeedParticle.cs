@@ -65,7 +65,8 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(GrassSeedParticle),
             // 运动阅读盒：0.5/0.5 StepSolid ⇒ 斜滑净空链 3 格，即 (1, 0, 3)。
-            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3));
+            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3),
+            hasLogic: false); // OnLogic 严格空体：发芽在随机刻、运动在 OnMotion
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {

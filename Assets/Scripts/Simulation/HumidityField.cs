@@ -214,6 +214,16 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
+        /// 每有一个格被 <see cref="MarkDirty"/> 标脏时回调（参数 = 扁平下标）。默认 <c>null</c>。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="ParticleWorld"/> 用它把**逻辑帧扫描进行中**的湿度变化同帧并入候选位图——湿度改变热容
+        /// <c>C</c>，因而改变温度 <c>T = Q / C</c>，与热变化是同一条「温度输入变了」的通道。非扫描期
+        /// （湿度输送 pass）回调是空操作，仍由帧末 <c>FlushTemperatureDirty</c> 的 chunk 粒度唤醒处理。
+        /// </remarks>
+        internal Action<int> DirtiedHook;
+
+        /// <summary>
         /// 湿度场的内容版本：任何一次真正改动湿度值（<see cref="Set"/> / <see cref="Add"/> /
         /// <see cref="AddAt"/> / <see cref="Swap"/> / <see cref="ResetAt"/> 或 <see cref="Step"/> 的输送）
         /// 都自增。热图的不动点跳过（见 <see cref="HeatMap.Step"/>）用它判断「湿度自上次热 pass 以来有没有变」。
@@ -235,7 +245,7 @@ namespace TapTap2026.Simulation
             _anyDirty = false;
         }
 
-        /// <summary>把扁平下标标成脏格（湿度已精确变化）。热路径：一次字节读 + 两次写，无分配。</summary>
+        /// <summary>把扁平下标标成脏格（湿度已精确变化）。热路径：一次字节读 + 两次写 + 一次委托判空，无分配。</summary>
         private void MarkDirty(int index)
         {
             if (_dirty[index] == 0)
@@ -243,6 +253,9 @@ namespace TapTap2026.Simulation
                 _dirty[index] = 1;
                 _anyDirty = true;
             }
+
+            // 扫描进行中（世界已绑定 hook）时，同帧并入本帧候选位图；非扫描期是空操作。
+            DirtiedHook?.Invoke(index);
         }
 
         /// <summary>扩散系数，夹在 <c>[0, 1]</c>。</summary>

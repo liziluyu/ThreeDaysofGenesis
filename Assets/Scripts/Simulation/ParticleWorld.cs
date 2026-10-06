@@ -68,6 +68,15 @@ namespace TapTap2026.Simulation
         private readonly int _chunkCount;
         private readonly ulong[] _processedBits;
 
+        /// <summary>
+        /// 持久位图（与 <see cref="_candidates"/> 同布局）：每格 1 bit = 该格当前类型带
+        /// <see cref="ParticleTypeInfo.HasLogic"/> 且**非空气、非静态**。逻辑帧混合扫描
+        /// （<see cref="ScanLogicSleeping"/>）用它跳过「没有 OnLogic 可跑」的格。
+        /// 维护点：<see cref="Set"/> / <see cref="SetPhase"/> / <see cref="Swap"/>（两端格）；世界初建是空网格，
+        /// 故初值全 0。与候选位图不同，它**不随扫描换出 / 清空**，是持久状态。
+        /// </summary>
+        private readonly ulong[] _logicCells;
+
         // 写入唤醒集：类型表所有 MotionReadReach 盒**反转**后的并集（见 MotionReadBox）。并集按行表示——
         // 每行 dy 上被唤醒的 x 恰好是一个关于写入格对称的连续区间（多个对称区间取并 = 最宽的那个），
         // 所以只需存每行的半宽 _wakeHalf[dy]（-1 = 该行无格）。写入时逐行按 64 位字 OR，而不是逐格置位，
@@ -149,6 +158,12 @@ namespace TapTap2026.Simulation
             _humidity = new HumidityField(width, height);
             _heat = new HeatMap(width, height, _cells, types, _humidity);
             _light = new LightController();
+
+            // 扫描进行中的热 / 湿度变化要同帧并入候选位图（见 OnThermalCellDirtied）：全网格旧路径里，
+            // 先扫到的格 OnLogic 改了温度后，扫描序在其后的格同帧就能在新温度下做 OnMotion；混合扫描
+            // 必须复现这一点，否则晚一帧、逐位发散。委托实例缓存一次，运行期零分配。
+            _heat.DirtiedHook = OnThermalCellDirtied;
+            _humidity.DirtiedHook = OnThermalCellDirtied;
             _tick = 0;
             _rng = seed == 0u ? DefaultSeed : seed;
             _stamp = OutsideStamp;
@@ -216,6 +231,7 @@ namespace TapTap2026.Simulation
             _chunkCount = _chunkCols * ((height + ChunkMask) >> ChunkShift);
             _candidates = new ulong[_chunkCount * WordsPerChunk];
             _scanCandidates = new ulong[_chunkCount * WordsPerChunk];
+            _logicCells = new ulong[_chunkCount * WordsPerChunk]; // 初建为空网格 ⇒ 全 0（没有格带逻辑）
             _processedBits = new ulong[(_cells.Length + 63) >> 6];
             for (int i = 0; i < _candidates.Length; i++)
             {
@@ -322,7 +338,9 @@ namespace TapTap2026.Simulation
         /// </summary>
         /// <remarks>
         /// 语义等价性：候选格集合是「自上次求值以来输入可能变化」的格的超集，因此跳过静止粒子
-        /// 不改变任何模拟结果（<see cref="StepLogic"/> 的扫描始终是全网格，不受本开关影响）。
+        /// 不改变任何模拟结果。<see cref="StepLogic"/> 的扫描在本开关开启时同样走混合扫描
+        /// （候选格跑完整逻辑 + 运动、其余 HasLogic 格只跑 <c>OnLogic</c>；<c>OnLogic</c> 从不休眠，
+        /// 见 <see cref="ScanLogicSleeping"/>），关闭时退回全网格旧路径。
         /// 运行中随时可改；休眠关闭期间不累积候选位，从 false 切回 true 时整张位图置位一次，
         /// 等价于「刚构造完」的初态，不会漏唤醒。
         /// </remarks>
@@ -346,9 +364,9 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 最近一次 <see cref="StepMotion"/> 实际求值的格数（= 调用过 <c>OnMotion</c> 的格数，不含被跳过的格）。
+        /// 最近一次扫描实际求值的格数（= 调用过 <c>OnMotion</c> 的格数，不含被跳过的格）。
         /// 静止场景应远小于 <see cref="CellCount"/>；<see cref="MotionSleepEnabled"/> 为 false 时约为粒子总数。
-        /// 逻辑帧（<see cref="StepLogic"/>）不更新它。
+        /// 逻辑帧（<see cref="StepLogic"/>）也消费运动候选，同样更新它（休眠关闭时逻辑帧仍走全扫、不计数）。
         /// </summary>
         public int MotionCellsEvaluatedLastStep
         {
@@ -424,6 +442,7 @@ namespace TapTap2026.Simulation
             return _cells[y * _width + x];
         }
 
+
         /// <summary>
         /// 就地读写本格（flags / shade / 将来的 vx,vy）。
         /// 越界时返回一个共享的只读暂存格，写入它不会影响网格。
@@ -492,6 +511,9 @@ namespace TapTap2026.Simulation
             MarkCandidates(x0, y0);
             MarkCandidates(x1, y1);
             MarkCandidatesThisScan(x0, y0, x1, y1);
+
+            // 逻辑帧混合扫描：两格的类型整体换位，_logicCells 位随之交换（两端各拿到对方的位）。
+            SwapLogicCells(x0, y0, x1, y1);
             return true;
         }
 
@@ -594,6 +616,9 @@ namespace TapTap2026.Simulation
             MarkProcessed(index);
             MarkCandidates(x, y);
             MarkCandidatesThisScan(x, y, x, y);
+
+            // 逻辑帧混合扫描：本格的新类型是否带 OnLogic 行为，决定它的 _logicCells 位。
+            SetLogicCell(x, y, typeId);
 
             // 新物质继承该格原有热量：旧物质离场，但它的热视作就地留给了新物质（新生成的有机物
             // 不会被拍成 0°——例如夜里发芽的草继承暖空气的 Q，不会当帧冻死）。相变要带走自己的热时用 SetPhase。
@@ -733,6 +758,9 @@ namespace TapTap2026.Simulation
             MarkProcessed(index);
             MarkCandidates(x, y);
             MarkCandidatesThisScan(x, y, x, y);
+
+            // 逻辑帧混合扫描：相变后的新形态是否带 OnLogic 行为，决定它的 _logicCells 位。
+            SetLogicCell(x, y, typeId);
 
             // Q 跟着物质走，不重置（这正是与 Set 的区别）。
             _heat.SetHeat(x, y, heat);
@@ -1007,7 +1035,9 @@ namespace TapTap2026.Simulation
         /// 热传导、湿度输送、降水与光照。
         /// </summary>
         /// <remarks>
-        /// 分段：<b>①粒子扫描</b>（每格先 <c>OnLogic</c>、未被相变换走的再 <c>OnMotion</c>）→
+        /// 分段：<b>①粒子扫描</b>（每格先 <c>OnLogic</c>、未被相变换走的再 <c>OnMotion</c>；休眠开启时走
+        /// <see cref="ScanLogicSleeping"/> 混合扫描——候选格跑完整两钩子、其余 HasLogic 格只跑 <c>OnLogic</c>，
+        /// <c>OnLogic</c> 从不休眠）→
         /// <b>①′随机刻</b>（随机抽 <see cref="RandomTicksPerStep"/> 个格，命中非空气非静态的格就调 <c>OnRandomTick</c>）→
         /// <b>②热传导 + 顶行向虚空散热</b>（<see cref="HeatMap.Step"/>）→
         /// <b>③湿度输送</b>（<see cref="HumidityField.Step"/>：扩散 + 水平冷→热 + 竖直越热越向上）→
@@ -1051,13 +1081,24 @@ namespace TapTap2026.Simulation
                 // 按旧 tick 恢复，使异常后新建的粒子仍会被下一帧处理；_tick 自增之后（热 / 湿度 / 降水 / 光照）
                 // 抛异常则按新 tick 恢复，标记同样与下一帧的扫描一致。
                 _stamp = OutsideStamp;
+
+                // 混合扫描（休眠开启）的位图收尾与 StepMotion 一致：正常路径已在 ScanLogicSleeping 内完成，
+                // 这里只兜住逻辑钩子抛异常的提前退出，避免 _motionScanActive 悬留为 true。
+                if (_motionScanActive)
+                {
+                    _motionScanActive = false;
+                    Array.Clear(_scanCandidates, 0, _scanCandidates.Length);
+                }
             }
         }
 
         /// <summary>
-        /// 扫描入口。**逻辑帧**（<paramref name="logic"/> = true）与 <see cref="MotionSleepEnabled"/> 为 false 时
-        /// 走全网格扫描：行从高到低、x 方向按 <see cref="Tick"/> 奇偶交替，逐格 <see cref="ProcessCell"/>。
-        /// 运动帧且休眠开启时改走 <see cref="ScanSleeping"/>（同样顺序，只求值候选格）。
+        /// 扫描入口。休眠开启（<see cref="MotionSleepEnabled"/>，默认）时走休眠扫描：运动帧
+        /// （<paramref name="logic"/> = false）只求值候选格（<see cref="ScanSleeping"/>）；逻辑帧走
+        /// <see cref="ScanLogicSleeping"/>——候选格跑完整 <c>OnLogic → OnMotion</c>，其余带
+        /// <see cref="ParticleTypeInfo.HasLogic"/> 的格只跑 <c>OnLogic</c>（不跑运动）。休眠关闭时走
+        /// **全网格旧路径**，行为逐位不变：行从高到低、x 方向按 <see cref="Tick"/> 奇偶交替，逐格
+        /// <see cref="ProcessCell"/>。
         /// </summary>
         private void Scan(bool logic)
         {
@@ -1078,9 +1119,17 @@ namespace TapTap2026.Simulation
             // bit0 仍照旧由写入维护（类型作者契约与既有测试都依赖它），只是不再作为跳过判据。
             Array.Clear(_processedBits, 0, _processedBits.Length);
 
-            if (!logic && _motionSleepEnabled)
+            if (_motionSleepEnabled)
             {
-                ScanSleeping(stamp, reversed, cells, types, width, height);
+                if (logic)
+                {
+                    ScanLogicSleeping(stamp, reversed, cells, types, width, height);
+                }
+                else
+                {
+                    ScanSleeping(stamp, reversed, cells, types, width, height);
+                }
+
                 return;
             }
 
@@ -1223,6 +1272,164 @@ namespace TapTap2026.Simulation
             Array.Clear(_scanCandidates, 0, _scanCandidates.Length);
         }
 
+        /// <summary>
+        /// 逻辑帧混合扫描（休眠开启时）：扫描顺序与全网格扫描**逐格一致**（y 降序、x 随 Tick 奇偶交替），
+        /// 但对格分三种处理：
+        /// <list type="bullet">
+        /// <item>运动候选位置位 → 完整 <see cref="ProcessCell"/>（先 <c>OnLogic</c>、未被相变换走的再 <c>OnMotion</c>），
+        /// 计入运动求值；</item>
+        /// <item>仅 <see cref="_logicCells"/> 置位（该格类型带 <c>OnLogic</c>）→ <see cref="TakeProcessed"/> + flags 戳 +
+        /// 只调 <c>OnLogic</c>（不调 <c>OnMotion</c>、不计运动求值）；</item>
+        /// <item>都不置位 → 跳过。</item>
+        /// </list>
+        /// </summary>
+        /// <remarks>
+        /// <para><b>为什么 OnLogic 永不休眠</b>：<c>OnLogic</c> 含随机重掷型行为（水蒸发摇骰、火熄灭档位骰），
+        /// 「输入没变就跳过」对它们不等价（满扫每帧重掷、休眠不重掷会改变速率）。因此逻辑帧对**每个**
+        /// HasLogic 格仍每帧同序调用一次 <c>OnLogic</c>（RNG 消耗序列与全扫完全一致）；休眠只作用于 <c>OnMotion</c>
+        /// 那一半，其等价性由运动休眠既有证明（输入未变 ⇒ 运动决策不变）保证，见 <see cref="ScanSleeping"/>。</para>
+        /// <para>位图生命周期与 <see cref="ScanSleeping"/> 相同：换出 <see cref="_candidates"/> ↔ <see cref="_scanCandidates"/>、
+        /// 扫描期间 <see cref="_motionScanActive"/> = true（写入继续往本帧位图补位，保持同帧级联）、末尾清空
+        /// <see cref="_scanCandidates"/>。<see cref="_logicCells"/> 是持久位图，不换出、不清空。段内每格重读候选字
+        /// （级联可能在段内补位）。</para>
+        /// </remarks>
+        private void ScanLogicSleeping(
+            byte stamp, bool reversed, Cell[] cells, ParticleType[] types, int width, int height)
+        {
+            ulong[] candidates = _candidates;
+            _candidates = _scanCandidates;
+            _scanCandidates = candidates;
+
+            ulong[] bits = _scanCandidates;
+            ulong[] logicBits = _logicCells;
+            int chunkCols = _chunkCols;
+            int evaluated = 0;
+
+            _motionScanActive = true;
+
+            for (int y = height - 1; y >= 0; y--)
+            {
+                int rowBase = y * width;
+                int chunkRowBase = (y >> ChunkShift) * chunkCols;
+                int wordInChunk = (y & ChunkMask) >> 2;
+                int bitBase = (y & 3) << 4;
+
+                if (reversed)
+                {
+                    for (int cx = chunkCols - 1; cx >= 0; cx--)
+                    {
+                        int wordIndex = ((chunkRowBase + cx) << 2) + wordInChunk;
+                        if ((bits[wordIndex] | logicBits[wordIndex]) == 0UL)
+                        {
+                            continue;
+                        }
+
+                        int xStart = cx << ChunkShift;
+                        int xEnd = xStart + ChunkSize;
+                        if (xEnd > width)
+                        {
+                            xEnd = width;
+                        }
+
+                        for (int x = xEnd - 1; x >= xStart; x--)
+                        {
+                            if (ProcessHybridCell(x, y, rowBase + x, stamp, bits, logicBits, wordIndex, bitBase, cells, types))
+                            {
+                                evaluated++;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    for (int cx = 0; cx < chunkCols; cx++)
+                    {
+                        int wordIndex = ((chunkRowBase + cx) << 2) + wordInChunk;
+                        if ((bits[wordIndex] | logicBits[wordIndex]) == 0UL)
+                        {
+                            continue;
+                        }
+
+                        int xStart = cx << ChunkShift;
+                        int xEnd = xStart + ChunkSize;
+                        if (xEnd > width)
+                        {
+                            xEnd = width;
+                        }
+
+                        for (int x = xStart; x < xEnd; x++)
+                        {
+                            if (ProcessHybridCell(x, y, rowBase + x, stamp, bits, logicBits, wordIndex, bitBase, cells, types))
+                            {
+                                evaluated++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            _motionCellsEvaluatedLastStep = evaluated;
+
+            _motionScanActive = false;
+            Array.Clear(_scanCandidates, 0, _scanCandidates.Length);
+        }
+
+        /// <summary>
+        /// 处理逻辑帧混合扫描的一格。返回是否真的调用了 <c>OnMotion</c>（候选格才可能，用于求值计数）。
+        /// 候选位可能被**本帧更早的求值**写入（同帧级联），因此每格都重读 <paramref name="bits"/> 的那一个字。
+        /// </summary>
+        /// <remarks>仅 logic 位置位时走「只跑 OnLogic」分支：它与 <see cref="ProcessCell"/> 的 logic 半等价
+        /// （同样 <see cref="TakeProcessed"/> + flags 戳 + <c>OnLogic</c>），只是不接 <c>OnMotion</c>。</remarks>
+        private bool ProcessHybridCell(
+            int x, int y, int index, byte stamp, ulong[] bits, ulong[] logicBits, int wordIndex, int bitBase,
+            Cell[] cells, ParticleType[] types)
+        {
+            ulong bit = 1UL << (bitBase + (x & ChunkMask));
+            if ((bits[wordIndex] & bit) != 0UL)
+            {
+                return ProcessCell(x, y, index, stamp, true, cells, types);
+            }
+
+            if ((logicBits[wordIndex] & bit) == 0UL || !TakeProcessed(index))
+            {
+                return false;
+            }
+
+            cells[index].flags = CellFlags.WithProcessed(cells[index].flags, stamp);
+            ushort id = cells[index].typeId;
+            if (id < types.Length && types[id] != null)
+            {
+                types[id].OnLogic(this, x, y);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 场脏格回调（<see cref="HeatMap.DirtiedHook"/> / <see cref="HumidityField.DirtiedHook"/>）：
+        /// 把温度发生变化的格**同帧**并入正在扫描的候选位图，复现全网格旧路径里「先扫格的 OnLogic 改温度、
+        /// 后扫格同帧在新温度下决策」的可见性。
+        /// </summary>
+        /// <remarks>
+        /// <para>为什么必须同帧：火 <c>OnLogic</c> 向本格注热 250Q，越过大气浮力的温度死区；全网格里扫描序
+        /// 在其下方（y 更小）的大气格当帧就能读到新温度并上浮，混合扫描若把这次热变化留到帧末
+        /// <see cref="FlushTemperatureDirty"/>（下一帧才唤醒），就会晚一帧决策、逐位发散（实测首个点火 tick 即发散）。
+        /// 蒸发摊湿度改变热容 <c>C</c>、进而改变 <c>T = Q / C</c>，走的是同一条通道。</para>
+        /// <para>唤醒盒即类型表反转阅读盒并集（生产表 87 格），⊇ 运动决策的温度读距（半径 2），是安全超集：
+        /// 多唤醒几格不改变结果。非扫描期（场 pass、光照、降水等）由 <see cref="MarkCandidatesThisScan"/>
+        /// 自带的 <see cref="_motionScanActive"/> 门控变成空操作，那条后置路径仍由帧末 chunk 粒度唤醒处理。</para>
+        /// </remarks>
+        private void OnThermalCellDirtied(int index)
+        {
+            if (!_motionScanActive)
+            {
+                return;
+            }
+
+            int y = index / _width;
+            MarkCandidatesThisScan(index - y * _width, y, index - y * _width, y);
+        }
+
         /// <summary>本帧是否已处理过 <paramref name="index"/>；未处理则置位并返回 true（至多处理一次）。</summary>
         private bool TakeProcessed(int index)
         {
@@ -1242,6 +1449,51 @@ namespace TapTap2026.Simulation
         private void MarkProcessed(int index)
         {
             _processedBits[index >> 6] |= 1UL << (index & 63);
+        }
+
+        /// <summary>
+        /// 维护 <see cref="_logicCells"/>：(x,y) 换成 <paramref name="typeId"/> 后，该格是否需要在逻辑帧调用
+        /// <c>OnLogic</c>（= 非空气、非静态、<see cref="ParticleTypeInfo.HasLogic"/>）。由写入原语调用。
+        /// </summary>
+        private void SetLogicCell(int x, int y, ushort typeId)
+        {
+            int word = ((((y >> ChunkShift) * _chunkCols) + (x >> ChunkShift)) << 2) + ((y & ChunkMask) >> 2);
+            ulong mask = 1UL << (((y & 3) << 4) + (x & ChunkMask));
+            if (HasLogicAt(typeId))
+            {
+                _logicCells[word] |= mask;
+            }
+            else
+            {
+                _logicCells[word] &= ~mask;
+            }
+        }
+
+        /// <summary>交换两格在 <see cref="_logicCells"/> 里的位（<see cref="Swap"/> 的格子内容整体搬走）。</summary>
+        private void SwapLogicCells(int x0, int y0, int x1, int y1)
+        {
+            int word0 = ((((y0 >> ChunkShift) * _chunkCols) + (x0 >> ChunkShift)) << 2) + ((y0 & ChunkMask) >> 2);
+            int word1 = ((((y1 >> ChunkShift) * _chunkCols) + (x1 >> ChunkShift)) << 2) + ((y1 & ChunkMask) >> 2);
+            ulong mask0 = 1UL << (((y0 & 3) << 4) + (x0 & ChunkMask));
+            ulong mask1 = 1UL << (((y1 & 3) << 4) + (x1 & ChunkMask));
+
+            // 先读后写：同字不同格时两次写必须基于各自的原始位，不能踩掉第一次写。
+            bool bit0 = (_logicCells[word0] & mask0) != 0UL;
+            bool bit1 = (_logicCells[word1] & mask1) != 0UL;
+            _logicCells[word0] = bit1 ? (_logicCells[word0] | mask0) : (_logicCells[word0] & ~mask0);
+            _logicCells[word1] = bit0 ? (_logicCells[word1] | mask1) : (_logicCells[word1] & ~mask1);
+        }
+
+        /// <summary>typeId 是否需要在逻辑帧调用 <c>OnLogic</c>（非空气、非静态、HasLogic）。</summary>
+        private bool HasLogicAt(ushort typeId)
+        {
+            if (typeId == ParticleRegistry.AirTypeId || typeId >= _types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = _types[typeId];
+            return type != null && type.Info.HasLogic && !type.Info.IsStatic;
         }
 
         /// <summary>
@@ -1510,7 +1762,7 @@ namespace TapTap2026.Simulation
 
             cells[index].flags = CellFlags.WithProcessed(cells[index].flags, stamp);
 
-            if (logic)
+            if (logic && type.Info.HasLogic)
             {
                 // 逻辑钩子先跑（相变 / 反应）。它若把本格换成了别的类型，说明这一格本帧已经「用掉」了：
                 // 新格已由 Set / SetPhase 标成已处理，旧类型的运动规则也不再适用于新物质——本帧跳过运动。
@@ -1520,6 +1772,9 @@ namespace TapTap2026.Simulation
                 // 若在本格上做同 id 的 Swap（例如与自己左边的同类换位），必须自己在换位后
                 // 保证本帧不再执行运动——否则会在同一帧被 ProcessCell 二次运动。当前所有
                 // OnLogic 实现（水、湿土、大气等）都不做同 id 换位。
+                //
+                // HasLogic 为 false 时整段跳过：OnLogic 是严格空体（不读 / 不写 / 不耗随机流），
+                // 跳过一次空调用逐位等价，只是省下调用与相变后 typeId 比较。
                 type.OnLogic(this, x, y);
                 if (cells[index].typeId != id)
                 {

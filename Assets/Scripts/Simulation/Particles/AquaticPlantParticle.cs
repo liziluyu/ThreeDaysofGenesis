@@ -65,7 +65,8 @@ namespace TapTap2026.Simulation
             stickiness: 0f,
             palette: Palette,
             debugName: nameof(AquaticPlantParticle),
-            lightAbsorption: LightAbsorptionFactor);
+            lightAbsorption: LightAbsorptionFactor,
+            hasLogic: false); // OnLogic 严格空体：只靠 OnMotion（空）与随机刻驱动
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {

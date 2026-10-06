@@ -81,7 +81,8 @@ namespace TapTap2026.Simulation
             stickiness: 0f,
             palette: Palette,
             debugName: nameof(GrassParticle),
-            lightAbsorption: LightAbsorptionFactor);
+            lightAbsorption: LightAbsorptionFactor,
+            hasLogic: false); // OnLogic 严格空体：死亡 / 撒种 / 固沙都在随机刻
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
