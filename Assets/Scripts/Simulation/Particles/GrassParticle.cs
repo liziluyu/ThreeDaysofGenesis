@@ -10,33 +10,29 @@ namespace TapTap2026.Simulation
     // 交互的 ParticleIds：Sand → Soil（把沙变成土）；GrassSeed（撒下新草种子）
     //
     // 行为：
-    //   随机刻（OnRandomTick），按固定顺序依次做五件事（死亡一旦触发就清掉整段草并 return）：
-    //       ① **被压住就死**：正上方是**固体或液体、且不是草**时，草被压死——沙 / 土 / 石 / 湿土 / 腐殖土 /
-    //          腐殖质、草种子（固体）与**水**（液体）都算压，同株草摞在草上不算压。死亡沿**竖直方向向下**
-    //          传播，把下面整段连续的草一并清掉。
-    //       ② **没扎根就死**：正下方不是土 / 湿土 / 腐殖土（也不是同株草的下段）时，这一格草失去支撑而死；
-    //          死亡沿**竖直方向向上**传播，把上面整段连续的草一并清掉（根在下面，土没了整株一起死）。
-    //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）时这一格
-    //          草死亡（只死这一格；相邻草格各有自己的温度，会随传导各自判定）。
-    //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质。
-    //       ④ 撒种（10% 概率）：落点下方必须是**可托住种子的固体**——固体且**不是草**，因此不会撒到别的草头上。
-    //       ⑤ 固沙。
-    //   逻辑帧（OnLogic）与运动帧（OnMotion）都**空**：草长在原地，不落、不流；死亡判定放在随机刻里
-    //       （见上），不必每逻辑帧空跑。它不是 IsStatic：
+    //   逻辑帧（OnLogic）与运动帧（OnMotion）都**空**：草长在原地，不落、不流。它不是 IsStatic：
     //       随机刻会跳过静态类型（ParticleWorld.RunRandomTicks 检查 IsStatic），所以草必须是普通类型
     //       才能收到随机刻；靠空的 OnMotion（而不是 IsStatic）保证它不移动。草带 Solid 标签且与同 rank
     //       的固体（沙 / 土 / 石）互不置换（CanDisplace 要求严格更高的 rank），因此上方的沙会停在草上，
     //       草也不会被同类顶掉。
-    //   随机刻（OnRandomTick），每次命中按固定顺序做两件事：
-    //       ① 撒种（10% 概率）：先摇一次骰（NextUInt() % SeedSpawnChanceDenominator == 0），
-    //          命中才在半径 2 格的圆盘内找**第一个「下方 1 格是固体的空地」**（固定扫描序：y 升序、
-    //          同一行 x 升序，只取 dx²+dy² ≤ 半径²），在那里生成一颗新的草种子（Set，新物质）。
-    //          「空地」= 空气或气体（ParticleRules.IsGasOrEmpty）——世界被大气填满，若只认 typeId 0
-    //          则永远找不到落点；「下方是固体」用 ParticleRules.IsSolid（石头/沙/土/湿土/草都算）。
-    //          摇骰每次都发生（消耗 1 个随机数），找不到落点就什么都不做。
-    //       ② 固沙（无概率门）：在半径 2 格的圆盘内找**第一个沙**，把它 SetPhase 成土。
-    //       两步都不做即草这一帧无事发生。随机刻默认关闭（world.RandomTicksPerStep = 0，见 ParticleWorld），
-    //       生产值由 ParticleSimulationSettings._randomTicksPerStep 注入。
+    //   随机刻（OnRandomTick）每次命中按固定顺序执行，死亡一旦触发就清掉整段并 return（本帧不再撒种/固沙）：
+    //       ① **被压住就死**：正上方是**固体或液体、且不是草**（沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、
+    //          草种子与**水**都算压）时，草被压死，死亡沿**竖直方向向下**传播，把下面整段连续的草一并清掉；
+    //          同株草摞在草上不算压。
+    //       ② **没扎根就死**：正下方不是土 / 湿土 / 腐殖土（也不是同株草的下段）时，这一格草失去支撑而死，
+    //          死亡沿**竖直方向向上**传播，把上面整段连续的草一并清掉（根在下面，土没了整株一起死）。
+    //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）时
+    //          这一格草死亡（只死这一格；相邻草格各有自己的温度，级联随时间涌现）。
+    //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质。
+    //       ④ **撒种（10% 概率）**：先摇一次骰（NextUInt() % SeedSpawnChanceDenominator == 0，每次都摇、
+    //          消耗 1 个随机数，保证确定性），命中才在半径 2 格圆盘内找**第一个「下方 1 格是可托住种子的
+    //          固体的空地」**（固定扫描序：y 升序、同行 x 升序，只取 dx²+dy² ≤ 半径²），在那里 Set 一颗
+    //          新草种子。「空地」= 空气或气体（ParticleRules.IsGasOrEmpty）——世界被大气填满，若只认
+    //          typeId 0 则永远找不到落点；「可托住」= 固体且不是草（IsSeedSupport），不会撒到别的草头上。
+    //          找不到落点就什么都不做。
+    //       ⑤ **固沙（无概率门）**：在半径 2 格圆盘内找第一个沙，SetPhase 成土。
+    //   随机刻默认关闭（world.RandomTicksPerStep = 0，见 ParticleWorld），生产值由
+    //   ParticleSimulationSettings._randomTicksPerStep 注入。
     public sealed class GrassParticle : IParticleType
     {
         /// <summary>把附近沙变为土的半径（格，欧氏距离）：只处理 dx²+dy² ≤ 半径² 的格。</summary>
