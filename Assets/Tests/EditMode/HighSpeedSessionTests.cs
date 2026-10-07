@@ -272,43 +272,41 @@ namespace TapTap2026.Tests
             Assert.IsNaN(session.LatestSurfaceTemperature);
         }
 
-        /// <summary>进入即强制自适应档；退出精确复原进入前的倍率与自适应开关；Enter 幂等。</summary>
+        /// <summary>进入即钉满档 16× 手动；退出钉回 1×（普通编辑模式不允许调速度，恒 1×）；Enter/Exit 幂等。</summary>
         [Test]
-        public void EnterForcesAdaptiveAndExitRestoresPreviousSpeedState()
+        public void EnterPinsMaxSpeedAndExitReturnsToOneTimes()
         {
             ParticleWorld world = new ParticleWorld(2, 2, 19u, TestTables.Build(new TestStaticParticle()));
             var session = new HighSpeedSession(world, 10);
 
-            // 手动 3× 进入：退出后仍是手动 3×。
-            var manual = new SpeedController();
-            manual.SetSpeed(3f);
-            session.Enter(manual);
+            var speed = new SpeedController();
+            session.Enter(speed);
             Assert.IsTrue(session.Active);
-            Assert.IsTrue(manual.Adaptive, "高速模式强制自适应档");
+            Assert.AreEqual(SpeedController.MaxSpeed, speed.Speed, "进入即钉满档 16×");
+            Assert.IsFalse(speed.Adaptive, "满档是手动钉死，不走自适应");
 
-            session.Exit(manual);
+            session.Exit(speed);
             Assert.IsFalse(session.Active);
-            Assert.IsFalse(manual.Adaptive);
-            Assert.AreEqual(3f, manual.Speed);
+            Assert.AreEqual(SpeedController.MinSpeed, speed.Speed, "退出钉回 1×");
+            Assert.IsFalse(speed.Adaptive);
 
-            // 自适应档进入：退出后仍是自适应档，且倍率不丢。
-            var adaptive = new SpeedController();
-            adaptive.SetSpeed(4f);
-            adaptive.SetAdaptive(true);
-            session.Enter(adaptive);
-            session.Exit(adaptive);
-            Assert.IsTrue(adaptive.Adaptive);
-            Assert.AreEqual(4f, adaptive.Speed);
+            // 不记旧档：无论从什么状态进入，退出都回 1×。
+            speed.SetSpeed(4f);
+            speed.SetAdaptive(true);
+            session.Enter(speed);
+            Assert.AreEqual(SpeedController.MaxSpeed, speed.Speed);
+            session.Exit(speed);
+            Assert.AreEqual(SpeedController.MinSpeed, speed.Speed, "退出不恢复进入前的 4× 自适应，钉回 1×");
+            Assert.IsFalse(speed.Adaptive);
 
-            // Enter 幂等：重复进入不覆盖进入时记下的状态。
-            var idempotent = new SpeedController();
-            idempotent.SetSpeed(2f);
-            session.Enter(idempotent);
-            session.Enter(idempotent);
-            idempotent.SetSpeed(8f);
-            session.Exit(idempotent);
-            Assert.AreEqual(2f, idempotent.Speed, "退出恢复的是第一次进入时记下的倍率");
-            Assert.IsFalse(idempotent.Adaptive);
+            // Enter 幂等：重复进入是空操作，计时与统计不重置。
+            session.Enter(speed);
+            session.OnLogicTick();
+            session.Enter(speed);
+            Assert.AreEqual(1, session.ElapsedLogicTicks, "重复 Enter 不重置计时");
+            session.Exit(speed);
+            session.Exit(speed);
+            Assert.AreEqual(SpeedController.MinSpeed, speed.Speed);
         }
 
         // ============================== 确定性回归 ==============================

@@ -13,12 +13,13 @@ namespace TapTap2026.Game
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
     /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
-    /// **`=` / `-`** 手动调倍速（×2 / ÷2，夹在 [1,16]，切回手动档）；**Tab** 开关自适应倍速（开启时从当前倍率起步）；
-    /// **H** 进入**高速模式**（强制自适应倍速、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
-    /// **Enter 或 H** 确认退出——退出后仍保持暂停，由玩家自己按空格继续）；
+    /// **H** 进入**高速模式**（倍速钉满档 16×、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
+    /// **Enter 或 H** 确认退出——退出后倍速回 1×、仍保持暂停，由玩家自己按空格继续）；
+    /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
     /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
-    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（<c>×N</c>，自适应时 <c>×N auto</c>）；
-    /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×8 auto 地表 12.3° 湿度 0.456</c>（未采样时温度显示 <c>--</c>）。
+    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（普通模式恒 <c>×1</c>）；
+    /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
+    /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
@@ -27,7 +28,7 @@ namespace TapTap2026.Game
     /// 因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
     /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者），本类只管输入与显示：
     /// <see cref="ParticleSimulationDriver.HighSpeedActive"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
-    /// 右键切换 / 滚轮调半径 / 左键投放与 <c>=</c>/<c>-</c>/<c>Tab</c>，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
+    /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleEditor : MonoBehaviour
@@ -189,34 +190,16 @@ namespace TapTap2026.Game
             // 高速模式锁的是编辑，观看视角（平移 + 光标读数）跟着解锁一起禁用没有意义。
             UpdateCameraPan(world);
 
-            // 高速模式锁编辑：在这里**统一拦截**——右键盘切换、滚轮调半径、左键投放/擦除与倍速档（=`/`-`/Tab`）
-            // 一概跳过，只保留上面的空格暂停与下面只读的光标读数。不是每个输入分支各加一个判断。
+            // 高速模式锁编辑：在这里**统一拦截**——右键切换、滚轮调半径、左键投放/擦除一概跳过，
+            // 只保留上面的空格暂停与下面只读的光标读数。不是每个输入分支各加一个判断。
             if (_driver.HighSpeedActive)
             {
                 ProbeCell(world, Input.mousePosition);
                 return;
             }
 
-            // 倍速热键：与暂停同理，这里只负责「按下了就切一下」，
-            // 档位与自适应状态都在驱动暴露的 Speed 控制器里（驱动不认识输入）。
-            SpeedController speed = _driver.Speed;
-            if (speed != null)
-            {
-                if (Input.GetKeyDown(KeyCode.Equals))
-                {
-                    // ×2 手动调档（SetSpeed 切回手动档并钳到 [1, 16]）。
-                    speed.SetSpeed(speed.Speed * 2f);
-                }
-                else if (Input.GetKeyDown(KeyCode.Minus))
-                {
-                    speed.SetSpeed(speed.Speed * 0.5f);
-                }
-
-                if (Input.GetKeyDown(KeyCode.Tab))
-                {
-                    speed.SetAdaptive(!speed.Adaptive);
-                }
-            }
+            // 普通编辑模式不允许调模拟速度（恒 1×）——速度只由高速模式钉 16× / 退出回 1×，
+            // 因此这里没有 = / - / Tab 的热键处理；SpeedController 的档位 API 只被内核会话调用。
 
             ProbeCell(world, Input.mousePosition);
 
@@ -363,7 +346,7 @@ namespace TapTap2026.Game
             _highSpeedHudText = DescribeHighSpeed(
                 session.ElapsedLogicTicks,
                 session.DurationLogicTicks,
-                DescribeSpeed(),
+                _driver.Speed.EffectiveSpeed,
                 session.LatestSurfaceTemperature,
                 session.LatestAverageHumidity);
 
@@ -374,10 +357,11 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 左下角进度行的文案：<c>高速 1234/6000 ×8 auto 地表 12.3° 湿度 0.456</c>。
-        /// 倍速部分复用 <see cref="DescribeSpeed"/>；温度 / 湿度还没采到样本（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
+        /// 左下角进度行的文案：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>。
+        /// 倍速只显示**实测**吞吐（<see cref="SpeedController.EffectiveSpeed"/>，EMA 平滑的一位小数）——
+        /// 高速模式恒钉 16× 目标，目标没有显示价值；温度 / 湿度还没采到样本（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
         /// </summary>
-        private static string DescribeHighSpeed(int elapsed, int duration, string speedText, float temperature, float humidity)
+        private static string DescribeHighSpeed(int elapsed, int duration, float effectiveSpeed, float temperature, float humidity)
         {
             string surface = float.IsNaN(temperature)
                 ? "--"
@@ -388,8 +372,8 @@ namespace TapTap2026.Game
 
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "高速 {0}/{1} {2} 地表 {3} 湿度 {4}",
-                elapsed, duration, speedText, surface, wetness);
+                "高速 {0}/{1} ×{2} 地表 {3} 湿度 {4}",
+                elapsed, duration, effectiveSpeed.ToString("0.0", CultureInfo.InvariantCulture), surface, wetness);
         }
 
         /// <summary>

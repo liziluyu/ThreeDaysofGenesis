@@ -11,9 +11,9 @@ namespace TapTap2026.Simulation
     /// <remarks>
     /// <para>一次高速模式的生命周期：<see cref="Enter"/> → 每逻辑帧 <see cref="OnLogicTick"/> →
     /// 达到 <see cref="DurationLogicTicks"/> 置 <see cref="Completed"/> → 驱动自动暂停 →
-    /// 玩家确认后 <see cref="Exit"/>（复原进入前的倍速状态，仍保持暂停）。</para>
+    /// 玩家确认后 <see cref="Exit"/>（倍速钉回 1×，仍保持暂停）。</para>
     /// <para>期间做三件事：①挂 <see cref="HighSpeedMonitor"/> 增量统计每种粒子的产生 / 死亡（O(1)，不重扫网格）；
-    /// ②强制 <see cref="SpeedController.Adaptive"/>（进入时记下旧倍率与自适应开关，退出复原）；
+    /// ②把倍速钉到满档 <see cref="SpeedController.MaxSpeed"/>×（退出时回 1×——普通编辑模式不允许调速度）；
     /// ③每 <see cref="SampleInterval"/> 逻辑帧采一次地表平均温度与世界平均湿度（O(W) / O(1)）。</para>
     /// <para><b>确定性</b>：监视器是纯观察者——零 RNG 消耗、零格子写入，挂 / 摘它不改变世界的推进结果。</para>
     /// <para>热路径零分配：采样缓冲在 <see cref="Enter"/> 时按 <c>时长 / 采样间隔</c> 一次预留；
@@ -33,8 +33,6 @@ namespace TapTap2026.Simulation
         private bool _active;
         private bool _completed;
         private int _elapsed;
-        private float _speedAtEntry;
-        private bool _adaptiveAtEntry;
         private float _latestSurfaceTemperature = float.NaN;
         private float _latestAverageHumidity = float.NaN;
 
@@ -109,10 +107,11 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 进入高速模式：挂上监视器、把 <paramref name="speed"/> 切到**自适应档**（记下旧倍率与自适应开关供
-        /// <see cref="Exit"/> 复原），并从零开始计时。**幂等**：已 <see cref="Active"/> 时什么都不做。
+        /// 进入高速模式：挂上监视器、把 <paramref name="speed"/> 直接钉到**满档 <see cref="SpeedController.MaxSpeed"/>×**
+        /// （手动档；跑不满由预算封顶，实测吞吐看 <see cref="SpeedController.EffectiveSpeed"/>），并从零开始计时。
+        /// **幂等**：已 <see cref="Active"/> 时什么都不做。
         /// </summary>
-        /// <param name="speed">驱动持有的倍速控制器；进入即强制自适应，退出时复原。</param>
+        /// <param name="speed">驱动持有的倍速控制器；进入即钉满档，<see cref="Exit"/> 时回 1×。</param>
         public void Enter(SpeedController speed)
         {
             if (_active)
@@ -120,9 +119,7 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            _speedAtEntry = speed.Speed;
-            _adaptiveAtEntry = speed.Adaptive;
-            speed.SetAdaptive(true);
+            speed.SetSpeed(SpeedController.MaxSpeed);
 
             _elapsed = 0;
             _completed = false;
@@ -138,7 +135,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 退出高速模式：摘掉监视器、复原进入前的倍速状态，并清空统计与计时。
+        /// 退出高速模式：摘掉监视器、把倍速钉回 1×（普通编辑模式恒为 1×），并清空统计与计时。
         /// **幂等**：未 <see cref="Active"/> 时什么都不做。
         /// </summary>
         /// <param name="speed">与 <see cref="Enter"/> 同一个倍速控制器。</param>
@@ -153,11 +150,7 @@ namespace TapTap2026.Simulation
             _monitor.ResetCounters();
             _monitor = null;
 
-            speed.SetSpeed(_speedAtEntry);
-            if (_adaptiveAtEntry)
-            {
-                speed.SetAdaptive(true);
-            }
+            speed.SetSpeed(SpeedController.MinSpeed);
 
             _active = false;
             _completed = false;
