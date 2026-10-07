@@ -1263,7 +1263,7 @@ Assets/Tests/EditMode/
   SpeedControllerTests.cs                    倍速控制器（纯 C#，不依赖 Unity 时钟）：手动档 tick 数随倍率精确缩放且忽略耗时反馈（含 [1,16] 钳位）/ 自适应档便宜帧加性升到 16（每 K=10 帧一次评估）、昂贵帧乘性 16→1 只花 4 次评估 / 逐帧成本噪声不再驱动换向（回归）/ 超预算丢账（cap、丢账计数、下一帧不雪球）与预算为 0 时的 1 tick 保底 / 滞回把成块便宜·昂贵交替的方向反转次数压到低于无滞回对照 / 默认手动 1× 与迁移前固定累加器在 600 帧抖动序列上逐帧 tick 数一致 / 实测倍率：16× 撞紧预算时 `EffectiveSpeed` 收敛到被 cap 的 4×（不是目标 16）、预算充裕时收敛到目标 4×、稳态 1× 精确归一（含 dt 抖动，≈1±0.02）
 ```
 
-测试总数 **219**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 10 + `HeatSkipTests` 5。
+测试总数 **227**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 10 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 8。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 
@@ -1293,6 +1293,7 @@ Particle Sandbox
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。
 - **暂停/恢复（空格）**：`ParticleEditor._pauseKey`（默认 `Space`；设 `None` 关闭热键）每帧检测按下，按当前状态调驱动的 `Pause()` / `Resume()`——暂停时运动帧与逻辑帧**一起冻结**、时间不累加（恢复不补跑暂停期间堆积的帧），画面停在最后一帧；再按一次继续。驱动侧只提供 `Pause()` / `Resume()` / `Paused`（及 `Simulate`）等状态与方法，**不含输入判断**。暂停中 `ParticleEditor` 画完会自己 `PresentNow()` 上屏，因此暂停状态下依然能涂改并立即看到结果。
 - **倍速（手动 + 自适应）**：**`=` / `-`** 手动调档（×2 / ÷2，夹在 `[1,16]`，按一下即切回手动档），**`Tab`** 开关自适应档（开启时从**当前倍率**起步，不重置回 1×）；左上角读数行末尾常驻 `×N`（自适应时 `×N auto`），目标倍率与实际吞吐相差 ≥5% 时追加 `(实 ×M)`——**`×N` 是目标倍率**，预算封顶 / 丢账时跑不满，`M` 才是实测速率（`SpeedController.EffectiveSpeed`：把「每帧实际 tick 数」与「每帧 dt」分别 EMA 再相除（÷ 运动速率），因此 dt 抖动与 0/1/2 tick 的量化都不会给比值带偏、稳态 1× 精确归一；显示用观测量、不参与调度；缺口小于 5% 就不显示，免得稳态读数抖）。策略与状态全在 **`SpeedController`**（`Assets/Scripts/Simulation/SpeedController.cs`；**纯 C#、不引用 `UnityEngine`**，因此能在 net9 测试工程下单独编译测试），驱动只做两件事：`Stopwatch` 量本帧 tick 循环耗时回喂、把控制器给定的 tick 数跑完；输入与展示仍在 `ParticleEditor`（照抄暂停模式的分工：方法在驱动 / 输入在编辑器）。四条语义：① **固定步长不变**——倍速只改「每真实帧跑几个运动 tick」，`StepMotion` / `StepLogic` 本体与每个 tick 内部逐位不变，任何倍率下同一 tick 序列推进出的世界逐位相同；② **丢时间不追账**——单帧需求超过预算上限时，超出部分连同欠账一起丢弃（欠账清零），死亡螺旋构造性不可能；③ **进度保底**——预算上限至少 1，因此极端超预算也照跑 1 个运动 tick（帧率代价用户自负；`dt` 本身不足一个 tick 时该帧照旧 0 个 tick）；④ **默认关闭**——默认手动 1×，与不含倍速的旧固定累加器**逐帧逐位一致**（tick 数按 `1f / motionRate` 的 float 步长从欠账里重复扣减，不是 double 取整）。预算 = `1000 / 目标帧率 × _speedBudgetFraction`（默认 0.5；目标帧率取 `Application.targetFrameRate`，≤ 0 时按 60），上限再按「每运动 tick 耗时」的 EMA 动态折算，倍率封顶由 `_speedMax`（默认 16）给定。自适应档 = AIMD，但调档决策只吃**已平滑的**「每 tick 耗时」EMA、且每 `DecisionIntervalFrames`（10）次 Plan 才评估一次：一周期（3 个运动 tick）的平滑成本低于「预算 × 0.75」加性升 `+0.25`、高于「预算 × 0.95」乘性降 `×0.5`，两者之间是死区，换方向再有 10 帧滞回——单帧成本抖动不再驱动倍率。**注意：倍速下同一段输入按 tick 对齐而非真实时间**——编辑器刷进去的粒子总在下一个运动 tick 被处理，而一个真实帧可能跑多个 tick，所以同一次按键 / 涂抹在 N× 下「经历」的模拟时间约为 1× 的 N 倍；需要严格按时序复现的脚本请固定手动 1×。
+- **高速模式（`H`）**：按 `H`（`ParticleEditor._highSpeedKey`，设 `None` 关闭）进入——内核 `HighSpeedSession` 强制自适应倍速、锁一切编辑（刷子/右键切换/滚轮/`=`/`-`/`Tab` 在 `Update` 同一处统一拦截，只剩空格暂停与只读读数），跑满 `_highSpeedLogicFrames`（默认 6000）逻辑帧后自动暂停并在屏幕中央显示每种粒子的产生/死亡结算（`Enter` 或 `H` 确认退出、恢复进入前倍速档位，仍保持暂停由玩家空格继续）。运行中屏幕左下角常驻 `高速 1234/6000 ×8 auto 地表 12.3° 湿度 0.456`（未采样时显示 `--`）。状态机、O(1) 生灭统计与采样全在内核（见 §14），驱动只做懒建 + 每逻辑帧转发 + 完成自动 `Pause()`。
 - **沙箱尺寸可在 Inspector 调整**：驱动上的 `_widthOverride` / `_heightOverride`（0 = 用 `ParticleSimulationSettings` 资产的 `Width` / `Height`，非 0 则覆盖，夹在 1..4096）。改 Inspector 字段、改 Settings 资产宽高、或调用 `ParticleSimulationDriver.Resize(w, h)` 都会在下一帧重建一个**空**世界（已有内容不保留），渲染器随之重建纹理/mesh 并由 `_fitCameraOnInitialize` 重新框住整张网格；`ParticleEditor` 每帧从 `driver.World` 取尺寸，无需额外处理。
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**材料类固/液 + Gas 白名单**——石头/沙/土/水/火，外加草种子与水生态种子；其余 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
 - **投放白名单（`ParticleEditor`）**：三个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `AquaticPlantParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗；`_placeableGasTypes`（默认 `FireParticle`）让白名单里的 Gas 例外可手刷（Gas 默认一律不可投放——蒸汽/云/大气是水循环中间态、只能由相变产生，火是唯一例外；火还另有 `FireParticle.CanPlaceAt` 投放资格：不覆盖实体、需附着物不浮空，圆刷时不合格的格被跳过）。将来有更多「单颗 + 冷却」「不可投放」或「可手刷气体」的类型时，往对应列表追加类型名即可。
@@ -1365,3 +1366,111 @@ Particle Sandbox
    - **已定：换格时水带热一起走**。`WetSoilParticle.GiveWater` 搬运时把 `ΔQ = T(源) × 1.2` 从源格挪到目标格（`1.2 = 湿土热容 2.0 − 干土热容 0.8`，即那一份水的热容份额），热容随物质一起变、两侧温度不因换格而跳，总热量严格守恒。旧「Q 留在原格不搬」已作废（详见 §4「吸水与湿土的水迁移」）。
    - **待定：常温不蒸发**。只有受热（≥ 60°）才往空气里蒸发，所以夜里/冷水里的湿土会一直保持湿。要不要给一条"常温极慢蒸发"的路（参考水粒子的 `SlowEvaporationTemperature` / 慢蒸发概率）。
    - 附：湿土的 `density 2.0` / `heatCapacity 2.0` / `thermalConductivity 0.85` 是取水与干土之间的中间值（水 6.5/0.95、干土 0.8/0.7），要不要按「孔隙含水率」正式推导。
+
+---
+
+## 14. 高速模式（High-Speed Mode）
+
+**目标**：一键让世界「无人干预地长程演化」——进入后**强制自适应倍速**、**锁掉一切编辑**，
+跑满 `ParticleSimulationSettings._highSpeedLogicFrames`（默认 **6000**）个逻辑帧后**自动暂停**并结算
+每种粒子的产生 / 死亡，玩家确认后退出、恢复进入前的倍速状态（仍保持暂停，空格继续）。
+
+### 分层
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 内核（纯 C#） | `Simulation/HighSpeedSession.cs` + `Simulation/HighSpeedMonitor.cs` | 状态机、产生 / 死亡计数、采样、完成判定；不引用 UnityEngine |
+| 驱动 | `ParticleSimulationDriver`：`HighSpeed`（懒建，用 `settings.HighSpeedLogicFrames`）/ `EnterHighSpeed()` / `HighSpeedActive`；每逻辑帧转发一次 `OnLogicTick()`；见到 `Completed` 自动 `Pause()` | 只做转发与暂停 |
+| 输入 / 显示 | `ParticleEditor`：`H` 进入；模式中**除空格（暂停）外的输入全锁**；左下角 HUD（倍速 + 进度 + 实时地表温度 / 湿度）；结算面板用 `Enter` 或 `H` 确认退出 | 只做输入与渲染 |
+
+### 内核 API（契约）
+
+```csharp
+namespace TapTap2026.Simulation
+{
+    public sealed class HighSpeedSession
+    {
+        public const int SampleInterval = 10;
+        public HighSpeedSession(ParticleWorld world, int durationLogicTicks);  // duration < 1 钳到 1
+
+        public bool Active { get; }                 // Enter 后、Exit 前
+        public bool Completed { get; }              // 达到 duration（Active 仍为 true，直到 Exit）
+        public int ElapsedLogicTicks { get; }
+        public int DurationLogicTicks { get; }
+        public int SampleCount { get; }
+        public float LatestSurfaceTemperature { get; }   // 未采样时 float.NaN
+        public float LatestAverageHumidity { get; }      // 未采样时 float.NaN
+        public IReadOnlyList<float> SurfaceTemperatureSamples { get; }
+        public IReadOnlyList<float> AverageHumiditySamples { get; }
+
+        public void Enter(SpeedController speed);   // 幂等；强制自适应，记旧 speed / adaptive
+        public void Exit(SpeedController speed);    // 幂等；复原旧倍速状态，Active=false，清计数 / 计时 / 样本
+        public void OnLogicTick();                  // 每逻辑帧一次（世界跑完这一帧之后）
+        public long GetBirths(int typeId);
+        public long GetDeaths(int typeId);
+    }
+}
+```
+
+### 统计语义（产生 / 死亡）
+
+`ParticleWorld` 持有一个 `internal HighSpeedMonitor _monitor`（`null` = 关闭；写路径只多一次判空，关闭时开销可忽略）。
+`Set` / `SetPhase` / `Clear` 在**写完新格、`OnSpawn` 之前**调 `OnCellReplaced(oldId, newId, x, y)`：
+`old ≠ new` 时 `deaths[old]++` 且 `births[new]++`——**空气（`typeId 0`）也是一条计数项**，显示时过滤。
+`Swap` 是搬运、**不产生统计**，只在尾部调 `OnSwap(x0, y0, x1, y1)` 更新两端列的地表高度。
+`Clear` 就是 `Set(..., Air)`，`Set` / `SetPhase` 的所有路径都覆盖；`Swap` 内部不走 `Set`，因此不会重复计数。
+`OnKill` / `OnSpawn` 里再写格子会各走自己那次写操作的钩子——账目按**写操作**累积（一次相变链因此记成多笔）。
+
+**O(1) 论证**：`OnCellReplaced` 只有两次 `long++`（计数数组按 typeId 直接寻址）加一次地表维护，
+`OnSwap` 只有两次地表维护，都不扫网格；计数器在 `Enter` 时按类型表长度一次分配，写路径零分配。
+
+### 地表定义与增量维护
+
+**地表 = 该列最上方的非气体格**，判据与光照完全同款：`TagRank(tags) >= LiquidRank`（即带 `Solid` / `Liquid` 标签），
+只看标签、不特判 typeId（见 §4「标签」与 §6 光照）。`HighSpeedMonitor._surfaceTop[x]` 保存这个 y
+（`-1` = 该列全是气体 / 空）。标签在运行期不可变（§12「明确禁止」），故构造时把 typeId → 是否挡光摊成
+`bool[]` 查表，钩子上只剩一次数组读。
+
+- `Enter` 时对每列**自顶向下全扫一次**（一次性 O(W·H)）把 `_surfaceTop` 拉成真值。
+- 之后每次单格改动 **O(1) 摊销**：本格是非气体且 `y > top[x]` → `top[x] = y`；
+  本格是气体 / 空且 `y == top[x]` → 从 `y-1` 向下重扫该列（**罕见**：只有地表那一格恰好被抹除 / 变空时才发生）。
+  `Swap` 对两端列各走一遍同样的维护（同行换位时两次维护都作用在同一列，仍然正确）。
+
+### 采样
+
+`OnLogicTick()` 每逻辑帧递增 `ElapsedLogicTicks`，每 `SampleInterval`（= 10）帧采一次（第 10、20、30… 帧），
+`SampleCount` 与两个 `Samples` 列表同步增长、`Latest*` 更新；**未采样时两个 `Latest*` 都是 `float.NaN`**。
+
+- **地表平均温度** = `Σ T(top[x]) / W`：只读每列地表格的温度（`HeatMap.GetTemperature`），一趟 O(W)，
+  **不重扫网格**。没有非气体格的列贡献 0，除数恒为网格宽 W。
+- **世界平均湿度** = `湿度总量 / (W·H)`：O(1)，直接读 `HumidityField.Total`。
+
+### 湿度总量：守恒核实结论与 O(1) 增量维护
+
+**核实结论：`HumidityStepKernel` 的 pair 运送净守恒。** 内核每帧把旧场 `Array.Copy` 到新场，
+其后的全部改动只经 `Transfer(next, budget, a, b, flow)`：正流量由给出方 `a` 出（超额时被 `budget[a]` 截断），
+`next[a] -= flow` 且 `next[b] += flow`；负流量对称地由 `b` 出。**同一笔流量等量地从给出方扣、给接收方加**，
+没有第二条写入路径（`budget` 只用于限流，不是场本身），内核里也**没有**任何下界截断式写入
+（下界截断只出现在写路径 `Floor` 上，那正是需要逐笔记账的地方）。因此成对反对称、界内总量在实数意义下严格不变，
+**不需要**在核心里加 delta 累加的 out 参数。
+
+据此在写路径上增量维护 `internal double Total`：`Set` / `Add` / `AddAt` / `ResetAt` 各自在
+「真值确实变了」的分支里按 `新值 − 旧值` 精确累加（`double` 累加避免逐次求和的舍入累积），
+`Swap` 与 `Step` 是搬运、不动它。它只是 `Sum()` 的 **O(1) 镜像**：逐格真源仍是 `Sum()`，
+两者只差「输送内核每笔 ±1 ulp 的浮点舍入」这类 ulp 级漂移，所以断言用容差而非逐位相等。
+
+### 确定性：纯观察者保证
+
+监视器**零 RNG 消耗、零格子写入、零场写入**——只读 `ParticleWorld.Cells` 与类型标签；
+`Enter` / `Exit` 只挂 / 摘 `_monitor` 并改 `SpeedController` 状态，不碰网格。
+因此「同种子 + 同命令序列」下，挂监视器的世界与不挂的世界逐格（`typeId` / `flags` / `shade` / Q / 湿度）
+以及随机流位置（后续 `NextUInt()` 序列）**完全一致**——`HighSpeedSessionTests` 有回归测试。
+
+### 进入 / 退出语义
+
+- `Enter(speed)`：**幂等**；记下 `speed` 的旧倍率与自适应开关，再 `SetAdaptive(true)`（强制自适应），
+  创建并挂上监视器，清零计时 / 样本 / 两个 `Latest*`。
+- `Exit(speed)`：**幂等**；摘监视器、清计数，再 `SetSpeed(旧倍速)`，若进入前是自适应档则
+  `SetAdaptive(true)` 复原。**暂停由驱动 / 编辑器负责**，内核不管暂停。
+- `OnLogicTick()` 在未进入或已 `Completed` 时是**空操作**——所以完成后 `ElapsedLogicTicks` 精确停在
+  `duration`，不会溢出（满程样本数 = `duration / 10`）。

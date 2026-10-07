@@ -104,6 +104,14 @@ namespace TapTap2026.Simulation
         /// </summary>
         private int _writeVersion;
 
+        /// <summary>
+        /// 高速模式监视器（<see cref="HighSpeedSession"/> 在 <c>Enter</c> 挂上、<c>Exit</c> 摘掉）：
+        /// 由 <see cref="Set"/> / <see cref="SetPhase"/> / <see cref="Swap"/> 在写完格子之后驱动，
+        /// 增量统计每种粒子的产生 / 死亡与每列地表高度。<c>null</c> = 未开启——写路径只多一次判空，
+        /// 关闭时的开销可忽略。监视器是**纯观察者**：零 RNG 消耗、零格子写入，挂 / 摘不改变推进结果。
+        /// </summary>
+        internal HighSpeedMonitor _monitor;
+
         /// <summary>使用全局注册表 <see cref="ParticleRegistry.Types"/> 创建世界。</summary>
         public ParticleWorld(int width, int height, uint seed)
             : this(width, height, seed, ParticleRegistry.Types)
@@ -514,6 +522,13 @@ namespace TapTap2026.Simulation
 
             // 逻辑帧混合扫描：两格的类型整体换位，_logicCells 位随之交换（两端各拿到对方的位）。
             SwapLogicCells(x0, y0, x1, y1);
+
+            // 高速模式监视器：搬运不是生灭——不计数，只把两端列的地表高度按交换后的真实内容拉回真值。
+            if (_monitor != null)
+            {
+                _monitor.OnSwap(x0, y0, x1, y1);
+            }
+
             return true;
         }
 
@@ -619,6 +634,12 @@ namespace TapTap2026.Simulation
 
             // 逻辑帧混合扫描：本格的新类型是否带 OnLogic 行为，决定它的 _logicCells 位。
             SetLogicCell(x, y, typeId);
+
+            // 高速模式监视器：新格刚写完（OnSpawn 之前）——old ≠ new 才计生灭，空气也计一条；顺带更新该列地表。
+            if (_monitor != null)
+            {
+                _monitor.OnCellReplaced(previousId, typeId, x, y);
+            }
 
             // 新物质继承该格原有热量：旧物质离场，但它的热视作就地留给了新物质（新生成的有机物
             // 不会被拍成 0°——例如夜里发芽的草继承暖空气的 Q，不会当帧冻死）。相变要带走自己的热时用 SetPhase。
@@ -761,6 +782,12 @@ namespace TapTap2026.Simulation
 
             // 逻辑帧混合扫描：相变后的新形态是否带 OnLogic 行为，决定它的 _logicCells 位。
             SetLogicCell(x, y, typeId);
+
+            // 高速模式监视器：新形态刚写完（OnSpawn 之前）——相变同样是一次「旧的灭、新的生」。
+            if (_monitor != null)
+            {
+                _monitor.OnCellReplaced(previousId, typeId, x, y);
+            }
 
             // Q 跟着物质走，不重置（这正是与 Set 的区别）。
             _heat.SetHeat(x, y, heat);

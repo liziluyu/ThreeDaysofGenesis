@@ -29,6 +29,10 @@ namespace TapTap2026.Game
         [Tooltip("每多少个运动帧上屏一次。1 = 每个运动帧后渲染一次（默认）。调大可让多个运动帧只渲染一次。")]
         [SerializeField, Min(1)] private int _stepsPerPresent = 1;
 
+        [Header("高速模式")]
+        [Tooltip("高速模式时长（逻辑帧）：进入后强制自适应倍速跑满这么多逻辑帧即自动暂停并显示产生/死亡结算。")]
+        [SerializeField, Min(1)] private int _highSpeedLogicFrames = 6000;
+
         [SerializeField] private int _seed = 123456789;
 
         [Header("随机刻")]
@@ -116,6 +120,12 @@ namespace TapTap2026.Game
         public int StepsPerPresent
         {
             get { return Mathf.Max(1, _stepsPerPresent); }
+        }
+
+        /// <summary>高速模式时长（逻辑帧）。跑满这么多逻辑帧即自动暂停并结算；手改 YAML 小于 1 时由 getter 兜底夹到 1。</summary>
+        public int HighSpeedLogicFrames
+        {
+            get { return Mathf.Max(1, _highSpeedLogicFrames); }
         }
 
         public uint Seed

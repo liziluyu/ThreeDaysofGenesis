@@ -153,6 +153,16 @@ namespace TapTap2026.Simulation
         /// </summary>
         private int _version;
 
+        /// <summary>
+        /// 全场湿度**总量**（<c>double</c> 增量维护、O(1) 读取）。任何一次写路径真正改动湿度值时按
+        /// 「新值 − 旧值」精确累加（<see cref="Set"/> / <see cref="Add"/> / <see cref="AddAt"/> /
+        /// <see cref="ResetAt"/>）；<see cref="Swap"/> 与 <see cref="Step"/> 都是**搬运**、总量不变，故不动它。
+        /// 用 <c>double</c> 而不是 <c>float</c> 是为了不让逐次求和的舍入误差累积。
+        /// 与 <see cref="Sum"/> 的分工：<see cref="Sum"/> 是 O(N) 的逐格真源（守恒断言用），
+        /// 它是 O(1) 的增量镜像——两者只差浮点 ulp 级漂移（见 docs「高速模式」的守恒核实结论）。
+        /// </summary>
+        private double _total;
+
         private float _diffusion = DefaultDiffusion;
         private float _horizontalBias = DefaultHorizontalBias;
         private float _riseBias = DefaultRiseBias;
@@ -231,6 +241,16 @@ namespace TapTap2026.Simulation
         internal int Version
         {
             get { return _version; }
+        }
+
+        /// <summary>
+        /// 全场湿度总量（O(1)）：与 <see cref="Set"/> / <see cref="Add"/> / <see cref="AddAt"/> /
+        /// <see cref="ResetAt"/> 的每次真值改动同步累加；<see cref="Swap"/> / <see cref="Step"/> 的搬运不改总量。
+        /// 供高速模式的「世界平均湿度」采样读，避免每逻辑帧 O(N) 求和。逐格真源仍是 <see cref="Sum"/>。
+        /// </summary>
+        internal double Total
+        {
+            get { return _total; }
         }
 
         /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
@@ -322,10 +342,12 @@ namespace TapTap2026.Simulation
             }
 
             int index = y * _width + x;
+            float previous = _humidity[index];
             float updated = Floor(value);
-            if (_humidity[index] != updated)
+            if (previous != updated)
             {
                 _humidity[index] = updated;
+                _total += (double)updated - previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -341,10 +363,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            float updated = Floor(_humidity[index] + delta);
-            if (_humidity[index] != updated)
+            float previous = _humidity[index];
+            float updated = Floor(previous + delta);
+            if (previous != updated)
             {
                 _humidity[index] = updated;
+                _total += (double)updated - previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -360,10 +384,12 @@ namespace TapTap2026.Simulation
             }
 
             int index = y * _width + x;
-            float updated = Floor(_humidity[index] + delta);
-            if (_humidity[index] != updated)
+            float previous = _humidity[index];
+            float updated = Floor(previous + delta);
+            if (previous != updated)
             {
                 _humidity[index] = updated;
+                _total += (double)updated - previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -371,7 +397,8 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        /// <summary>全场湿度总量（水守恒断言用）。</summary>
+        /// <summary>全场湿度总量，逐格扫一遍求和（水守恒断言用的 **O(N) 真源**）。高速模式的 O(1) 读数是
+        /// <see cref="Total"/>——两者是同一量的两种取法，只差浮点求和顺序带来的 ulp 级漂移。</summary>
         public float Sum()
         {
             float total = 0f;
@@ -826,9 +853,11 @@ namespace TapTap2026.Simulation
         /// 固/液不持有湿度，新物质也不含旧物质的水汽（相变路径用 <c>SetPhase</c> 显式搬运，不走这里）。</summary>
         internal void ResetAt(int index)
         {
-            if (_humidity[index] != 0f)
+            float previous = _humidity[index];
+            if (previous != 0f)
             {
                 _humidity[index] = 0f;
+                _total -= previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -837,6 +866,7 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="ParticleWorld.Swap"/> 交换两格时同步搬运湿度（湿度随风平移的机制）。</summary>
         internal void Swap(int a, int b)
         {
+            // 两格互换是搬运：总量不变，因此 <see cref="Total"/> 不用动。
             float swap = _humidity[a];
             if (swap == _humidity[b])
             {
