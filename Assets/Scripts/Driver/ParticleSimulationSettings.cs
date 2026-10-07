@@ -19,7 +19,8 @@ namespace TapTap2026.Game
                  "按运动帧速率取整折算：每 round(MotionRate / LogicRate) 个运动帧跑一次逻辑帧。")]
         [SerializeField, Min(1f)] private float _logicRate = 20f;
 
-        [Tooltip("倍速预算：每真实帧最多把多少比例的帧时间花在模拟 tick 上（0.5 = 一半）。" +
+        [Tooltip("倍速预算：每真实帧最多把多少比例的名义帧时间（1000 / 目标帧率，不限帧时按 60 兜底）" +
+                 "花在模拟 tick 上（0.5 = 一半）。这是绝对上限语义，不是本帧真实时间的比例。" +
                  "自适应档据此算「这帧还塞得下几个运动 tick」；手动档只把它当超预算丢账的门槛。")]
         [SerializeField, Range(0f, 1f)] private float _speedBudgetFraction = 0.5f;
 
@@ -104,7 +105,8 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>每真实帧允许花在模拟 tick 上的时间比例，夹在 <c>[0, 1]</c>。0 = 只保底 1 tick（极紧预算）。</summary>
+        /// <summary>每真实帧允许花在模拟 tick 上的名义帧时间比例（<c>1000 / 目标帧率</c>，不限帧按 60 兜底），
+        /// 夹在 <c>[0, 1]</c>。绝对上限语义。0 = 只保底 1 tick（极紧预算）。</summary>
         public float SpeedBudgetFraction
         {
             get { return Mathf.Clamp(_speedBudgetFraction, 0f, 1f); }

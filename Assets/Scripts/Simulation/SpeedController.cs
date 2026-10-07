@@ -17,7 +17,8 @@ namespace TapTap2026.Simulation
     /// 注意保底的是<b>上限</b>：<c>dt</c> 本身不足一个 tick 时该帧照旧 0 个 tick，与不含本控制器的固定累加器逐位一致。</description></item>
     /// <item><description><b>默认关闭</b>：初值手动 1×、自适应关。</description></item>
     /// </list>
-    /// <para>自适应档的调档**只在已平滑的「每 tick 耗时」EMA 上做**，且每
+    /// <para>自适应档的调档**只在已平滑的「每 tick 耗时」EMA 上做**（并把它按目标倍率折成一周期需求，
+    /// 详见 <c>UpdateAdaptive</c>），且每
     /// <see cref="DecisionIntervalFrames"/> 帧才评估一次（单帧成本噪声不进决策），再配以
     /// <see cref="UpWatermark"/>～<see cref="DownWatermark"/> 的死区与换向滞回，因此倍率不会跟着帧耗时抖动。</para>
     /// <para>暂停由调用方控制：暂停时不调用 <see cref="PlanMotionTicks"/>，欠账不涨、EMA 不更新；恢复后接着当前倍率跑。</para>
@@ -43,10 +44,6 @@ namespace TapTap2026.Simulation
         /// <summary>默认「实测倍率」显示 EMA 的平滑系数（新样本权重）。比 <see cref="EmaAlpha"/> 更钝，
         /// 因为它只喂 HUD，抖动越小越好。</summary>
         public const float DisplayEmaAlpha = 0.1f;
-
-        /// <summary>一个逻辑周期包含的运动 tick 数（20 Hz 逻辑 / 60 Hz 运动）：自适应档把「每 tick 成本」
-        /// 折成「一周期成本」再与预算比较。</summary>
-        public const int MotionTicksPerCycle = 3;
 
         /// <summary>默认升档水位线：一周期实测成本低于「预算 × 它」才升档。</summary>
         public const double UpWatermark = 0.75;
@@ -78,6 +75,10 @@ namespace TapTap2026.Simulation
         private bool _adaptive;
         private float _acc;
         private double _perTickMs;
+
+        /// <summary>一个逻辑周期包含的运动 tick 数：由驱动按 <c>round(MotionRate / LogicRate)</c> 每次注入。
+        /// 自适应档把「每 tick 成本」乘上它折成「一周期成本」再与预算比较。首帧注入前取 1。</summary>
+        private int _motionTicksPerCycle = 1;
 
         // 实测倍率 = _emaTicks / (_emaDt × _lastMotionRate)：分子分母分别 EMA 再相除，
         // 因此 dt 抖动 / tick 量化（0/1/2 tick 帧）都不会给比值引入偏差。
@@ -224,18 +225,23 @@ namespace TapTap2026.Simulation
         /// </summary>
         /// <remarks>
         /// tick 数是按 <c>1f / motionRate</c> 这个 <b>float</b> 步长从欠账里重复扣减出来的（而不是 double 的
-        /// <c>floor(欠账 × 速率)</c>）：这一步与迁移前驱动的固定累加器逐位同构，因此在默认手动 1× 且预算未截断时，
-        /// 每帧 tick 数序列与改动前完全相同。倍速只改「扣几次」，不改每次扣多少。
+        /// <c>floor(欠账 × 速率)</c>）：这一步与迁移前驱动的固定累加器逐位同构，因此在默认手动 1× **且预算未截断**
+        /// 时，每帧 tick 数序列与改动前完全相同（超预算时新语义是丢账，见第 4 步）。倍速只改「扣几次」，不改每次扣多少。
         /// </remarks>
         /// <param name="dtSeconds">本真实帧的真实时长（秒，非负；通常来自 <c>Time.deltaTime</c>）。</param>
         /// <param name="lastFrameSimMs">上一帧实际跑运动 tick 循环的耗时（毫秒）；本帧调它时传上一帧的值，
         /// 首帧传 0（无效样本，不更新 EMA、不触发降档）。</param>
-        /// <param name="budgetMs">本帧允许花在模拟 tick 上的时间预算（毫秒）：
-        /// <c>1000 / 目标帧率 × 预算比例</c>。自适应档按「一周期 = 1 逻辑 + 3 运动」折算，即与
-        /// <see cref="MotionTicksPerCycle"/> 相乘后比较。</param>
+        /// <param name="budgetMs">本帧允许花在模拟 tick 上的时间预算（毫秒）：<c>1000 / 目标帧率 × 预算比例</c>。
+        /// 目标帧率不限帧时按 60 兜底，因此这是**名义帧时间的绝对上限**（不随真实帧时间变化：高刷屏下它可能大于
+        /// 真实帧时间）。自适应档按「一周期 = 1 逻辑 + <paramref name="logicTicksPerMotionTick"/> 运动」折算，
+        /// 即乘上 <paramref name="logicTicksPerMotionTick"/> 后比较。</param>
         /// <param name="motionRate">运动 tick 速率（Hz，至少 1）。</param>
+        /// <param name="logicTicksPerMotionTick">每多少个运动 tick 跑一次逻辑 tick（驱动的
+        /// <c>round(MotionRate / LogicRate)</c>，至少 1）：自适应档据此把一个逻辑周期的运动成本
+        /// （<paramref name="logicTicksPerMotionTick"/> × 每 tick 成本）与预算比较。</param>
         /// <returns>本帧应跑的运动 tick 数（≥ 0；需求为正时至少 1——预算上限有 1 tick 保底）。</returns>
-        public int PlanMotionTicks(float dtSeconds, double lastFrameSimMs, double budgetMs, int motionRate)
+        public int PlanMotionTicks(
+            float dtSeconds, double lastFrameSimMs, double budgetMs, int motionRate, int logicTicksPerMotionTick)
         {
             // 1. 用上一帧的实测样本更新「每个运动 tick 耗时」的 EMA（无效样本跳过）。
             if (_lastPlannedTicks > 0 && lastFrameSimMs > 0.0)
@@ -246,6 +252,7 @@ namespace TapTap2026.Simulation
 
             int rate = motionRate < 1 ? 1 : motionRate;
             _lastMotionRate = rate;
+            _motionTicksPerCycle = logicTicksPerMotionTick < 1 ? 1 : logicTicksPerMotionTick;
 
             // 2. 自适应档调档：K 帧门控（单帧成本噪声不进决策）+ 平滑 EMA + 死区 + 滞回。
             if (_adaptive)
@@ -264,7 +271,8 @@ namespace TapTap2026.Simulation
             }
 
             // 3. 欠账 += dt × 倍率；再按与迁移前驱动**完全相同**的 float 步长重复扣减，
-            //    得到本帧应跑的运动 tick 数（默认 1× 且 dt × 1f == dt，因此逐帧与旧累加器逐位一致）。
+            //    得到本帧应跑的运动 tick 数（默认 1× 且 dt × 1f == dt、**且预算未截断**时，
+            //    逐帧 tick 数与旧固定累加器逐位一致；预算截断时的丢账语义见第 4 步）。
             float stepSeconds = 1f / rate;
 
             if (dtSeconds > 0f)
@@ -325,23 +333,38 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// AIMD：一周期（<see cref="MotionTicksPerCycle"/> 个运动 tick）的**平滑**实测成本低于
+        /// AIMD：一周期（<see cref="_motionTicksPerCycle"/> 个运动 tick）的**平滑**成本估计低于
         /// 「预算 × <see cref="UpWatermark"/>」→ 加性升一档；高于「预算 × <see cref="DownWatermark"/>」→ 乘性降一档；
         /// 落在死区里不动。换方向受 <see cref="_hysteresisFrames"/> 帧滞回约束，抑制振荡。
         /// </summary>
-        /// <param name="budgetPerCycle">一个逻辑周期的预算（毫秒）——与传给 <see cref="PlanMotionTicks"/> 的预算同值。</param>
-        private void UpdateAdaptive(double budgetPerCycle)
+        /// <remarks>
+        /// 成本估计按**目标倍率**折算，而不是只看已交付吞吐：倍率 S 下每真实帧需求 S 个运动 tick
+        /// （生产帧率与运动速率同为 60），预算只买得起 <c>budgetMs / perTick</c> 个，超出部分被 cap 丢弃、绝不结转。
+        /// 因此喂进比较的是 <c>perTick × min(S, 预算可买 tick 数) × 周期运动 tick 数</c>：
+        /// 一旦目标需求超过预算，估计值饱和到「预算 × 周期运动 tick 数」这一档、必跨降档水位线，
+        /// 自适应档不再被「已交付吞吐很便宜」的假象锁在最高档（旧实现固定算
+        /// <c>perTick × 周期运动 tick 数</c>，与目标倍率无关）。预算买得起 ≥ S 个 tick 时 min 不生效，估计值随
+        /// 目标倍率线性增长；S = 1 且预算买得起至少 1 个 tick 时与旧实现同值。
+        /// </remarks>
+        /// <param name="budgetMs">本帧预算（毫秒）——与传给 <see cref="PlanMotionTicks"/> 的预算同值。</param>
+        private void UpdateAdaptive(double budgetMs)
         {
             int direction = 0;
-            if (budgetPerCycle > 0.0)
+            if (budgetMs > 0.0)
             {
                 double perTick = _perTickMs > 0.0 ? _perTickMs : InitialPerTickMs;
-                double cycleCost = perTick * MotionTicksPerCycle;
-                if (cycleCost < _upWatermark * budgetPerCycle)
+
+                // 本帧预算买得起的运动 tick 数（与 PlanMotionTicks 的 cap 同源，只是不取整）。
+                double capTicks = budgetMs / perTick;
+
+                // 需求折进反馈：目标倍率 S 个 tick/帧，超预算时只能交付 cap 个——取 min 后成本估计会饱和。
+                double demandTicks = _speed < capTicks ? _speed : capTicks;
+                double cycleCost = perTick * _motionTicksPerCycle * demandTicks;
+                if (cycleCost < _upWatermark * budgetMs)
                 {
                     direction = 1;
                 }
-                else if (cycleCost > _downWatermark * budgetPerCycle)
+                else if (cycleCost > _downWatermark * budgetMs)
                 {
                     direction = -1;
                 }

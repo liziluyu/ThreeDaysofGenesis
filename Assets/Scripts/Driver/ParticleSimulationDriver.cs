@@ -293,14 +293,18 @@ namespace TapTap2026.Game
                 int stepsPerPresent = settings.StepsPerPresent;
                 int logicEvery = settings.LogicTicksPerMotionTick;
 
-                // 预算：本帧允许花在模拟 tick 上的时间 = 一帧的时间 × 预算比例。
-                // 目标帧率取 Application.targetFrameRate（<= 0 即不限帧时按 60 算）。
+                // 预算：本帧允许花在模拟 tick 上的时间**绝对上限** = 目标帧率对应的一帧时间 × 预算比例。
+                // 目标帧率取 Application.targetFrameRate（<= 0 即不限帧时按 60 算），因此基准是固定的名义帧时间，
+                // 不是本帧的真实 deltaTime：高刷屏（如 144 Hz）下 8.33ms 相当于真实帧时间的 120%，
+                // 掉帧时则只占真实帧时间的一小部分——这是有意的绝对上限语义。
                 int targetFrameRate = Application.targetFrameRate > 0 ? Application.targetFrameRate : 60;
                 double budgetMs = 1000.0 / targetFrameRate * settings.SpeedBudgetFraction;
 
                 // 倍速在这里落地：倍率只改变「本帧跑几个运动 tick」，每个 tick 内部逐位不变。
                 // 暂停（_simulate = false）时不调用：欠账不涨，恢复后接着当前倍率跑。
-                int ticks = _speed.PlanMotionTicks(Time.deltaTime, _lastFrameSimMs, budgetMs, motionRate);
+                // 把 logicEvery（= round(运动速率 / 逻辑速率)）一并注入：自适应档按它把一个逻辑周期的运动成本折算进预算比较。
+                int ticks = _speed.PlanMotionTicks(
+                    Time.deltaTime, _lastFrameSimMs, budgetMs, motionRate, logicEvery);
 
                 _frameStopwatch.Restart();
                 for (int i = 0; i < ticks; i++)
