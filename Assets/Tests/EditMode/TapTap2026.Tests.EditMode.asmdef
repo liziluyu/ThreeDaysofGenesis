@@ -3,6 +3,7 @@
     "rootNamespace": "TapTap2026.Tests",
     "references": [
         "TapTap2026.Simulation",
+        "TapTap2026.Game",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],
