@@ -260,7 +260,8 @@ namespace TapTap2026.Rendering
             // 整条渲染链（mesh / 材质 / 纹理）都是运行期生成的，四边形的 GameObject 同理：绝不能随场景落盘。
             // 否则在编辑器里调用过 Present（工具、测试、暂停中涂改）之后保存场景，就会把一个空壳
             // ParticleGridQuad 烘进 .unity 文件（它不被任何序列化字段引用，纯粹是垃圾）。
-            var quad = new GameObject("ParticleGridQuad") { hideFlags = HideFlags.DontSaveInEditor };
+            // 旗标与同链的 mesh / 材质 / 纹理一致：HideFlags.DontSave（= DontSaveInEditor | DontSaveInBuild）。
+            var quad = new GameObject("ParticleGridQuad") { hideFlags = HideFlags.DontSave };
             quad.transform.SetParent(transform, false);
 
             _meshFilter = quad.AddComponent<MeshFilter>();
