@@ -94,7 +94,7 @@ Unity 编辑器路径：`D:\Unity\2022.3.62f1\Editor\Unity.exe`（GUI 优先）�
 
 ## Testing & QA
 
-- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **219 个测试**（`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 10 + `LogicScanTests` 4 + `HeatSkipTests` 5）。
+- EditMode 程序集：`Assets/Tests/EditMode/TapTap2026.Tests.EditMode.asmdef`（引用 Simulation + TestRunner + NUnit，`includePlatforms: Editor`）。现有 **237 个测试**（`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 19 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 10 + `HeatSkipTests` 5 + `DialogueRunnerTests` 15）。
 - 约定：测试用**隔离类型表**（`new ParticleWorld(w, h, seed, types)` 四参构造 + 测试专用 `ParticleType[]`），不污染全局注册表；生产注册路径的测试（`RegisterAll` 回填）集中在 `SandStoneParticleTests` / `WeatherParticleTests` / `WetSoilParticleTests` / `AquaticParticleTests` / `FireParticleTests`（跨类型相变与 id 引用依赖 `ParticleIds` 回填，必须走生产表）。
 - **运行方式**（按可用性排序）：MCP `tests-run`（编辑器在线）→ Test Runner 窗口 → 批处理命令（编辑器离线）。
 - PlayMode：`testables` 未配置、`playModeTestRunnerEnabled: 0`，暂不支持。

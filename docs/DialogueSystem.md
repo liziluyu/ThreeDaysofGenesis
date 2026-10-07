@@ -128,7 +128,7 @@ public void CloseDialogue();                   // 强制关闭（跳过 onEnd）
 1. 场景里已有 `Dialogue Controller` 对象（挂 `DialogueController`），已接线 `_driver` / `_editor`。
 2. **首次使用 TMP**：`Window > TextMeshPro > Import TMP Essential Resources`。
 3. **中文字体**：把中文 TMP 字体资产拖到 **`DialogueDebugView`** 的 `Font` 字段（不接则中文显示成豆腐块 □；真实 UI 有自己的字体配置）。
-4. **角色图**：立绘放 `Assets/Resources/Characters/Portraits/`、头像放 `Assets/Resources/Characters/Avatars/`，文件名 = JSON 里 `characters[].portrait` / `.avatar` 的值（导入类型 **Sprite (Single)**）。缺图会自动用占位色块，不会报错。
+4. **角色图**：立绘放 `Assets/Resources/Characters/Portraits/`、头像放 `Assets/Resources/Characters/Avatars/`，**两个文件夹里用同一个文件名 = 角色 id**（= JSON 里 `characters[].id`，也就是 `lines[].speaker`）（导入类型 **Sprite (Single)**）。缺图会自动用占位色块，不会报错。
 5. 可选：把 `example_dialogue.json` 拖到 `Debug Dialogue`（或 `Dialogue File`），按 `T` 即可播示例。
 6. 其它脚本触发对话：`GetComponent<DialogueController>().StartDialogue("intro")`（或 `StartDialogue(textAsset)`）。
 
