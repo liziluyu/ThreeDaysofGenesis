@@ -137,6 +137,15 @@ namespace TapTap2026.Simulation
         /// 把这些格按半径 2 刷子并入候选位图，随后 <see cref="ClearDirty"/>。
         /// </summary>
         private byte[] _dirty;
+
+        /// <summary>
+        /// 紧凑脏索引列表：<see cref="_dirty"/> 里被置位的下标（去重、按首次置位顺序），前
+        /// <see cref="_dirtyCount"/> 项有效。消费方（<see cref="ParticleWorld.FlushTemperatureDirty"/>）只遍历它，
+        /// 不再 O(W·H) 全表扫描脏 byte 表；<see cref="ClearDirty"/> 也只清这 <see cref="_dirtyCount"/> 个字节而不是整张表。
+        /// 容量 = 格数（最坏情形一次传导可弄脏全网格）。登记方：<see cref="MarkDirty"/> 与 Burst 内核（传导路径）。
+        /// </summary>
+        private readonly int[] _dirtyIndices;
+        private int _dirtyCount;
         private bool _anyDirty;
         private float _conductivity = DefaultConductivity;
         private float _voidHeatLoss = DefaultVoidHeatLoss;
@@ -211,6 +220,7 @@ namespace TapTap2026.Simulation
             _heat = new float[width * height];
             _scratch = new float[width * height];
             _dirty = new byte[width * height];
+            _dirtyIndices = new int[width * height];
             _inverseCapacity = new float[width * height];
             _conductivityOf = new float[width * height];
             _emissivityOf = new float[width * height];
@@ -312,10 +322,23 @@ namespace TapTap2026.Simulation
         /// <b>只读契约</b>：外部只允许读——置位由 <see cref="SetHeat"/> / <see cref="AddHeat"/> / <see cref="SwapHeat"/> /
         /// <see cref="Step"/> 内部完成，消费后由世界调用 <see cref="ClearDirty"/>。用于运动休眠的热唤醒。
         /// 类型是 <c>byte[]</c> 而非 <c>bool[]</c>：Burst 内核直接以 <c>byte*</c> 置位（见 <see cref="Step"/>）。
+        /// 它只作 O(1) 隶属测试；消费方应遍历 <see cref="DirtyIndices"/> / <see cref="DirtyCount"/> 的紧凑列表。
         /// </summary>
         public byte[] Dirty
         {
             get { return _dirty; }
+        }
+
+        /// <summary>紧凑脏索引列表（前 <see cref="DirtyCount"/> 项有效）。消费方遍历它，不再全表扫描 <see cref="Dirty"/>。</summary>
+        internal int[] DirtyIndices
+        {
+            get { return _dirtyIndices; }
+        }
+
+        /// <summary><see cref="DirtyIndices"/> 的有效项数。</summary>
+        internal int DirtyCount
+        {
+            get { return _dirtyCount; }
         }
 
         /// <summary>是否任一格有未消费的热变化（<c>false</c> = 世界可跳过整趟脏格扫描）。</summary>
@@ -332,8 +355,8 @@ namespace TapTap2026.Simulation
         /// 先扫到的格 <c>OnLogic</c> 改了热量后，扫描序在其后的格**同帧**就能在新温度下做 <c>OnMotion</c>
         /// （火注热 250Q 直接越过浮力死区）；混合扫描若不即时唤醒这些格，就会晚一帧、逐位发散。
         /// 非扫描期（热 pass 之后的光照 / 降水 / 潜热等）回调是空操作，仍由帧末
-        /// <c>FlushTemperatureDirty</c> 的 chunk 粒度唤醒统一处理。<b>Burst 内核不经过本方法</b>
-        /// （传导路径直接写 <c>dirty[]</c>），因此这里可以安全地调托管委托。
+        /// <c>FlushTemperatureDirty</c> 的半径 2 唤醒球统一处理。<b>Burst 内核不经过本方法</b>
+        /// （传导路径直接写 <c>dirty[]</c> 并登记 <c>_dirtyIndices</c>），因此这里可以安全地调托管委托。
         /// </remarks>
         internal Action<int> DirtiedHook;
 
@@ -350,10 +373,10 @@ namespace TapTap2026.Simulation
         public bool FixpointSkipEnabled { get; set; } = true;
 
         /// <summary>
-        /// 世界格子的写入版本（<see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.SetPhase"/> /
-        /// <see cref="ParticleWorld.Swap"/> 各递增一次）。由 <see cref="ParticleWorld"/> 在每逻辑帧调
+        /// 世界格子的**类型布局**版本（<see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.SetPhase"/> 改类型时递增；
+        /// <see cref="ParticleWorld.Swap"/> 只在两端 typeId 不同时递增）。由 <see cref="ParticleWorld"/> 在每逻辑帧调
         /// <see cref="Step"/> 之前写入；热 pass 只用它判断「格子的类型/布局自上次以来有没有变」——
-        /// 类型一变，逐格热容 / σ / ε 与天空暴露判据都可能变，热 pass 必须重跑。
+        /// 类型一变，逐格热容 / σ / ε 与天空暴露判据都可能变，热 pass 必须重跑。Q 与湿度各有独立版本号。
         /// </summary>
         internal int CellsVersion { get; set; }
 
@@ -363,7 +386,8 @@ namespace TapTap2026.Simulation
             get { return _humidity == null ? 0 : _humidity.Version; }
         }
 
-        /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
+        /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。
+        /// 只清紧凑列表里的 <see cref="_dirtyCount"/> 个字节（O(脏格数)），不再整表清空。</summary>
         public void ClearDirty()
         {
             if (!_anyDirty)
@@ -371,7 +395,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            Array.Clear(_dirty, 0, _dirty.Length);
+            for (int i = 0; i < _dirtyCount; i++)
+            {
+                _dirty[_dirtyIndices[i]] = 0;
+            }
+
+            _dirtyCount = 0;
             _anyDirty = false;
         }
 
@@ -381,6 +410,7 @@ namespace TapTap2026.Simulation
             if (_dirty[index] == 0)
             {
                 _dirty[index] = 1;
+                _dirtyIndices[_dirtyCount++] = index;
                 _anyDirty = true;
             }
 
@@ -664,7 +694,7 @@ namespace TapTap2026.Simulation
             float[] nextArr = _scratch;
             float[] humidityArr = _humidity == null ? null : _humidity.RawBuffer;
             int hasHumidity = _humidity == null ? 0 : 1;
-            int anyDirty;
+            int changed;
 
             fixed (float* heat = heatArr)
             fixed (float* next = nextArr)
@@ -672,6 +702,8 @@ namespace TapTap2026.Simulation
             fixed (float* conductivityOf = _conductivityOf)
             fixed (float* emissivityOf = _emissivityOf)
             fixed (byte* dirty = _dirty)
+            fixed (int* dirtyIndices = _dirtyIndices)
+            fixed (int* dirtyCount = &_dirtyCount)
             fixed (Cell* cells = _cells)
             fixed (float* humidity = humidityArr)
             fixed (float* capacityByType = _capacityByType)
@@ -679,8 +711,8 @@ namespace TapTap2026.Simulation
             fixed (float* emissivityByType = _emissivityByType)
             fixed (byte* skyExposedByType = _skyExposedByType)
             {
-                anyDirty = HeatStepKernel(
-                    heat, next, inverseCapacity, conductivityOf, emissivityOf, dirty, _anyDirty ? 1 : 0,
+                changed = HeatStepKernel(
+                    heat, next, inverseCapacity, conductivityOf, emissivityOf, dirty, dirtyIndices, dirtyCount,
                     cells, humidity, hasHumidity,
                     capacityByType, conductivityByType, emissivityByType, skyExposedByType,
                     _types.Length, _width, _height,
@@ -691,10 +723,13 @@ namespace TapTap2026.Simulation
             // 双缓冲交换：本逻辑帧的读全部来自旧场，写全部落到新场，因此与扫描顺序无关。
             _heat = nextArr;
             _scratch = heatArr;
-            _anyDirty = anyDirty != 0;
+            // 保留此前由外部写入（光照 / 降水 / 潜热 / 扫描中 OnLogic）登记的脏格，本趟新弄脏的并入。
+            _anyDirty = _anyDirty || changed != 0;
 
-            // 记录本趟是否为恒等（无任何格变化 → 场已收敛，下一帧若输入未变即可整趟跳过）与输入指纹。
-            _lastStepWasIdentity = anyDirty == 0;
+            // 记录本趟是否为恒等（**本趟传导**无任一格 Q 变化 → 该场在当前输入下已到不动点）与输入指纹。
+            // 恒等只看本趟输出是否等于输入，与「输入方还有未消费的脏记录」无关——后者只影响唤醒集合、
+            // 不影响场是否收敛；把它 OR 进来会让每次注入后白跑一趟才重新进入跳过。
+            _lastStepWasIdentity = changed == 0;
             CacheFingerprint();
         }
 
@@ -710,7 +745,9 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// 热传导 / 散热内核（Burst 入口）。顺序调 <see cref="HeatStepParamsCell"/> 与 <see cref="HeatStepConductCell"/>，
         /// 只含指针与标量，逐格参数按 typeId 索引的扁平表取得。
-        /// 返回「本帧后是否有任何脏格」（入参 OR 本次置位），与 <see cref="Dirty"/> 的记账语义一致。
+        /// 返回「本趟**传导**是否有任一格 Q 变化」（不含入参脏记录），调用方据此判定不动点恒等；
+        /// 新弄脏的格同时把下标登记进 <paramref name="dirtyIndices"/>（<paramref name="dirtyCount"/> 递增），
+        /// 使消费方无需再全表扫描 <see cref="Dirty"/>。
         /// </summary>
         /// <remarks>
         /// 算术逐句照搬原 managed 实现（含双缓冲、四邻顺序、暴露面判据），因此 <c>FloatMode.Strict</c> 下
@@ -722,7 +759,7 @@ namespace TapTap2026.Simulation
         private static unsafe int HeatStepKernel(
             float* heat, float* next,
             float* inverseCapacity, float* conductivityOf, float* emissivityOf,
-            byte* dirty, int anyDirtyIn,
+            byte* dirty, int* dirtyIndices, int* dirtyCount,
             Cell* cells, float* humidity, int hasHumidity,
             float* capacityByType, float* conductivityByType, float* emissivityByType, byte* skyExposedByType,
             int typeCount, int width, int height,
@@ -741,7 +778,7 @@ namespace TapTap2026.Simulation
                     inverseCapacity, conductivityOf, emissivityOf);
             }
 
-            int dirtyAny = anyDirtyIn;
+            int anyChanged = 0;
             float halfScale = conductivity * 0.5f;
             int topRow = height - 1;
             for (int y = 0; y < height; y++)
@@ -752,15 +789,16 @@ namespace TapTap2026.Simulation
                 {
                     if (HeatStepConductCell(
                         row + x, x, y, width, height, topRowExposed, halfScale,
-                        heat, next, dirty, inverseCapacity, conductivityOf, emissivityOf,
+                        heat, next, dirty, dirtyIndices, dirtyCount,
+                        inverseCapacity, conductivityOf, emissivityOf,
                         cells, typeCount, skyExposedByType, radiativeLoss, voidLoss))
                     {
-                        dirtyAny = 1;
+                        anyChanged = 1;
                     }
                 }
             }
 
-            return dirtyAny;
+            return anyChanged;
         }
 
         /// <summary>
@@ -795,7 +833,7 @@ namespace TapTap2026.Simulation
         /// </summary>
         private static unsafe bool HeatStepConductCell(
             int i, int x, int y, int width, int height, bool topRowExposed, float halfScale,
-            float* heat, float* next, byte* dirty,
+            float* heat, float* next, byte* dirty, int* dirtyIndices, int* dirtyCount,
             float* inverseCapacity, float* conductivityOf, float* emissivityOf,
             Cell* cells, int typeCount, byte* skyExposedByType,
             float radiativeLoss, float voidLoss)
@@ -859,9 +897,15 @@ namespace TapTap2026.Simulation
 
             // 精确比较 Δ ≠ 0（无阈值）：本格 Q 变了就记脏，供世界的运动休眠热唤醒使用。
             // 均匀温场里 delta = 0，比较恒 false，因此不产生任何脏格、不拖慢稳态。
+            // 记脏同时登记紧凑索引（已脏过则不重复登记，与 <see cref="MarkDirty"/> 的隶属判据一致）。
             if (updated != heat[i])
             {
-                dirty[i] = 1;
+                if (dirty[i] == 0)
+                {
+                    dirty[i] = 1;
+                    dirtyIndices[(*dirtyCount)++] = i;
+                }
+
                 return true;
             }
 

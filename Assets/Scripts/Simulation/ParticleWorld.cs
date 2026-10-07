@@ -48,6 +48,24 @@ namespace TapTap2026.Simulation
         /// </summary>
         private const int HeatWakeRadius = 2;
 
+        /// <summary>
+        /// 热唤醒球按行的半宽表：Chebyshev 球 ⇒ 行偏移 <c>|dy| ≤ <see cref="HeatWakeRadius"/></c> 处半宽恒为
+        /// <see cref="HeatWakeRadius"/>（<c>HeatWakeHalf[dy + HeatWakeRadius]</c>）。与 <see cref="_wakeHalf"/>
+        /// 同形，供 <see cref="MarkOffsets"/> 逐行按对称 x 区间刷出整个 <c>(2R+1)²</c> 的方球。
+        /// </summary>
+        private static readonly sbyte[] HeatWakeHalf = BuildHeatWakeHalf();
+
+        private static sbyte[] BuildHeatWakeHalf()
+        {
+            var halfs = new sbyte[2 * HeatWakeRadius + 1];
+            for (int i = 0; i < halfs.Length; i++)
+            {
+                halfs[i] = (sbyte)HeatWakeRadius;
+            }
+
+            return halfs;
+        }
+
         /// <summary>四邻偏移（<see cref="EvacuateHumidity"/> 用；提成静态数组避免每次降雨都分配）。</summary>
         private static readonly int[] NeighbourX = { -1, 1, 0, 0 };
         private static readonly int[] NeighbourY = { 0, 0, -1, 1 };
@@ -98,9 +116,11 @@ namespace TapTap2026.Simulation
         private int _motionCellsEvaluatedLastStep;
 
         /// <summary>
-        /// 格子写入版本：<see cref="Set"/> / <see cref="SetPhase"/> / <see cref="Swap"/> 每次真正改动格子时自增。
-        /// 热图不动点跳过（<see cref="HeatMap.Step"/>）靠它判断「格子的类型 / 布局自上次热 pass 以来有没有变」，
-        /// 由 <see cref="StepLogic"/> 在调 <see cref="HeatMap.Step"/> 前写入 <see cref="HeatMap.CellsVersion"/>。
+        /// 格子**类型布局**版本：<see cref="Set"/> / <see cref="SetPhase"/> 每次改类型时自增；<see cref="Swap"/>
+        /// 只在两端 <c>typeId</c> 不同时自增（同型交换不改变任何一格的热输入，不必打断不动点跳过）。
+        /// 热图不动点跳过（<see cref="HeatMap.Step"/>）靠它判断「逐格热容 / σ / ε / 天空暴露自上次热 pass
+        /// 以来有没有变」，由 <see cref="StepLogic"/> 在调 <see cref="HeatMap.Step"/> 前写入
+        /// <see cref="HeatMap.CellsVersion"/>。Q 与湿度的变化**不**走这个版本号（各有独立版本）。
         /// </summary>
         private int _writeVersion;
 
@@ -496,7 +516,14 @@ namespace TapTap2026.Simulation
             _cells[a] = _cells[b];
             _cells[b] = swap;
             _heat.SwapHeat(a, b);
-            _writeVersion++;
+
+            // 热 pass 的逐格输入（热容 / σ / ε / 天空暴露）只由 typeId 决定；两端同型时交换不改变任何一格
+            // 的热输入，故不必打断热图的不动点跳过。Q 与湿度的变化各有自己的版本号（SwapHeat / HumidityField.Swap
+            // 只在两格值不等时才动版本，绝热直减走 AddHeat），因此这里只在 typeId 真的换位时才递增写入版本。
+            if (_cells[a].typeId != _cells[b].typeId)
+            {
+                _writeVersion++;
+            }
 
             // 湿度跟着物质走：云因此随风平移。固/液永远持有 0 湿度（不变量），
             // 所以水与气体换位时搬过去的是气体那侧的湿度，水不会把水汽带走。
@@ -1444,7 +1471,7 @@ namespace TapTap2026.Simulation
         /// 蒸发摊湿度改变热容 <c>C</c>、进而改变 <c>T = Q / C</c>，走的是同一条通道。</para>
         /// <para>唤醒盒即类型表反转阅读盒并集（生产表 87 格），⊇ 运动决策的温度读距（半径 2），是安全超集：
         /// 多唤醒几格不改变结果。非扫描期（场 pass、光照、降水等）由 <see cref="MarkCandidatesThisScan"/>
-        /// 自带的 <see cref="_motionScanActive"/> 门控变成空操作，那条后置路径仍由帧末 chunk 粒度唤醒处理。</para>
+        /// 自带的 <see cref="_motionScanActive"/> 门控变成空操作，那条后置路径仍由帧末半径 2 唤醒球处理。</para>
         /// </remarks>
         private void OnThermalCellDirtied(int index)
         {
@@ -1538,7 +1565,7 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            MarkOffsets(_candidates, x, y, -1, -1, -1, -1);
+            MarkOffsets(_candidates, _wakeHalf, _wakeMinDy, _wakeMaxDy, x, y, -1, -1, -1, -1);
         }
 
         /// <summary>
@@ -1558,22 +1585,22 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            MarkOffsets(_scanCandidates, x0, y0, x0, y0, x1, y1);
+            MarkOffsets(_scanCandidates, _wakeHalf, _wakeMinDy, _wakeMaxDy, x0, y0, x0, y0, x1, y1);
             if (x0 != x1 || y0 != y1)
             {
-                MarkOffsets(_scanCandidates, x1, y1, x0, y0, x1, y1);
+                MarkOffsets(_scanCandidates, _wakeHalf, _wakeMinDy, _wakeMaxDy, x1, y1, x0, y0, x1, y1);
             }
         }
 
-        /// <summary>把写入格 (x,y) 的唤醒集置入 <paramref name="bits"/>；两个 <paramref name="skip"/>
-        /// 坐标（写操作自己的写入格）不置位。</summary>
-        /// <remarks>按行（dy）扫、行内按 64 位字 OR——唤醒集是逐行的对称 x 区间，见 <see cref="_wakeHalf"/>。</remarks>
+        /// <summary>把 (x,y) 的唤醒集置入 <paramref name="bits"/>：按 <paramref name="halfs"/> 逐行刷对称 x 区间；
+        /// 两个 <paramref name="skip"/> 坐标（写操作自己的写入格）不置位。传 <c>-1</c> 作 skip 表示不排除任何格
+        /// （行内实际格坐标恒非负，<c>skipY == -1</c> 永不命中）。</summary>
+        /// <remarks>按行（dy）扫、行内按 64 位字 OR——唤醒集是逐行的对称 x 区间，见 <see cref="_wakeHalf"/>
+        /// （写入唤醒集）与 <see cref="HeatWakeHalf"/>（温度脏格的半径 2 球）。</remarks>
         private void MarkOffsets(
-            ulong[] bits, int x, int y, int skipX0, int skipY0, int skipX1, int skipY1)
+            ulong[] bits, sbyte[] halfs, int minDy, int maxDy,
+            int x, int y, int skipX0, int skipY0, int skipX1, int skipY1)
         {
-            sbyte[] halfs = _wakeHalf;
-            int minDy = _wakeMinDy;
-            int maxDy = _wakeMaxDy;
             if (maxDy < minDy)
             {
                 return;
@@ -1641,91 +1668,57 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 消费热图与湿度场的温度脏记录：Q 变化过的格（Δ ≠ 0）与湿度变化过的格（Δ ≠ 0，因
-        /// <c>T = Q / C</c> 且 C 含湿度项）都并入候选位图（chunk 粒度，见 <see cref="FlushDirty"/>），
+        /// <c>T = Q / C</c> 且 C 含湿度项）都并入候选位图（逐格半径 2 唤醒球，见 <see cref="FlushDirty"/>），
         /// 随后清空记录。由 <see cref="StepLogic"/> 每逻辑帧末尾调用一次。
         /// </summary>
         /// <remarks>
         /// 这是「温度变化 ⇒ 唤醒读温度的运动决策」的完整闭环：热图管传导 / 散热 / 光照 / 潜热，
         /// 湿度场管扩散与温度定向平流——后者不经任何写入就能改变空气格的热容，因此必须一并记账，
         /// 否则大气浮力 / 热压流可能在温度已变的情况下被休眠跳过。
+        /// 消费的是场维护的**紧凑脏索引列表**，只遍历真实脏格（不再 O(W·H) 扫整张脏 byte 表）。
         /// </remarks>
         private void FlushTemperatureDirty()
         {
             if (_heat.AnyDirty)
             {
-                FlushDirty(_heat.Dirty);
+                FlushDirty(_heat.DirtyIndices, _heat.DirtyCount);
                 _heat.ClearDirty();
             }
 
             if (_humidity.AnyDirty)
             {
-                FlushDirty(_humidity.Dirty);
+                FlushDirty(_humidity.DirtyIndices, _humidity.DirtyCount);
                 _humidity.ClearDirty();
             }
         }
 
         /// <summary>
-        /// 把一张脏格标记（<c>byte[]</c>，非 0 = 脏）并入候选位图：**每个脏格把它半径
-        /// <see cref="HeatWakeRadius"/> 唤醒球覆盖到的 chunk 整块置位**，而不是逐格刷 5×5 的球。
+        /// 把紧凑脏索引列表里的每个脏格，按 Chebyshev 半径 <see cref="HeatWakeRadius"/> 的唤醒球
+        /// **逐格**并入候选位图（不做 chunk 整块置位，也不做全表扫描）。
         /// </summary>
         /// <remarks>
-        /// 位级安全：旧实现把每个脏格周围 Chebyshev 半径 2 的球逐格置位；新实现把该球覆盖到的每个
-        /// chunk（16×16）**整块**置位——整块 ⊇ 球，因此候选集仍是「输入可能变化的格」的超集，
-        /// 而多求值一些输入未变的格不改变任何模拟结果（与 <see cref="MotionSleepEnabled"/> 的
-        /// 「超集即安全」同一依据）。收益来自密集脏区：一片连续脏格往往只落在少数 chunk 里，
-        /// 逐格 25 次置位被摊成「每 chunk 4 个字 OR、且整块已满即跳过」，稳态扫描成本大降。
+        /// 超集安全：唤醒球覆盖「运动决策读温度的最远距离」（<see cref="HeatWakeRadius"/> = 2，
+        /// 见 <see cref="ParticleRules.TryThermalDrift"/> 的 <c>x ± 2</c> 判据），因此候选集 ⊇ 真实依赖集；
+        /// 多唤醒几格不改变任何模拟结果（与 <see cref="MotionSleepEnabled"/> 的「超集即安全」同一依据）。
+        /// 旧实现把唤醒球覆盖到的整个 16×16 chunk 置位——那是本实现的真超集，但一次真实逻辑帧后会置位
+        /// 大半网格，令休眠扫描的「整 chunk 全 0」快路径失效；逐格刷球把候选集收敛回真实依赖的邻域。
         /// </remarks>
-        private void FlushDirty(byte[] dirty)
+        private void FlushDirty(int[] indices, int count)
         {
             if (!_motionSleepEnabled)
             {
                 return;
             }
 
-            int width = _width;
-            int chunkCols = _chunkCols;
-            int chunkRows = _chunkCount / chunkCols;
             ulong[] bits = _candidates;
-
-            for (int index = 0; index < dirty.Length; index++)
+            int width = _width;
+            for (int k = 0; k < count; k++)
             {
-                if (dirty[index] == 0)
-                {
-                    continue;
-                }
-
+                int index = indices[k];
                 int y = index / width;
-                int x = index - y * width;
-
-                // 唤醒球可能跨 chunk 边界（脏格离边界不足 HeatWakeRadius），故取其覆盖到的 chunk 区间。
-                int cx0 = (x - HeatWakeRadius) >> ChunkShift;
-                int cx1 = (x + HeatWakeRadius) >> ChunkShift;
-                int cy0 = (y - HeatWakeRadius) >> ChunkShift;
-                int cy1 = (y + HeatWakeRadius) >> ChunkShift;
-                if (cx0 < 0) cx0 = 0;
-                if (cy0 < 0) cy0 = 0;
-                if (cx1 >= chunkCols) cx1 = chunkCols - 1;
-                if (cy1 >= chunkRows) cy1 = chunkRows - 1;
-
-                for (int cy = cy0; cy <= cy1; cy++)
-                {
-                    int rowBase = (cy * chunkCols) << 2;
-                    for (int cx = cx0; cx <= cx1; cx++)
-                    {
-                        int word = rowBase + (cx << 2);
-                        // 整块已满（之前已并入过）就跳过，避免对同一 chunk 重复 OR。
-                        if (bits[word] == ulong.MaxValue && bits[word + 1] == ulong.MaxValue
-                            && bits[word + 2] == ulong.MaxValue && bits[word + 3] == ulong.MaxValue)
-                        {
-                            continue;
-                        }
-
-                        bits[word] = ulong.MaxValue;
-                        bits[word + 1] = ulong.MaxValue;
-                        bits[word + 2] = ulong.MaxValue;
-                        bits[word + 3] = ulong.MaxValue;
-                    }
-                }
+                MarkOffsets(
+                    bits, HeatWakeHalf, -HeatWakeRadius, HeatWakeRadius,
+                    index - y * width, y, -1, -1, -1, -1);
             }
         }
 
