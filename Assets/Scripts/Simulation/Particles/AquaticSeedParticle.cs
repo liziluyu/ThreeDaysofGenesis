@@ -2,38 +2,33 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // AquaticSeedParticle —— 水生态种子（固体粉末；沉到水底，被淹没且扎根于软底时发芽抽茎）
+    // AquaticSeedParticle —— 水生态种子（固体粉末；沉到水底，被淹没且扎根于软底时吸水发芽）
     //
     // flags 私有位：bit5-6 = 「被随机刻命中但无发芽条件」的连续计数（CellFlags.SeedStrikeMask /
     //        SeedStrikeShift，与草种子**共用**同一组位——一格在同一时刻只属于一个类型，互不冲突）。
     //        读用 SeedStrikeMask、清用 SeedStrikeClearMask、写用 | 组合，绝不整体赋值 flags（会破坏 bit0）。
-    // 邻居查询范围：正上方一格（是否被淹没）、正下方一格（是否扎根于软底）；运动为 StepSolid 的
-    //        「正下、左下/右下、斜滑反侧同一行」；发芽抽茎时沿同列向上扫描连续水柱。
-    // 交互的 ParticleIds：Water —— 抽茎的位移对象（把水顶上去，不销毁）；
-    //                     AquaticPlant —— 发芽后自身与其上方茎段变成它；
+    // 邻居查询范围：正上方一格（吸水对象 / 是否被淹没）、正下方一格（是否扎根于软底）；运动为 StepSolid 的
+    //        「正下、左下/右下、斜滑反侧同一行」。
+    // 交互的 ParticleIds：Water —— 发芽时被吸收的那格水（1:1，每格植物 ⇔ 一格水）；
+    //                     Atmosphere —— 被吸掉的水格变成它（随后被上方落下来的水补位）；
+    //                     AquaticPlant —— 发芽后自身变成它；
     //                     Humus —— 连续 3 次无发芽条件时霉烂成它；
     //                     Soil / WetSoil / HumusSoil / Sand —— 软底扎根判据（具体类型反应）
     //
     // 行为：
     //   运动（OnMotion，运动帧 60 Hz）：受重力的固体粉末，走 ParticleRules.StepSolid（摩擦/粘性 0.5），
     //       沉穿水体、落到水底基质上即静止。
-    //   生长（OnRandomTick，随机刻）：命中时先判**正上方是液体**（被淹没）**且正下方是软底**——满足才发芽：
-    //       摇出高度 height ∈ [MinGrowthHeight, MaxGrowthHeight]，自身 SetPhase 成水生植物（原为基质格，
-    //       不涉及水），再自下而上向上抽茎 height 格。
-    //       **抽茎是位移式的（不销毁水）**：目标格必须是 Water，把**连续水柱顶端之上**的气体/空格 Set 成水
-    //       （水位上升一格），再把目标格 SetPhase 成植物——水总量因此严格守恒（水只是被顶上去）。
-    //       遇非液体（固体 / 气体）或水柱封顶找不到接收格即停，保留已抽出的部分。
+    //   发芽（OnRandomTick，随机刻）：命中时先判「**正上方是水**（被淹没）**且正下方是软底**」——满足才发芽：
+    //       **头顶那格水被吸收**（SetPhase 成大气；上方的水下一个运动帧就会落下来补位），
+    //       自身 SetPhase 成 1 格水生植物。**发芽只产生一格植物**——长高由植物自己的随机刻逐格驱动
+    //       （见 AquaticPlantParticle），不再是旧版的一次性位移式抽茎。
+    //       水账：发芽消耗一格水、之后每格茎消耗一格水、植物死亡每格归还一格水——严格 1:1 对称，
+    //       不需要任何持水标记 / 计数器。
     //   霉烂：无发芽条件时累计一次「空转」命中（计数存本格 flags bit5-6）；连续
     //       MaxStrikesBeforeHumus（3）次都无发芽条件就 SetPhase 成腐殖质，且**不消耗随机数**。
     //   随机刻默认关闭（world.RandomTicksPerStep = 0），生产值由 ParticleSimulationSettings 注入。
     public sealed class AquaticSeedParticle : IParticleType
     {
-        /// <summary>发芽时抽茎的最小高度（格）。</summary>
-        public const int MinGrowthHeight = 1;
-
-        /// <summary>发芽时抽茎的最大高度（格）。</summary>
-        public const int MaxGrowthHeight = 3;
-
         /// <summary>连续多少次「无发芽条件」的随机刻命中后霉烂成腐殖质。</summary>
         public const int MaxStrikesBeforeHumus = 3;
 
@@ -46,7 +41,7 @@ namespace TapTap2026.Simulation
         };
 
         public ParticleTypeInfo Info => new ParticleTypeInfo(
-            tags: ParticleTags.Solid | ParticleTags.Organic,
+            tags: ParticleTags.Solid,
             density: 1.5f,
             heatCapacity: 0.80f,
             thermalConductivity: 0.60f,
@@ -75,7 +70,7 @@ namespace TapTap2026.Simulation
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 先判断（后摇骰）：正上方被液体淹没、正下方扎根于软底才发芽；否则累计空转、不消耗随机数。
+            // 先判断（后摇骰）：正上方是水（被淹没）、正下方扎根于软底才发芽；否则累计空转、不消耗随机数。
             if (!CanGerminate(world, x, y))
             {
                 int strikes = ReadStrikes(world, x, y) + 1;
@@ -90,38 +85,29 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            int height = MinGrowthHeight + world.NextInt(MaxGrowthHeight - MinGrowthHeight + 1);
-
-            // 自身：同一份物质换形态（原为水底基质格，不涉及水），热量随物质留在原格。
+            // 发芽：头顶那格水被吸收（SetPhase 成大气；上方的水下一个运动帧就会落下来补位），
+            // 自身变成 1 格植物。顺序无关紧要，两步都是原子相变。
+            world.SetPhase(x, y + 1, ParticleIds.Atmosphere);
             world.SetPhase(x, y, ParticleIds.AquaticPlant);
-
-            // 自下而上抽茎：每格重新确认水柱顶端，遇非液体 / 封顶即停并保留已抽出的部分。
-            for (int step = 1; step <= height; step++)
-            {
-                if (!GrowOneCell(world, x, y + step))
-                {
-                    break;
-                }
-            }
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)
         {
-            // shade 已由 ParticleWorld.Set 按本类型调色板抽样，无需额外初始化。
+            // shade 已由 ParticleWorld.Set/SetPhase 按本类型调色板抽样，无需额外初始化。
         }
 
         public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
         {
-            // 被覆盖时无残留效果。
+            // 被覆盖时无残留效果（不带 Organic 标签：不走 20% 腐殖质衰变；种子的腐殖质只来自霉烂）。
         }
 
         /// <summary>
-        /// 发芽条件：正上方是液体（被淹没，保证发芽后第一个植物格沉水）+ 正下方是软底（扎根）。
+        /// 发芽条件：正上方是水（被淹没，也是发芽要吸收的那格水）+ 正下方是软底（扎根）。
         /// 越界由 <see cref="ParticleWorld.GetCell"/> 返回空气，天然不满足。
         /// </summary>
         private static bool CanGerminate(ParticleWorld world, int x, int y)
         {
-            if (!ParticleRules.HasTag(world, x, y + 1, ParticleTags.Liquid))
+            if (world.GetCell(x, y + 1).typeId != ParticleIds.Water)
             {
                 return false;
             }
@@ -131,36 +117,6 @@ namespace TapTap2026.Simulation
                 || belowId == ParticleIds.WetSoil
                 || belowId == ParticleIds.HumusSoil
                 || belowId == ParticleIds.Sand;
-        }
-
-        /// <summary>
-        /// 位移式抽茎一格：目标 (x,targetY) 必须是 <see cref="ParticleIds.Water"/>；把该列**连续水柱顶端之上**
-        /// 的气体/空格 <see cref="ParticleWorld.Set"/> 成水（水位上升一格），再把目标格 SetPhase 成植物。
-        /// 水只是被顶上去、不销毁，因此水总量不变。找不到接收格（水柱封顶 / 顶到网格顶）时返回 false。
-        /// </summary>
-        private static bool GrowOneCell(ParticleWorld world, int x, int targetY)
-        {
-            if (!world.IsInBounds(x, targetY) || world.GetCell(x, targetY).typeId != ParticleIds.Water)
-            {
-                return false;
-            }
-
-            // 向上找连续水柱的顶端（用 typeId 判 Water，不用 IsGasOrEmpty）。
-            int top = targetY;
-            while (world.IsInBounds(x, top + 1) && world.GetCell(x, top + 1).typeId == ParticleIds.Water)
-            {
-                top++;
-            }
-
-            int receiverY = top + 1;
-            if (!world.IsInBounds(x, receiverY) || !ParticleRules.IsGasOrEmpty(world, x, receiverY))
-            {
-                return false; // 水柱封顶或顶到网格顶：无处安放被顶上去的水，停止生长。
-            }
-
-            world.Set(x, receiverY, ParticleIds.Water);
-            world.SetPhase(x, targetY, ParticleIds.AquaticPlant);
-            return true;
         }
 
         /// <summary>读本格的「空转」计数（<see cref="CellFlags.SeedStrikeMask"/>）。</summary>

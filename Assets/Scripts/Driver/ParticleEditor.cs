@@ -61,6 +61,12 @@ namespace TapTap2026.Game
         [Tooltip("平移速度（格/秒）。<= 0 关闭平移（相机仍会被夹回沙箱内）。")]
         [SerializeField] private float _panSpeed = 30f;
 
+        /// <summary>
+        /// 为 true 时本组件**完全不响应输入**（暂停 / 高速模式热键 / 切类型 / 画笔全部跳过）——
+        /// 对话系统激活时置 true，避免"下一句"键（Space / 左键）同时触发暂停或画出粒子。
+        /// </summary>
+        public bool SuppressInput { get; set; }
+
         [Header("投放白名单")]
         [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
                  "草、湿土、腐殖质、腐殖土、水生植物只能由模拟产生，默认已列入。")]
@@ -154,6 +160,11 @@ namespace TapTap2026.Game
 
         private void Update()
         {
+            if (SuppressInput)
+            {
+                return;
+            }
+
             if (_placeable.Length == 0 || _driver == null || _renderer == null)
             {
                 return;
