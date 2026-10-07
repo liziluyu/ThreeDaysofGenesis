@@ -71,6 +71,23 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="SeedStrikeMask"/> 在 <c>flags</c> 里的右移位数。</summary>
         public const int SeedStrikeShift = 5;
 
+        /// <summary>
+        /// bit3-5：**草私有**（<see cref="GrassParticle"/>）——年龄的**逻辑帧余数**（0..<c>TicksPerShadeStep − 1</c>）。
+        /// 草的年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + 本余数：`shade` 存高档
+        /// （它同时就是**颜色档**——渲染只读 `shade` 查表，所以「越老越黄绿」天然成立），余数存低档。
+        /// 两段拼起来才够数到 <c>LifespanTicks</c>（1200 &gt; 255），且不引入新的 per-cell 字段（`Cell` 仍 4 字节）。
+        /// 与 <see cref="DriftDirectionMask"/> / <see cref="SeedStrikeMask"/> 同一写法：读取用本掩码、
+        /// 清除用 <see cref="GrassAgeRemainderClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（保留 bit0）。
+        /// <see cref="GrassParticle"/> 在文件头部登记了该占用。
+        /// </summary>
+        public const byte GrassAgeRemainderMask = 0x38;
+
+        /// <summary><see cref="GrassAgeRemainderMask"/> 的清除掩码（<c>~0x38 &amp; 0xFF</c>）。</summary>
+        public const byte GrassAgeRemainderClearMask = 0xC7;
+
+        /// <summary><see cref="GrassAgeRemainderMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int GrassAgeRemainderShift = 3;
+
         /// <summary>风向记忆：无（尚未漂移，或记忆已被浮力等非水平运动清除）。</summary>
         public const byte DriftDirectionNone = 0;
 
