@@ -452,9 +452,12 @@ MonoBehaviour:
   - HumusParticle
   - HumusSoilParticle
   - AquaticPlantParticle
+  - TreeTrunkParticle
+  - TreeLeafParticle
   _singlePlacementTypes:
   - GrassSeedParticle
   - AquaticSeedParticle
+  - TreeSeedParticle
   _placeableGasTypes:
   - FireParticle
 --- !u!114 &1926363754

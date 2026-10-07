@@ -81,7 +81,7 @@ public struct Cell
 | bit2 | `Forced` | 通用（类型无关） | 受外部作用力 / 被推动 |
 | bit3-7 | 类型私有 | 各类型自行定义 | 必须在**该类型文件头部注释**里登记占用位 |
 
-已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）。
+已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）、**树木三件套（种子 / 树干 / 树叶）** bit3-5（`CellFlags.TreeSpeciesMask`，物种编号 0..4；三种树木类型共用）与 bit6-7（`CellFlags.TreeStageMask`＝树干生长阶段 0..2；`CellFlags.TreeSeedStrikeMask`＝树木种子的空转计数 0..3——同一组位按「一格一类型」互斥）。
 
 规则：
 
@@ -1216,6 +1216,7 @@ Assets/Scripts/
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
     MotionReadBox.cs                          类型的运动阅读盒 (X, Up, Down)：OnMotion 对 _cells 的轴对齐读距，世界求反转并集作为运动休眠的写入唤醒集
+    TreeSpecies.cs                           树木物种静态表（五物种 杨/橡/松/柏/柳 = flags bit3-5 编号，只能追加）：H 树干高 / N 生长分母 / D 发芽分母 / 基质档（Drought 任意三土；Moist 三土且八邻有湿土；Wet 正下方必须湿土）/ 树冠有序偏移表（数组顺序＝生长顺序；**表自支撑**——除首项外每项与树干列或更早项 Chebyshev 相邻，生长守卫据此防浮空叶）/ 支撑半径 / 色片色数；含物种位读写 helper `Read` / `Stamp`（Stamp 在 Set/SetPhase 之后调用：重写 bit3-5 并把世界已抽样的 shade 折进本物种色片，零额外随机流；编辑器与粒子共用）
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
     SpeedController.cs                        倍速控制器（纯 C#，不引用 UnityEngine）：手动档 ×2/÷2 调档（[1,16]，也可由 `_speedMax` 封顶）+ 自适应档 AIMD（平滑「每 tick 耗时」EMA + 0.75/0.95 双水位线死区 + 每 10 帧一次评估的门控 + 滞回），每真实帧给出「本帧跑几个运动 tick」；超预算丢账不追账、预算上限保底 1 tick；另导出实测倍率 `EffectiveSpeed`（分子分母分别 EMA 再相除，稳态 1× 归一）供 HUD 显示
     Particles/
@@ -1232,13 +1233,16 @@ Assets/Scripts/
       AquaticSeedParticle.cs                  水生态种子（固体粉末，摩擦 / 粘性 0.5；flags bit5-6 与草种子共用 = 无发芽条件计数。随机刻命中且「正上方是液体 + 正下方是软底」时发芽成水生植物，自下而上**位移式抽茎** 1-3 格——把连续水柱顶端之上的气体格 Set 成水、目标格变植物，水只是被顶上去、不销毁；连续 3 次无发芽条件则变成腐殖质。不可在右键循环，但可单颗投放）
       AquaticPlantParticle.cs                 水生植物（固体 + Organic，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**随机刻**里按顺序：① 正上方是固体（非同类）时被压死、死亡向下清整段（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙}（或同株下段）时失去扎根、死亡向上清整段；③ 八邻无液体时脱水、单格死；④ 温度 > 50 或 < 0 死；⑤ 10% 概率在半径 2 格圆盘内把第一个「非持水基质 {沙/干土/腐殖土}、正上方是液体、正下方是软底」的格 SetPhase 成水生态种子。不可在编辑器中选择）
       FireParticle.cs                         火（气体，第一个粒子级热源；v2 角色模型——每逻辑帧按八邻重判**附着火 / 游离火**。附着火定在原地：接触点燃邻接的草（八邻固定序，1/20 每逻辑帧；有草且不贴淬熄物时不摇熄灭骰）、**本格火温 ≥ 60° 才**烤干邻接湿土并按湿土→干土热容差 **−1.2T** 结算潜热（水汽走湿度场守恒）、格温 < 400 注热 250（烤热贴着的沙/石）、正上方是气体且 T ≥ 200 时 1/10 抛射火舌；游离火不注热，在 OnLogic 末尾按 (x,y,Tick) 哈希上升/摇曳（50% 正上、25% 左上、25% 右上，被挡不下降；OnMotion 留空）。熄灭每帧恰一骰、档位互斥：正下方石头/沙/液体压顶立灭 > 贴液体 1/5 > 贴石头/沙/湿土 1/20（干土与腐殖类不参与淬熄）> 游离火 T<40 立灭 > 游离火 1/8 > 附着无燃料 1/120。shade 是温度分档派生量（≥300 亮黄…<40 暗红，+哈希 ±1，不消耗随机流）。投放资格 CanPlaceAt：不覆盖实体、需锚点不浮空（投放锚点含火链——圆刷贴地可铺满整团火；物理附着不含火）；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质。显式行为：火无法停留在石头/沙/水面上）
+      TreeSeedParticle.cs                     树木种子（固体粉末，摩擦 / 粘性 0.5，运动 = StepSolid；flags bit3-5 = 物种、bit6-7 = 空转计数。**随机刻**命中且「正上方非固非液 + 正下方按物种基质档（松/柏耐旱＝任意三土；杨/橡喜湿＝三土且八邻有湿土；柳最喜水＝正下方必须湿土）」时按 **1/D 概率**发芽成树干（D=2..4，比草种子的命中即发慢）：先判后摇、掷骰未中不计打击原地等待；3 次无发芽条件霉烂成腐殖质、空转不消耗随机数。可单颗投放，Shift+滚轮切换物种）
+      TreeTrunkParticle.cs                    树干（固体 + Organic，非 IsStatic、OnMotion 空；flags bit3-5 = 物种、bit6-7 = 生长阶段 0 爬升 / 1 造冠 / 2 成熟。**每逻辑帧**：① 温度 > 50 死（低温致死取 0，同水生植物——环境温可低到 0）；② 失去扎根（下格非三土 / 树干）→ 本格与上方整段连续树干级联 Clear；③ 顶格生长——阶段 0 按物种 H 向上爬升（先查后掷 1/N），阶段 1 按有序偏移表取「第一个未填充且当前可放」项 Set 成树叶（可放＝界内 + 非固液 + 八邻已有树格防浮空；被挡项跳过不卡死、腾空后补长；全表填满转成熟，此后零随机流消耗）。不可手刷）
+      TreeLeafParticle.cs                     树叶（固体 + Organic，非 IsStatic，OnMotion / OnLogic 空体；flags bit3-5 = 物种。**随机刻**三种死法：① 温度 > 50（低温致死取 0）；② 正上方是固体且非树叶（**液体不压**——树叶可泡水里，与草的有意不同）；③ 本物种支撑半径（Chebyshev 环由内向外扫描、命中即返回）内无树干——整树倒下后逐个枯落。三种死法都走 Clear，按世界 20% 有机衰变留腐殖质。不可手刷）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 取昼夜天空色、粒子与云按 1 → 夜晚亮度变暗；昼夜参数由 ParticleLightDriver 推送）
   Driver/
     ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、倍速预算 `_speedBudgetFraction`（0.5）与倍率上限 `_speedMax`（16）、热力学系数、随机刻格数
     ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度；每真实帧跑几个运动帧由 `SpeedController` 决定（暴露 `Speed` 属性，只做 Stopwatch 测量与转发）；`_simulate`（关 = 暂停全部帧），暴露 `Pause()` / `Resume()` / `Paused`（无输入判断）
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
-    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、`=`/`-` 手动调倍速（×2/÷2，[1,16]）、`Tab` 开关自适应倍速、鼠标旁显示当前类型、左上角读数末尾追加 `×N` / `×N auto`（实测吞吐缺口 ≥5% 时再追加 `(实 ×M)`）；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却 / Gas 可手刷例外）
+    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土/树干/树叶不可手刷）、滚轮调半径 1..10、**Shift+滚轮**循环切换树木物种（HUD 在选中树木种子时显示物种名）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、`=`/`-` 手动调倍速（×2/÷2，[1,16]）、`Tab` 开关自适应倍速、鼠标旁显示当前类型、左上角读数末尾追加 `×N` / `×N auto`（实测吞吐缺口 ≥5% 时再追加 `(实 ×M)`）；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却〔草种子/水生态种子/树木种子〕 / Gas 可手刷例外）
     ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度 / 云层消光接到 world.Light，并把昼夜天空色与夜晚亮度推给 ParticleRenderer
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
@@ -1263,7 +1267,7 @@ Assets/Tests/EditMode/
   SpeedControllerTests.cs                    倍速控制器（纯 C#，不依赖 Unity 时钟）：手动档 tick 数随倍率精确缩放且忽略耗时反馈（含 [1,16] 钳位）/ 自适应档便宜帧加性升到 16（每 K=10 帧一次评估）、昂贵帧乘性 16→1 只花 4 次评估 / 逐帧成本噪声不再驱动换向（回归）/ 超预算丢账（cap、丢账计数、下一帧不雪球）与预算为 0 时的 1 tick 保底 / 滞回把成块便宜·昂贵交替的方向反转次数压到低于无滞回对照 / 默认手动 1× 与迁移前固定累加器在 600 帧抖动序列上逐帧 tick 数一致 / 实测倍率：16× 撞紧预算时 `EffectiveSpeed` 收敛到被 cap 的 4×（不是目标 16）、预算充裕时收敛到目标 4×、稳态 1× 精确归一（含 dt 抖动，≈1±0.02）
 ```
 
-测试总数 **219**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 10 + `HeatSkipTests` 5。
+测试总数 **248**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 16 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 10 + `HeatSkipTests` 5 + `TreeParticleTests` 29。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。
 
