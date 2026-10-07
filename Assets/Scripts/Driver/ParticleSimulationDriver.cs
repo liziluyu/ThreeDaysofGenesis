@@ -17,7 +17,8 @@ namespace TapTap2026.Game
     /// 个运动帧跑一次 <see cref="ParticleWorld.StepLogic"/>，其余只跑 <see cref="ParticleWorld.StepMotion"/>。</para>
     /// <para>沙箱尺寸：默认取 <see cref="ParticleSimulationSettings"/> 的宽高，本组件的「沙箱尺寸」字段非 0 时覆盖之。
     /// 运行中改尺寸（Inspector 或 <see cref="Resize"/>）会重建一个空世界，已有内容不保留。</para>
-    /// <para>倍速：每真实帧跑几个运动帧由 <see cref="SpeedController"/> 决定（手动档 + 自适应档，默认手动 1×）。
+    /// <para>倍速：每真实帧跑几个运动帧由 <see cref="SpeedController"/> 决定（普通编辑模式恒 1×，
+    /// 只有高速模式会改档——进入钉满档、退出钉回 1×）。
     /// 本类只负责测量本帧 tick 循环耗时并回喂、以及转发倍率；输入与展示在 <see cref="ParticleEditor"/>。
     /// 倍速只改每帧的 tick 数，tick 内部逐位不变；超预算的部分直接丢弃、绝不结转。</para>
     /// <para>高速模式：状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯 C#、纯观察者——零 RNG 消耗、零格子写入）。
@@ -63,7 +64,8 @@ namespace TapTap2026.Game
             get { return _world; }
         }
 
-        /// <summary>倍速控制器（手动档 + 自适应档）。输入与展示在 <see cref="ParticleEditor"/>，本类只测量与转发。</summary>
+        /// <summary>倍速控制器（本类只测量耗时并转发倍率）。输入与展示在 <see cref="ParticleEditor"/>，
+        /// 档位只由 <see cref="HighSpeedSession"/> 改变——普通编辑模式恒 1×。</summary>
         public SpeedController Speed
         {
             get { return _speed; }
@@ -94,7 +96,7 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>进入高速模式：转发给内核会话（强制自适应倍速并记下旧档位，退出时恢复）。幂等，已在模式中则无事发生。
+        /// <summary>进入高速模式：转发给内核会话（把倍速钉到控制器满档，退出时钉回 1×）。幂等，已在模式中则无事发生。
         /// 本方法只做转发——输入与显示在 <see cref="ParticleEditor"/>。</summary>
         public void EnterHighSpeed()
         {

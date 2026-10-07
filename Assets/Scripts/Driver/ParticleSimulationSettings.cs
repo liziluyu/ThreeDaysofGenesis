@@ -24,14 +24,14 @@ namespace TapTap2026.Game
                  "自适应档据此算「这帧还塞得下几个运动 tick」；手动档只把它当超预算丢账的门槛。")]
         [SerializeField, Range(0f, 1f)] private float _speedBudgetFraction = 0.5f;
 
-        [Tooltip("倍速上限（下限恒为 1×）：手动档 ×2 调档到顶、自适应档加性升到此为止。1 = 禁用倍速。")]
+        [Tooltip("倍速上限（下限恒为 1×）：高速模式进入即钉到此档。1 = 禁用倍速。")]
         [SerializeField, Min(1f)] private float _speedMax = SpeedController.MaxSpeed;
 
         [Tooltip("每多少个运动帧上屏一次。1 = 每个运动帧后渲染一次（默认）。调大可让多个运动帧只渲染一次。")]
         [SerializeField, Min(1)] private int _stepsPerPresent = 1;
 
         [Header("高速模式")]
-        [Tooltip("高速模式时长（逻辑帧）：进入后强制自适应倍速跑满这么多逻辑帧即自动暂停并显示产生/死亡结算。")]
+        [Tooltip("高速模式时长（逻辑帧）：进入后把倍速钉到满档（_speedMax）跑满这么多逻辑帧即自动暂停并显示产生/死亡结算。")]
         [SerializeField, Min(1)] private int _highSpeedLogicFrames = 6000;
 
         [SerializeField] private int _seed = 123456789;

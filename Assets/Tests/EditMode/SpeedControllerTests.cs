@@ -271,7 +271,7 @@ namespace TapTap2026.Tests
 
         /// <summary>
         /// 实测倍率：手动 16× 撞上紧预算时，<see cref="SpeedController.EffectiveSpeed"/> 收敛到被 cap 卡住的真实吞吐，
-        /// 而不是目标 16——HUD 的「实 ×M」就是靠它说真话。
+        /// 而不是目标 16——高速模式左下角 HUD 报的正是它（目标档恒为满档，只有实测说真话）。
         /// </summary>
         [Test]
         public void EffectiveSpeedReportsCappedThroughputNotTarget()

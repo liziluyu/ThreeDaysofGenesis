@@ -99,9 +99,6 @@ namespace TapTap2026.Game
         /// <summary>「单颗投放」白名单类型的投放冷却（秒）。</summary>
         public const float SinglePlacementCooldownSeconds = 0.5f;
 
-        /// <summary>倍速读数里「实测倍率」括号的显示阈值：实测与目标的相对差小于它就不显示（稳态下免噪音）。</summary>
-        public const float EffectiveSpeedDisplayThreshold = 0.05f;
-
         /// <summary>当前笔刷半径（格）。</summary>
         public int BrushRadius
         {
@@ -320,7 +317,7 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>确认结算：退出内核会话（恢复进入前的倍速档位），清掉结算缓存并解除编辑锁定。
+        /// <summary>确认结算：退出内核会话（把倍速钉回 1×），清掉结算缓存并解除编辑锁定。
         /// **保持暂停**——恢复推进由玩家自己按空格决定。</summary>
         private void ConfirmHighSpeedExit(HighSpeedSession session)
         {
@@ -607,8 +604,9 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 左上角读数的倍速后缀：手动档 <c>×N</c>、自适应档 <c>×N auto</c>；目标倍率与实测吞吐（<see cref="SpeedController.EffectiveSpeed"/>）
-        /// 相差 ≥5% 时再追加 <c>(实 ×M)</c>——稳态下不显示这个括号，免得读数抖。
+        /// 左上角读数的倍速后缀：普通编辑模式恒 <c>×1</c>、高速模式恒 <c>×16</c>（档位只由
+        /// <see cref="HighSpeedSession"/> 改变，见文件头）。要的只是「当前按几倍跑」这个事实——
+        /// 实测吞吐在高速模式左下角 HUD 里报（那时目标档没有信息量，见 <see cref="DescribeHighSpeed"/>）。
         /// </summary>
         private string DescribeSpeed()
         {
@@ -618,21 +616,7 @@ namespace TapTap2026.Game
                 return "×1";
             }
 
-            float target = speed.Speed;
-            string text = "×" + target.ToString("0.##", CultureInfo.InvariantCulture);
-            if (speed.Adaptive)
-            {
-                text += " auto";
-            }
-
-            float effective = speed.EffectiveSpeed;
-            // effectiv <= 0 = 还没有过有效样本（例如一直暂停），不猜一个假数字出来。
-            if (effective > 0f && Mathf.Abs(effective - target) >= target * EffectiveSpeedDisplayThreshold)
-            {
-                text += " (实 ×" + effective.ToString("0.##", CultureInfo.InvariantCulture) + ")";
-            }
-
-            return text;
+            return "×" + speed.Speed.ToString("0.##", CultureInfo.InvariantCulture);
         }
 
         /// <summary>
