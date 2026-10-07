@@ -11,6 +11,8 @@ namespace TapTap2026.Game
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
     /// **右键**在可投放类型间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
+    /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
+    /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
     /// **`=` / `-`** 手动调倍速（×2 / ÷2，夹在 [1,16]，切回手动档）；**Tab** 开关自适应倍速（开启时从当前倍率起步）；
     /// **H** 进入**高速模式**（强制自适应倍速、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
     /// **Enter 或 H** 确认退出——退出后仍保持暂停，由玩家自己按空格继续）；
@@ -25,7 +27,7 @@ namespace TapTap2026.Game
     /// 因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
     /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者），本类只管输入与显示：
     /// <see cref="ParticleSimulationDriver.HighSpeedActive"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
-    /// 右键切换 / 滚轮调半径 / 左键投放与 <c>=</c>/<c>-</c>/<c>Tab</c>，只留下空格暂停与只读读数。</para>
+    /// 右键切换 / 滚轮调半径 / 左键投放与 <c>=</c>/<c>-</c>/<c>Tab</c>，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleEditor : MonoBehaviour
@@ -47,6 +49,16 @@ namespace TapTap2026.Game
 
         [Tooltip("高速模式热键：不在模式中时按它进入；结算完成后按它（或 Enter）确认退出。设为 None 关闭热键。")]
         [SerializeField] private KeyCode _highSpeedKey = KeyCode.H;
+
+        [Header("相机平移")]
+        [Tooltip("左移热键（按住持续左移）：默认 左方向键 + A。列表留空 / 全设 None 即关闭左移。")]
+        [SerializeField] private KeyCode[] _panLeftKeys = { KeyCode.LeftArrow, KeyCode.A };
+
+        [Tooltip("右移热键（按住持续右移）：默认 右方向键 + D。列表留空 / 全设 None 即关闭右移。")]
+        [SerializeField] private KeyCode[] _panRightKeys = { KeyCode.RightArrow, KeyCode.D };
+
+        [Tooltip("平移速度（格/秒）。<= 0 关闭平移（相机仍会被夹回沙箱内）。")]
+        [SerializeField] private float _panSpeed = 30f;
 
         [Header("投放白名单")]
         [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
@@ -173,6 +185,10 @@ namespace TapTap2026.Game
                 }
             }
 
+            // 相机平移：只动相机、不碰世界，所以放在高速模式的锁编辑拦截**之前**——
+            // 高速模式锁的是编辑，观看视角（平移 + 光标读数）跟着解锁一起禁用没有意义。
+            UpdateCameraPan(world);
+
             // 高速模式锁编辑：在这里**统一拦截**——右键盘切换、滚轮调半径、左键投放/擦除与倍速档（=`/`-`/Tab`）
             // 一概跳过，只保留上面的空格暂停与下面只读的光标读数。不是每个输入分支各加一个判断。
             if (_driver.HighSpeedActive)
@@ -237,6 +253,49 @@ namespace TapTap2026.Game
                     _driver.PresentNow();
                 }
             }
+        }
+
+        /// <summary>
+        /// 相机左右平移：按住 <see cref="_panLeftKeys"/> / <see cref="_panRightKeys"/> 里的任一键（默认左方向键 + A、
+        /// 右方向键 + D），按 <see cref="_panSpeed"/> 格/秒把相机沿沙箱水平方向推，同时按住两个方向即抵消（不动）。
+        /// 相机位置的写入与「视口不许越出沙箱左右边界」的夹取都在渲染器（<see cref="ParticleRenderer.PanCamera"/>），
+        /// 本方法只管按键 → 格数：只动相机、不碰 <c>Cell[]</c>，因此不参与确定性、也不受暂停影响。
+        /// </summary>
+        private void UpdateCameraPan(ParticleWorld world)
+        {
+            float direction = 0f;
+            if (IsAnyKeyHeld(_panLeftKeys))
+            {
+                direction -= 1f;
+            }
+
+            if (IsAnyKeyHeld(_panRightKeys))
+            {
+                direction += 1f;
+            }
+
+            // 无输入时也调一次（delta = 0）：Game 视图宽高比变化会让原本界内的相机落到沙箱外，靠这次夹取拉回来。
+            // Time.deltaTime 是真实帧时间——暂停（驱动不推进模拟）不冻结它，因此暂停中也能平移观看。
+            _renderer.PanCamera(world, direction * Mathf.Max(0f, _panSpeed) * Time.deltaTime);
+        }
+
+        /// <summary>数组里是否有键被按住；<paramref name="keys"/> 为 null / 空（或元素是 <see cref="KeyCode.None"/>）即无键。</summary>
+        private static bool IsAnyKeyHeld(KeyCode[] keys)
+        {
+            if (keys == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                if (keys[i] != KeyCode.None && Input.GetKey(keys[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
