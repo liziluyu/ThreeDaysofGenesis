@@ -202,10 +202,8 @@ namespace TapTap2026.Tests
         /// （不降水 ⇒ 整帧没有任何 Set / Swap），只靠一步湿度输送制造 Δ湿度。
         /// </summary>
         /// <remarks>
-        /// 世界取 32×32（跨 2×2 个 chunk），这样「唤醒范围远小于全网格」这条性能守卫仍有意义：
-        /// 温度脏格按 **chunk 粒度**并入候选位图（整块 16×16 ⊇ 半径 2 唤醒球，超集语义安全），
-        /// 故只有 (6,6) 所在的 chunk 被唤醒，而不是整张网格。若世界只跨单个 chunk，chunk 粒度唤醒
-        /// 必然等于全网格，那时的正确断言只有「目标格被唤醒并求值」（<c>Greater(..., 0)</c>）。
+        /// 世界取 32×32。温度脏格按**逐格 Chebyshev 半径 2 唤醒球**并入候选位图（球覆盖运动决策的
+        /// 温度读距，候选集 ⊇ 真实依赖集，超集语义安全），因此只有变化格周围的球被唤醒，而不是整张网格。
         /// </remarks>
         [Test]
         public void MotionSleep_WakesCellsWhoseHumidityChanged()
@@ -238,7 +236,7 @@ namespace TapTap2026.Tests
             world.StepMotion();
 
             Assert.Greater(world.MotionCellsEvaluatedLastStep, 0, "湿度变化必须唤醒读温度的运动决策");
-            Assert.Less(world.MotionCellsEvaluatedLastStep, world.CellCount, "只该唤醒变化格所在的 chunk，而不是整张网格");
+            Assert.Less(world.MotionCellsEvaluatedLastStep, world.CellCount, "只该唤醒变化格周围的半径 2 球，而不是整张网格");
         }
 
         /// <summary>受热浅水池 + 石壁 + 沙 / 土 / 水生植物：既有运动写入、也有热变化，用于透明性对照。</summary>

@@ -33,10 +33,14 @@ namespace TapTap2026.Simulation
     //      40–80→4，<40→5 暗红）+ (x,y,Tick) 哈希 ±1 抖动后 clamp [0,5]。shade 是温度的**派生量**
     //      （不再由 Set 抽样 / 独立随机游走）：附着火底部恒亮，游离火越升越暗，视觉与热学同源。
     //      哈希不消耗世界随机流。
-    //   ② 放热：**仅附着火**且本格温度 < PeakTemperature 时注入 FireHeatPerTick。游离火不注入——
+    //   ② 八邻单趟扫描（只读，不摇骰）：**一趟**同时解析附着物（固 / 液的一格，火不算——火柱不互相支撑）、
+    //      燃料（第一格草）、干化目标（第一格湿土）、淬熄触发（液体一档、石头 / 沙 / 湿土一档）。
+    //      附着判定原先是一趟独立的 HasAttachment 扫描，与本扫描同源同序，合并后每邻只查一次标签表
+    //      （旧实现每邻查两遍，最坏情形白跑近半格成本）。
+    //   ③ 放热：**仅附着火**且本格温度 < PeakTemperature 时注入 FireHeatPerTick。游离火不注入——
     //      离焰即离热源，配合 ① 自然得到「顶尖暗红消散」。热由世界每逻辑帧自动做四邻传导扩散
-    //      （火绝不自己做传导）。
-    //   ③ 八邻扫描（只读，不摇骰）：燃料 / 干化目标 / 淬熄触发（液体一档、石头 / 沙 / 湿土一档）。
+    //      （火绝不自己做传导）。注热必然发生在 ④⑤⑥⑦ 之前：本格新热当帧即经 HeatMap.MarkDirty
+    //      回调进入候选位图（同帧可见性契约，见 LogicScanTests），注入后的温度又是 ⑥ 抛射门的门槛。
     //   ④ 干化（先于熄灭骰）：贴湿土且**本格火温 ≥ WetSoilParticle.DryingTemperature（60）**才允许烤干
     //      （冷火不烤干）；水汽先确认摊得出去（IsAirSaturated / SpreadUnitIntoAir 两道门），摊不出去
     //      则原样保留（守恒优先）。烤干按**湿土→干土的热容差** 1.2 结算潜热，不是水↔大气的 5.5。
@@ -194,19 +198,10 @@ namespace TapTap2026.Simulation
 
             world.At(x, y).shade = (byte)shade;
 
-            // ② 放热：先判角色——八邻有固 / 液（**火不算附着物**）即附着火；仅附着火注入热量，
-            //    游离火不注入（离焰即离热源）。注入后的温度记入 postHeatTemperature 供 ⑤⑥ 的门槛使用；
-            //    ④ 的干化门故意用**注入前**的 temperature——否则附着火恒 ≥250，温度门永不阻断（FB3 死代码）。
-            bool attached = HasAttachment(world, x, y);
-            float postHeatTemperature = temperature;
-            if (attached && temperature < PeakTemperature)
-            {
-                world.Heat.AddHeat(x, y, FireHeatPerTick);
-                postHeatTemperature = world.Heat.GetTemperature(x, y);
-            }
-
-            // ③ 八邻扫描（只读，不摇骰）：燃料 / 干化目标 / 淬熄触发。附着物已由 ② 的 HasAttachment 解析
-            //    （同一八邻、同序；火是气体，天然不被 Solid/Liquid 判据命中）。
+            // ② 八邻单趟扫描（只读，不摇骰）：一趟同时解析附着物、燃料、干化目标、淬熄触发——附着判定
+            //    与 ③ 同源同序，旧实现各查一遍标签表，合并后每邻只查一次（最坏情形省近半格成本）。
+            //    扫描只读类型 / 标签，注热只改本格 Q，两者互不观测，故本趟先于 ③ 注热、逐位等价。
+            bool attached = false;
             bool hasFuel = false;
             int fuelX = 0;
             int fuelY = 0;
@@ -219,7 +214,15 @@ namespace TapTap2026.Simulation
             {
                 int nx = x + NeighbourX[i];
                 int ny = y + NeighbourY[i];
+                ParticleTags tags = ParticleRules.TagsAt(world, nx, ny);
                 ushort id = world.GetCell(nx, ny).typeId;
+
+                // 附着物：固 / 液的一格（**火不算**——火是气体，天然不被 Solid/Liquid 判据命中，
+                // 所以火柱不会互相支撑）。
+                if (!attached && (tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0)
+                {
+                    attached = true;
+                }
 
                 if (!hasFuel && id == ParticleIds.Grass)
                 {
@@ -235,7 +238,7 @@ namespace TapTap2026.Simulation
                 }
 
                 // 淬熄触发拆两档：液体一档（优先），石头 / 沙 / 湿土一档。
-                if (!hasLiquidQuench && (ParticleRules.TagsAt(world, nx, ny) & ParticleTags.Liquid) != 0)
+                if (!hasLiquidQuench && (tags & ParticleTags.Liquid) != 0)
                 {
                     hasLiquidQuench = true;
                 }
@@ -244,6 +247,16 @@ namespace TapTap2026.Simulation
                 {
                     hasSolidQuench = true;
                 }
+            }
+
+            // ③ 放热：仅附着火且本格温度 < 软上限时注入 FireHeatPerTick（游离火不注入，离焰即离热源）。
+            //    注入后的温度记入 postHeatTemperature 供 ⑥ 的门槛使用；④ 的干化门故意用**注入前**的
+            //    temperature——否则附着火恒 ≥250，温度门永不阻断（FB3 死代码）。
+            float postHeatTemperature = temperature;
+            if (attached && temperature < PeakTemperature)
+            {
+                world.Heat.AddHeat(x, y, FireHeatPerTick);
+                postHeatTemperature = world.Heat.GetTemperature(x, y);
             }
 
             // ④ 干化（先于熄灭骰）：贴湿土且本格火温（**注入前**）≥ DryingTemperature 才烤干——
@@ -353,7 +366,7 @@ namespace TapTap2026.Simulation
         /// ② 八邻内必须有**锚点**：固 / 液的一格，**或另一格火**。投放层允许火链——圆刷按「低行先落」
         ///    的顺序逐格判定，贴地时底圈先锚到地面 / 实体、上面的格子再连锁锚到已落下的火，
         ///    因此能一次刷出整团火；完全悬空时底圈一格都锚不上、后续无火可锚，一格都放不下。
-        ///    （注意：**物理燃烧的附着物不含火**——见 <see cref="HasAttachment"/>，刷出的无支撑火
+        ///    （注意：**物理燃烧的附着物不含火**——见文件头 ② 的附着判定，刷出的无支撑火
         ///    仍会上升、摇曳并按 1/8 熄灭。）越界返回 false。
         /// 注意这是**投放**规则、不是生成规则：点燃草与火的自然蔓延不受它约束。
         /// </summary>
@@ -374,24 +387,6 @@ namespace TapTap2026.Simulation
                 }
 
                 if (ParticleRules.HasTag(world, nx, ny, ParticleTags.Solid | ParticleTags.Liquid))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        /// <summary>(x,y) 八邻内是否有**附着物**：带 <see cref="ParticleTags.Solid"/> 或
-        /// <see cref="ParticleTags.Liquid"/> 标签的一格。**火焰不算附着物**（火是气体，
-        /// 天然不被 Solid/Liquid 判据命中）——所以火柱不会互相支撑。是 v2 角色模型（附着火 / 游离火）
-        /// 的判据，每逻辑帧重判、无持久状态（见文件头）。</summary>
-        private static bool HasAttachment(ParticleWorld world, int x, int y)
-        {
-            for (int i = 0; i < NeighbourX.Length; i++)
-            {
-                if (ParticleRules.HasTag(
-                        world, x + NeighbourX[i], y + NeighbourY[i], ParticleTags.Solid | ParticleTags.Liquid))
                 {
                     return true;
                 }

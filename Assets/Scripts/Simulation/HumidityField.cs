@@ -142,6 +142,15 @@ namespace TapTap2026.Simulation
         /// 所以湿度变了温度就变了。世界在 <see cref="ParticleWorld.StepLogic"/> 末尾消费并清空。
         /// </summary>
         private readonly byte[] _dirty;
+
+        /// <summary>
+        /// 紧凑脏索引列表：<see cref="_dirty"/> 里被置位的下标（去重、按首次置位顺序），前
+        /// <see cref="_dirtyCount"/> 项有效。消费方（<see cref="ParticleWorld.FlushTemperatureDirty"/>）只遍历它，
+        /// 不再 O(W·H) 全表扫描脏 byte 表；<see cref="ClearDirty"/> 也只清这 <see cref="_dirtyCount"/> 个字节。
+        /// 容量 = 格数。登记方：<see cref="MarkDirty"/> 与 Burst 内核（输送路径）。
+        /// </summary>
+        private readonly int[] _dirtyIndices;
+        private int _dirtyCount;
         private bool _anyDirty;
 
         /// <summary>
@@ -152,6 +161,16 @@ namespace TapTap2026.Simulation
         /// 所以湿度一变，温度场就变、热传导的输出也会变，必须重跑。
         /// </summary>
         private int _version;
+
+        /// <summary>
+        /// 全场湿度**总量**（<c>double</c> 增量维护、O(1) 读取）。任何一次写路径真正改动湿度值时按
+        /// 「新值 − 旧值」精确累加（<see cref="Set"/> / <see cref="Add"/> / <see cref="AddAt"/> /
+        /// <see cref="ResetAt"/>）；<see cref="Swap"/> 与 <see cref="Step"/> 都是**搬运**、总量不变，故不动它。
+        /// 用 <c>double</c> 而不是 <c>float</c> 是为了不让逐次求和的舍入误差累积。
+        /// 与 <see cref="Sum"/> 的分工：<see cref="Sum"/> 是 O(N) 的逐格真源（守恒断言用），
+        /// 它是 O(1) 的增量镜像——两者只差浮点 ulp 级漂移（见 docs「高速模式」的守恒核实结论）。
+        /// </summary>
+        private double _total;
 
         private float _diffusion = DefaultDiffusion;
         private float _horizontalBias = DefaultHorizontalBias;
@@ -176,6 +195,7 @@ namespace TapTap2026.Simulation
             _height = height;
             _humidity = new float[width * height];
             _dirty = new byte[width * height];
+            _dirtyIndices = new int[width * height];
         }
 
         /// <summary>场宽（格数），与世界网格一致。</summary>
@@ -201,10 +221,23 @@ namespace TapTap2026.Simulation
         /// <b>只读契约</b>：置位由场内部完成，消费后由世界调用 <see cref="ClearDirty"/>。
         /// 用于运动休眠的温度唤醒（湿度改变热容 ⇒ 改变温度）。类型是 <c>byte[]</c> 而非 <c>bool[]</c>：
         /// Burst 内核直接以 <c>byte*</c> 置位（见 <see cref="Step"/>）。
+        /// 它只作 O(1) 隶属测试；消费方应遍历 <see cref="DirtyIndices"/> / <see cref="DirtyCount"/> 的紧凑列表。
         /// </summary>
         public byte[] Dirty
         {
             get { return _dirty; }
+        }
+
+        /// <summary>紧凑脏索引列表（前 <see cref="DirtyCount"/> 项有效）。消费方遍历它，不再全表扫描 <see cref="Dirty"/>。</summary>
+        internal int[] DirtyIndices
+        {
+            get { return _dirtyIndices; }
+        }
+
+        /// <summary><see cref="DirtyIndices"/> 的有效项数。</summary>
+        internal int DirtyCount
+        {
+            get { return _dirtyCount; }
         }
 
         /// <summary>是否任一格有未消费的湿度变化（<c>false</c> = 世界可跳过整趟脏格扫描）。</summary>
@@ -219,7 +252,7 @@ namespace TapTap2026.Simulation
         /// <remarks>
         /// <see cref="ParticleWorld"/> 用它把**逻辑帧扫描进行中**的湿度变化同帧并入候选位图——湿度改变热容
         /// <c>C</c>，因而改变温度 <c>T = Q / C</c>，与热变化是同一条「温度输入变了」的通道。非扫描期
-        /// （湿度输送 pass）回调是空操作，仍由帧末 <c>FlushTemperatureDirty</c> 的 chunk 粒度唤醒处理。
+        /// （湿度输送 pass）回调是空操作，仍由帧末 <c>FlushTemperatureDirty</c> 的半径 2 唤醒球统一处理。
         /// </remarks>
         internal Action<int> DirtiedHook;
 
@@ -233,7 +266,18 @@ namespace TapTap2026.Simulation
             get { return _version; }
         }
 
-        /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。</summary>
+        /// <summary>
+        /// 全场湿度总量（O(1)）：与 <see cref="Set"/> / <see cref="Add"/> / <see cref="AddAt"/> /
+        /// <see cref="ResetAt"/> 的每次真值改动同步累加；<see cref="Swap"/> / <see cref="Step"/> 的搬运不改总量。
+        /// 供高速模式的「世界平均湿度」采样读，避免每逻辑帧 O(N) 求和。逐格真源仍是 <see cref="Sum"/>。
+        /// </summary>
+        internal double Total
+        {
+            get { return _total; }
+        }
+
+        /// <summary>清空脏格标记。由世界在把脏格并入候选位图之后调用；无脏格时是空操作。
+        /// 只清紧凑列表里的 <see cref="_dirtyCount"/> 个字节（O(脏格数)），不再整表清空。</summary>
         public void ClearDirty()
         {
             if (!_anyDirty)
@@ -241,7 +285,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            Array.Clear(_dirty, 0, _dirty.Length);
+            for (int i = 0; i < _dirtyCount; i++)
+            {
+                _dirty[_dirtyIndices[i]] = 0;
+            }
+
+            _dirtyCount = 0;
             _anyDirty = false;
         }
 
@@ -251,6 +300,7 @@ namespace TapTap2026.Simulation
             if (_dirty[index] == 0)
             {
                 _dirty[index] = 1;
+                _dirtyIndices[_dirtyCount++] = index;
                 _anyDirty = true;
             }
 
@@ -322,10 +372,12 @@ namespace TapTap2026.Simulation
             }
 
             int index = y * _width + x;
+            float previous = _humidity[index];
             float updated = Floor(value);
-            if (_humidity[index] != updated)
+            if (previous != updated)
             {
                 _humidity[index] = updated;
+                _total += (double)updated - previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -341,10 +393,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            float updated = Floor(_humidity[index] + delta);
-            if (_humidity[index] != updated)
+            float previous = _humidity[index];
+            float updated = Floor(previous + delta);
+            if (previous != updated)
             {
                 _humidity[index] = updated;
+                _total += (double)updated - previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -360,10 +414,12 @@ namespace TapTap2026.Simulation
             }
 
             int index = y * _width + x;
-            float updated = Floor(_humidity[index] + delta);
-            if (_humidity[index] != updated)
+            float previous = _humidity[index];
+            float updated = Floor(previous + delta);
+            if (previous != updated)
             {
                 _humidity[index] = updated;
+                _total += (double)updated - previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -371,7 +427,8 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        /// <summary>全场湿度总量（水守恒断言用）。</summary>
+        /// <summary>全场湿度总量，逐格扫一遍求和（水守恒断言用的 **O(N) 真源**）。高速模式的 O(1) 读数是
+        /// <see cref="Total"/>——两者是同一量的两种取法，只差浮点求和顺序带来的 ulp 级漂移。</summary>
         public float Sum()
         {
             float total = 0f;
@@ -632,9 +689,12 @@ namespace TapTap2026.Simulation
             fixed (float* capacityPtr = capacityByType)
             fixed (byte* moistAirPtr = moistAirByType)
             fixed (byte* dirty = _dirty)
+            fixed (int* dirtyIndices = _dirtyIndices)
+            fixed (int* dirtyCount = &_dirtyCount)
             {
                 anyDirty = HumidityStepKernel(
                     humidity, nextPtr, budgetPtr, heatPtr, cells, capacityPtr, moistAirPtr, dirty,
+                    dirtyIndices, dirtyCount,
                     typeCount, width, height, diffusion, horizontalBias, riseBias,
                     HeatMap.AirHeatCapacity, HeatMap.HumidityHeatCapacity, InverseRiseTemperature, RiseStopHumidity,
                     _anyDirty ? 1 : 0, reversed);
@@ -666,6 +726,7 @@ namespace TapTap2026.Simulation
         private static unsafe int HumidityStepKernel(
             float* humidity, float* next, float* budget,
             float* heat, Cell* cells, float* capacityByType, byte* moistAirByType, byte* dirty,
+            int* dirtyIndices, int* dirtyCount,
             int typeCount, int width, int height,
             float diffusion, float horizontalBias, float riseBias,
             float airCapacity, float humidityHeatCapacity,
@@ -747,7 +808,12 @@ namespace TapTap2026.Simulation
                 {
                     if (next[i] != humidity[i])
                     {
-                        dirty[i] = 1;
+                        if (dirty[i] == 0)
+                        {
+                            dirty[i] = 1;
+                            dirtyIndices[(*dirtyCount)++] = i;
+                        }
+
                         dirtyAny = 1;
                     }
                 }
@@ -826,9 +892,11 @@ namespace TapTap2026.Simulation
         /// 固/液不持有湿度，新物质也不含旧物质的水汽（相变路径用 <c>SetPhase</c> 显式搬运，不走这里）。</summary>
         internal void ResetAt(int index)
         {
-            if (_humidity[index] != 0f)
+            float previous = _humidity[index];
+            if (previous != 0f)
             {
                 _humidity[index] = 0f;
+                _total -= previous;
                 MarkDirty(index);
                 _version++;
             }
@@ -837,6 +905,7 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="ParticleWorld.Swap"/> 交换两格时同步搬运湿度（湿度随风平移的机制）。</summary>
         internal void Swap(int a, int b)
         {
+            // 两格互换是搬运：总量不变，因此 <see cref="Total"/> 不用动。
             float swap = _humidity[a];
             if (swap == _humidity[b])
             {

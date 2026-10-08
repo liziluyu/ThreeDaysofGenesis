@@ -17,9 +17,14 @@ namespace TapTap2026.Game
     /// 个运动帧跑一次 <see cref="ParticleWorld.StepLogic"/>，其余只跑 <see cref="ParticleWorld.StepMotion"/>。</para>
     /// <para>沙箱尺寸：默认取 <see cref="ParticleSimulationSettings"/> 的宽高，本组件的「沙箱尺寸」字段非 0 时覆盖之。
     /// 运行中改尺寸（Inspector 或 <see cref="Resize"/>）会重建一个空世界，已有内容不保留。</para>
-    /// <para>倍速：每真实帧跑几个运动帧由 <see cref="SpeedController"/> 决定（手动档 + 自适应档，默认手动 1×）。
+    /// <para>倍速：每真实帧跑几个运动帧由 <see cref="SpeedController"/> 决定（普通编辑模式恒 1×，
+    /// 只有高速模式会改档——进入钉满档、退出钉回 1×）。
     /// 本类只负责测量本帧 tick 循环耗时并回喂、以及转发倍率；输入与展示在 <see cref="ParticleEditor"/>。
     /// 倍速只改每帧的 tick 数，tick 内部逐位不变；超预算的部分直接丢弃、绝不结转。</para>
+    /// <para>高速模式：状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯 C#、纯观察者——零 RNG 消耗、零格子写入）。
+    /// 本类只做三件事：懒建会话、把每个逻辑帧转发给 <see cref="HighSpeedSession.OnLogicTick"/>、
+    /// 见到 <see cref="HighSpeedSession.Completed"/> 就地 <see cref="Pause"/>。进入 / 退出与输入封锁、HUD 在
+    /// <see cref="ParticleEditor"/>。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleSimulationDriver : MonoBehaviour
@@ -47,6 +52,7 @@ namespace TapTap2026.Game
         private ParticleSimulationSettings _fallbackSettings;
         private ParticleWorld _world;
         private SpeedController _speed;
+        private HighSpeedSession _highSpeed;
         private readonly Stopwatch _frameStopwatch = new Stopwatch();
         private double _lastFrameSimMs;
         private int _stepsSincePresent;
@@ -58,10 +64,47 @@ namespace TapTap2026.Game
             get { return _world; }
         }
 
-        /// <summary>倍速控制器（手动档 + 自适应档）。输入与展示在 <see cref="ParticleEditor"/>，本类只测量与转发。</summary>
+        /// <summary>倍速控制器（本类只测量耗时并转发倍率）。输入与展示在 <see cref="ParticleEditor"/>，
+        /// 档位只由 <see cref="HighSpeedSession"/> 改变——普通编辑模式恒 1×。</summary>
         public SpeedController Speed
         {
             get { return _speed; }
+        }
+
+        /// <summary>高速模式会话（状态机与统计全在内核，纯 C#）。世界建好后**懒建**，时长取设置资产的
+        /// <see cref="ParticleSimulationSettings.HighSpeedLogicFrames"/>；世界重建会连带丢弃旧会话。</summary>
+        public HighSpeedSession HighSpeed
+        {
+            get
+            {
+                if (_highSpeed == null && _world != null)
+                {
+                    _highSpeed = new HighSpeedSession(_world, Settings.HighSpeedLogicFrames);
+                }
+
+                return _highSpeed;
+            }
+        }
+
+        /// <summary>是否处于高速模式：进入后、确认退出前恒为 true（<see cref="HighSpeedSession.Completed"/> 后仍为 true）。</summary>
+        public bool HighSpeedActive
+        {
+            get
+            {
+                HighSpeedSession session = HighSpeed;
+                return session != null && session.Active;
+            }
+        }
+
+        /// <summary>进入高速模式：转发给内核会话（把倍速钉到控制器满档，退出时钉回 1×）。幂等，已在模式中则无事发生。
+        /// 本方法只做转发——输入与显示在 <see cref="ParticleEditor"/>。</summary>
+        public void EnterHighSpeed()
+        {
+            HighSpeedSession session = HighSpeed;
+            if (session != null)
+            {
+                session.Enter(_speed);
+            }
         }
 
         /// <summary>是否推进模拟（运动帧与逻辑帧）。运行时可切换（继续/暂停）。</summary>
@@ -173,6 +216,17 @@ namespace TapTap2026.Game
         /// typeId 0 此后只作为「被抹除留下的真空」短暂出现，行为规则同样允许气体换入。</summary>
         private void CreateWorld()
         {
+            // 世界换了，旧会话持有的是旧世界——退出并丢弃，下次访问 HighSpeed 时按新世界重建。
+            if (_highSpeed != null)
+            {
+                if (_highSpeed.Active)
+                {
+                    _highSpeed.Exit(_speed);
+                }
+
+                _highSpeed = null;
+            }
+
             ParticleSimulationSettings settings = Settings;
             _world = new ParticleWorld(RequestedWidth, RequestedHeight, settings.Seed);
             _speed.ResetAccumulator();
@@ -241,18 +295,24 @@ namespace TapTap2026.Game
                 int stepsPerPresent = settings.StepsPerPresent;
                 int logicEvery = settings.LogicTicksPerMotionTick;
 
-                // 预算：本帧允许花在模拟 tick 上的时间 = 一帧的时间 × 预算比例。
-                // 目标帧率取 Application.targetFrameRate（<= 0 即不限帧时按 60 算）。
+                // 预算：本帧允许花在模拟 tick 上的时间**绝对上限** = 目标帧率对应的一帧时间 × 预算比例。
+                // 目标帧率取 Application.targetFrameRate（<= 0 即不限帧时按 60 算），因此基准是固定的名义帧时间，
+                // 不是本帧的真实 deltaTime：高刷屏（如 144 Hz）下 8.33ms 相当于真实帧时间的 120%，
+                // 掉帧时则只占真实帧时间的一小部分——这是有意的绝对上限语义。
                 int targetFrameRate = Application.targetFrameRate > 0 ? Application.targetFrameRate : 60;
                 double budgetMs = 1000.0 / targetFrameRate * settings.SpeedBudgetFraction;
 
                 // 倍速在这里落地：倍率只改变「本帧跑几个运动 tick」，每个 tick 内部逐位不变。
                 // 暂停（_simulate = false）时不调用：欠账不涨，恢复后接着当前倍率跑。
-                int ticks = _speed.PlanMotionTicks(Time.deltaTime, _lastFrameSimMs, budgetMs, motionRate);
+                // 把 logicEvery（= round(运动速率 / 逻辑速率)）一并注入：自适应档按它把一个逻辑周期的运动成本折算进预算比较。
+                int ticks = _speed.PlanMotionTicks(
+                    Time.deltaTime, _lastFrameSimMs, budgetMs, motionRate, logicEvery);
 
                 _frameStopwatch.Restart();
                 for (int i = 0; i < ticks; i++)
                 {
+                    bool highSpeedCompleted = false;
+
                     // 逻辑帧是运动帧节拍上的一个子节拍：每 logicEvery 个运动帧跑一次「逻辑 + 运动」，
                     // 其余运动帧只跑运动。因此运动帧 60 Hz、逻辑帧 = 60 / logicEvery。
                     _motionTicks++;
@@ -260,6 +320,23 @@ namespace TapTap2026.Game
                     {
                         _motionTicks = 0;
                         _world.StepLogic();
+
+                        // 高速模式：每个逻辑帧给内核会话记一笔（产生/死亡计数 + 每 10 帧采样），
+                        // 跑满时长就地暂停并跳出——世界恰好停在 DurationLogicTicks 这一刻，不越跑。
+                        HighSpeedSession session = _highSpeed;
+                        if (session != null && session.Active)
+                        {
+                            if (!session.Completed)
+                            {
+                                session.OnLogicTick();
+                            }
+
+                            if (session.Completed)
+                            {
+                                Pause();
+                                highSpeedCompleted = true;
+                            }
+                        }
                     }
                     else
                     {
@@ -268,6 +345,11 @@ namespace TapTap2026.Game
 
                     // 渲染与模拟解耦的接缝：上屏只在本帧所有运动帧跑完之后决定一次（高倍速下多推无意义）。
                     _stepsSincePresent++;
+
+                    if (highSpeedCompleted)
+                    {
+                        break;
+                    }
                 }
                 _frameStopwatch.Stop();
 

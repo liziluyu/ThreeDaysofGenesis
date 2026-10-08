@@ -11,15 +11,24 @@ namespace TapTap2026.Game
     /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
     /// **右键**在可投放类型间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
-    /// **`=` / `-`** 手动调倍速（×2 / ÷2，夹在 [1,16]，切回手动档）；**Tab** 开关自适应倍速（开启时从当前倍率起步）；
+    /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
+    /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
+    /// **H** 进入**高速模式**（倍速钉满档 16×、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
+    /// **Enter 或 H** 确认退出——退出后倍速回 1×、仍保持暂停，由玩家自己按空格继续）；
+    /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
     /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
-    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（<c>×N</c>，自适应时 <c>×N auto</c>）。
+    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（普通模式恒 <c>×1</c>）；
+    /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
+    /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
     /// （网格 quad 挂在它的 transform 下，1 cell = 1 unit，无旋转与缩放）。</para>
     /// <para>写入一律走 <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.Clear"/>：世界会把新格标记成「本 tick 未处理」，
     /// 因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
+    /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者），本类只管输入与显示：
+    /// <see cref="ParticleSimulationDriver.HighSpeedActive"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
+    /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleEditor : MonoBehaviour
@@ -38,6 +47,25 @@ namespace TapTap2026.Game
 
         [Tooltip("暂停热键：按一下停掉所有帧（运动帧与逻辑帧），再按一下继续。设为 None 关闭热键。")]
         [SerializeField] private KeyCode _pauseKey = KeyCode.Space;
+
+        [Tooltip("高速模式热键：不在模式中时按它进入；结算完成后按它（或 Enter）确认退出。设为 None 关闭热键。")]
+        [SerializeField] private KeyCode _highSpeedKey = KeyCode.H;
+
+        [Header("相机平移")]
+        [Tooltip("左移热键（按住持续左移）：默认 左方向键 + A。列表留空 / 全设 None 即关闭左移。")]
+        [SerializeField] private KeyCode[] _panLeftKeys = { KeyCode.LeftArrow, KeyCode.A };
+
+        [Tooltip("右移热键（按住持续右移）：默认 右方向键 + D。列表留空 / 全设 None 即关闭右移。")]
+        [SerializeField] private KeyCode[] _panRightKeys = { KeyCode.RightArrow, KeyCode.D };
+
+        [Tooltip("平移速度（格/秒）。<= 0 关闭平移（相机仍会被夹回沙箱内）。")]
+        [SerializeField] private float _panSpeed = 30f;
+
+        /// <summary>
+        /// 为 true 时本组件**完全不响应输入**（暂停 / 高速模式热键 / 切类型 / 画笔全部跳过）——
+        /// 对话系统激活时置 true，避免"下一句"键（Space / 左键）同时触发暂停或画出粒子。
+        /// </summary>
+        public bool SuppressInput { get; set; }
 
         [Header("投放白名单")]
         [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
@@ -65,6 +93,8 @@ namespace TapTap2026.Game
         private string _hudText;
         private Color _hudColor;
         private string _probeText;
+        private string _highSpeedHudText;
+        private string[] _highSpeedReportLines;
         private float _lastSinglePlacementTime = float.NegativeInfinity;
 
         /// <summary>当前树木物种（Shift+滚轮切换；仅选中树木种子时参与投放与 HUD，见 <see cref="CycleTreeSpecies"/>）。</summary>
@@ -78,9 +108,6 @@ namespace TapTap2026.Game
 
         /// <summary>「单颗投放」白名单类型的投放冷却（秒）。</summary>
         public const float SinglePlacementCooldownSeconds = 0.5f;
-
-        /// <summary>倍速读数里「实测倍率」括号的显示阈值：实测与目标的相对差小于它就不显示（稳态下免噪音）。</summary>
-        public const float EffectiveSpeedDisplayThreshold = 0.05f;
 
         /// <summary>当前笔刷半径（格）。</summary>
         public int BrushRadius
@@ -137,6 +164,11 @@ namespace TapTap2026.Game
 
         private void Update()
         {
+            if (SuppressInput)
+            {
+                return;
+            }
+
             if (_placeable.Length == 0 || _driver == null || _renderer == null)
             {
                 return;
@@ -148,8 +180,12 @@ namespace TapTap2026.Game
                 return;
             }
 
+            // 高速模式热键：不在模式中时按 H 进入；结算完成后按 Enter（或 H）确认退出。
+            HandleHighSpeedKeys();
+            RefreshHighSpeed();
+
             // 暂停热键：这里只负责「按下了就切一下」，
-            // 具体冻结/恢复由驱动暴露的 Pause()/Resume() 执行（驱动不认识输入）。
+            // 具体冻结/恢复由驱动暴露的 Pause()/Resume() 执行（驱动不认识输入）。高速模式中也保留。
             if (_pauseKey != KeyCode.None && Input.GetKeyDown(_pauseKey))
             {
                 if (_driver.Paused)
@@ -162,26 +198,20 @@ namespace TapTap2026.Game
                 }
             }
 
-            // 倍速热键：与暂停同理，这里只负责「按下了就切一下」，
-            // 档位与自适应状态都在驱动暴露的 Speed 控制器里（驱动不认识输入）。
-            SpeedController speed = _driver.Speed;
-            if (speed != null)
-            {
-                if (Input.GetKeyDown(KeyCode.Equals))
-                {
-                    // ×2 手动调档（SetSpeed 切回手动档并钳到 [1, 16]）。
-                    speed.SetSpeed(speed.Speed * 2f);
-                }
-                else if (Input.GetKeyDown(KeyCode.Minus))
-                {
-                    speed.SetSpeed(speed.Speed * 0.5f);
-                }
+            // 相机平移：只动相机、不碰世界，所以放在高速模式的锁编辑拦截**之前**——
+            // 高速模式锁的是编辑，观看视角（平移 + 光标读数）跟着解锁一起禁用没有意义。
+            UpdateCameraPan(world);
 
-                if (Input.GetKeyDown(KeyCode.Tab))
-                {
-                    speed.SetAdaptive(!speed.Adaptive);
-                }
+            // 高速模式锁编辑：在这里**统一拦截**——右键切换、滚轮调半径、左键投放/擦除一概跳过，
+            // 只保留上面的空格暂停与下面只读的光标读数。不是每个输入分支各加一个判断。
+            if (_driver.HighSpeedActive)
+            {
+                ProbeCell(world, Input.mousePosition);
+                return;
             }
+
+            // 普通编辑模式不允许调模拟速度（恒 1×）——速度只由高速模式钉 16× / 退出回 1×，
+            // 因此这里没有 = / - / Tab 的热键处理；SpeedController 的档位 API 只被内核会话调用。
 
             ProbeCell(world, Input.mousePosition);
 
@@ -233,6 +263,201 @@ namespace TapTap2026.Game
                     _driver.PresentNow();
                 }
             }
+        }
+
+        /// <summary>
+        /// 相机左右平移：按住 <see cref="_panLeftKeys"/> / <see cref="_panRightKeys"/> 里的任一键（默认左方向键 + A、
+        /// 右方向键 + D），按 <see cref="_panSpeed"/> 格/秒把相机沿沙箱水平方向推，同时按住两个方向即抵消（不动）。
+        /// 相机位置的写入与「视口不许越出沙箱左右边界」的夹取都在渲染器（<see cref="ParticleRenderer.PanCamera"/>），
+        /// 本方法只管按键 → 格数：只动相机、不碰 <c>Cell[]</c>，因此不参与确定性、也不受暂停影响。
+        /// </summary>
+        private void UpdateCameraPan(ParticleWorld world)
+        {
+            float direction = 0f;
+            if (IsAnyKeyHeld(_panLeftKeys))
+            {
+                direction -= 1f;
+            }
+
+            if (IsAnyKeyHeld(_panRightKeys))
+            {
+                direction += 1f;
+            }
+
+            // 无输入时也调一次（delta = 0）：Game 视图宽高比变化会让原本界内的相机落到沙箱外，靠这次夹取拉回来。
+            // Time.deltaTime 是真实帧时间——暂停（驱动不推进模拟）不冻结它，因此暂停中也能平移观看。
+            _renderer.PanCamera(world, direction * Mathf.Max(0f, _panSpeed) * Time.deltaTime);
+        }
+
+        /// <summary>数组里是否有键被按住；<paramref name="keys"/> 为 null / 空（或元素是 <see cref="KeyCode.None"/>）即无键。</summary>
+        private static bool IsAnyKeyHeld(KeyCode[] keys)
+        {
+            if (keys == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                if (keys[i] != KeyCode.None && Input.GetKey(keys[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 高速模式热键：不在模式中时按 <see cref="_highSpeedKey"/> 进入；结算完成后按 Enter / 小键盘 Enter
+        /// （或再次按 <see cref="_highSpeedKey"/>）确认退出。模式进行中这些键都不生效——进入后不能主动退出，只能等跑完。
+        /// </summary>
+        private void HandleHighSpeedKeys()
+        {
+            HighSpeedSession session = _driver.HighSpeed;
+            if (session == null)
+            {
+                return;
+            }
+
+            if (!session.Active)
+            {
+                if (_highSpeedKey != KeyCode.None && Input.GetKeyDown(_highSpeedKey))
+                {
+                    _driver.EnterHighSpeed();
+                }
+
+                return;
+            }
+
+            if (!session.Completed)
+            {
+                return;
+            }
+
+            bool confirm = Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
+            if (_highSpeedKey != KeyCode.None && Input.GetKeyDown(_highSpeedKey))
+            {
+                confirm = true;
+            }
+
+            if (confirm)
+            {
+                ConfirmHighSpeedExit(session);
+            }
+        }
+
+        /// <summary>确认结算：退出内核会话（把倍速钉回 1×），清掉结算缓存并解除编辑锁定。
+        /// **保持暂停**——恢复推进由玩家自己按空格决定。</summary>
+        private void ConfirmHighSpeedExit(HighSpeedSession session)
+        {
+            session.Exit(_driver.Speed);
+            _highSpeedHudText = null;
+            _highSpeedReportLines = null;
+        }
+
+        /// <summary>
+        /// 刷新高速模式 HUD：运行时每帧重建左下角那一行读数；结算完成后**只建一次**结算行
+        /// （<see cref="HighSpeedSession.Completed"/> 是终态，行内容不会再变）。不在模式中时清空两个缓存。
+        /// </summary>
+        private void RefreshHighSpeed()
+        {
+            HighSpeedSession session = _driver.HighSpeed;
+            if (session == null || !session.Active)
+            {
+                _highSpeedHudText = null;
+                _highSpeedReportLines = null;
+                return;
+            }
+
+            _highSpeedHudText = DescribeHighSpeed(
+                session.ElapsedLogicTicks,
+                session.DurationLogicTicks,
+                _driver.Speed.EffectiveSpeed,
+                session.LatestSurfaceTemperature,
+                session.LatestAverageHumidity);
+
+            if (session.Completed && _highSpeedReportLines == null)
+            {
+                _highSpeedReportLines = BuildHighSpeedReport(session);
+            }
+        }
+
+        /// <summary>
+        /// 左下角进度行的文案：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>。
+        /// 倍速只显示**实测**吞吐（<see cref="SpeedController.EffectiveSpeed"/>，EMA 平滑的一位小数）——
+        /// 高速模式恒钉 16× 目标，目标没有显示价值；温度 / 湿度还没采到样本（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
+        /// </summary>
+        private static string DescribeHighSpeed(int elapsed, int duration, float effectiveSpeed, float temperature, float humidity)
+        {
+            string surface = float.IsNaN(temperature)
+                ? "--"
+                : temperature.ToString("0.0", CultureInfo.InvariantCulture) + "°";
+            string wetness = float.IsNaN(humidity)
+                ? "--"
+                : humidity.ToString("0.000", CultureInfo.InvariantCulture);
+
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "高速 {0}/{1} ×{2} 地表 {3} 湿度 {4}",
+                elapsed, duration, effectiveSpeed.ToString("0.0", CultureInfo.InvariantCulture), surface, wetness);
+        }
+
+        /// <summary>
+        /// 结算行：遍历注册表，列出**产生或死亡非零**的类型，每行 <c>名称 产生 N 死亡 M</c>；
+        /// 全零类型过滤掉。空气（typeId 0）不显示——它只是被抹除留下的真空，不是「产生」。
+        /// </summary>
+        private static string[] BuildHighSpeedReport(HighSpeedSession session)
+        {
+            ParticleType[] types = ParticleRegistry.Types;
+            var lines = new List<string>();
+
+            for (int id = 1; id < types.Length; id++)
+            {
+                ParticleType type = types[id];
+                if (type == null)
+                {
+                    continue;
+                }
+
+                long births = session.GetBirths(id);
+                long deaths = session.GetDeaths(id);
+                if (births == 0 && deaths == 0)
+                {
+                    continue;
+                }
+
+                lines.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}  产生 {1}  死亡 {2}",
+                    DisplayName(type), births, deaths));
+            }
+
+            return lines.ToArray();
+        }
+
+        /// <summary>结算面板：屏幕中央的 <see cref="GUI.Box"/> + 逐行统计 + 确认提示。</summary>
+        private void DrawHighSpeedReport()
+        {
+            const float width = 360f;
+            const float lineHeight = 20f;
+            float height = (_highSpeedReportLines.Length + 2) * lineHeight + 16f;
+            var box = new Rect(
+                (Screen.width - width) * 0.5f,
+                (Screen.height - height) * 0.5f,
+                width,
+                height);
+
+            GUI.Box(box, "高速模式结算");
+
+            float y = box.y + 8f + lineHeight;
+            for (int i = 0; i < _highSpeedReportLines.Length; i++)
+            {
+                GUI.Label(new Rect(box.x + 12f, y, width - 24f, lineHeight), _highSpeedReportLines[i]);
+                y += lineHeight;
+            }
+
+            GUI.Label(new Rect(box.x + 12f, y, width - 24f, lineHeight), "按 Enter 或 H 确认退出");
         }
 
         /// <summary>切到下一个可投放类型（到末尾回到开头）。</summary>
@@ -386,6 +611,22 @@ namespace TapTap2026.Game
                 GUI.Label(new Rect(6f, 4f, 420f, 20f), _probeText);
             }
 
+            // 高速模式的读数与结算面板都从缓存绘制，但用驱动的**实时**状态兜底：
+            // 任何结束会话的路径（确认退出、世界重建丢掉会话）都会立刻把两者隐藏掉，不留一帧残影。
+            if (_driver != null && _driver.HighSpeedActive)
+            {
+                // 进度读数固定在屏幕左下角（IMGUI 原点在左上，所以 y 从底部往上量）。
+                if (_highSpeedHudText != null)
+                {
+                    GUI.Label(new Rect(6f, Screen.height - 24f, 520f, 20f), _highSpeedHudText);
+                }
+
+                if (_highSpeedReportLines != null)
+                {
+                    DrawHighSpeedReport();
+                }
+            }
+
             if (_hudText == null)
             {
                 return;
@@ -416,8 +657,9 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 左上角读数的倍速后缀：手动档 <c>×N</c>、自适应档 <c>×N auto</c>；目标倍率与实测吞吐（<see cref="SpeedController.EffectiveSpeed"/>）
-        /// 相差 ≥5% 时再追加 <c>(实 ×M)</c>——稳态下不显示这个括号，免得读数抖。
+        /// 左上角读数的倍速后缀：普通编辑模式恒 <c>×1</c>、高速模式恒 <c>×16</c>（档位只由
+        /// <see cref="HighSpeedSession"/> 改变，见文件头）。要的只是「当前按几倍跑」这个事实——
+        /// 实测吞吐在高速模式左下角 HUD 里报（那时目标档没有信息量，见 <see cref="DescribeHighSpeed"/>）。
         /// </summary>
         private string DescribeSpeed()
         {
@@ -427,21 +669,7 @@ namespace TapTap2026.Game
                 return "×1";
             }
 
-            float target = speed.Speed;
-            string text = "×" + target.ToString("0.##", CultureInfo.InvariantCulture);
-            if (speed.Adaptive)
-            {
-                text += " auto";
-            }
-
-            float effective = speed.EffectiveSpeed;
-            // effectiv <= 0 = 还没有过有效样本（例如一直暂停），不猜一个假数字出来。
-            if (effective > 0f && Mathf.Abs(effective - target) >= target * EffectiveSpeedDisplayThreshold)
-            {
-                text += " (实 ×" + effective.ToString("0.##", CultureInfo.InvariantCulture) + ")";
-            }
-
-            return text;
+            return "×" + speed.Speed.ToString("0.##", CultureInfo.InvariantCulture);
         }
 
         /// <summary>

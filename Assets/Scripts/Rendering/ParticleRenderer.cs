@@ -260,7 +260,8 @@ namespace TapTap2026.Rendering
             // 整条渲染链（mesh / 材质 / 纹理）都是运行期生成的，四边形的 GameObject 同理：绝不能随场景落盘。
             // 否则在编辑器里调用过 Present（工具、测试、暂停中涂改）之后保存场景，就会把一个空壳
             // ParticleGridQuad 烘进 .unity 文件（它不被任何序列化字段引用，纯粹是垃圾）。
-            var quad = new GameObject("ParticleGridQuad") { hideFlags = HideFlags.DontSaveInEditor };
+            // 旗标与同链的 mesh / 材质 / 纹理一致：HideFlags.DontSave（= DontSaveInEditor | DontSaveInBuild）。
+            var quad = new GameObject("ParticleGridQuad") { hideFlags = HideFlags.DontSave };
             quad.transform.SetParent(transform, false);
 
             _meshFilter = quad.AddComponent<MeshFilter>();
@@ -310,6 +311,45 @@ namespace TapTap2026.Rendering
             cam.orthographic = true;
             cam.orthographicSize = world.Height * 0.5f;
             cam.transform.position = new Vector3(world.Width * 0.5f, world.Height * 0.5f, -10f);
+        }
+
+        /// <summary>
+        /// 把相机沿网格水平方向平移 <paramref name="deltaCells"/> 格（正 = 网格 +x 方向），
+        /// 并把视口夹回沙箱内——相机中心的 x 恒在 <c>[半视宽, Width − 半视宽]</c>；
+        /// 视口比网格还宽（半视宽 &gt; Width/2）时恒居中，平移无效。
+        /// 与本类的取景约定一致（<see cref="FitCamera"/>）：网格局部坐标即世界坐标。
+        /// </summary>
+        /// <remarks>
+        /// 只改 x——相机的竖直框取（由 <see cref="FitCamera"/> 定的 orthographicSize 与位置 y / z）不动，
+        /// 也不会触碰 <c>Cell[]</c> 或重建纹理（相机移动与模拟、上传完全解耦）。
+        /// <para>无输入时也照常调（<paramref name="deltaCells"/> = 0）：Game 视图宽高比变化会让原本在界内的相机
+        /// 落在界外，靠这一次夹取把它拉回沙箱内。相机缺失或不是正交相机时什么都不做。</para>
+        /// </remarks>
+        public void PanCamera(ParticleWorld world, float deltaCells)
+        {
+            if (world == null)
+            {
+                return;
+            }
+
+            Camera cam = _camera != null ? _camera : Camera.main;
+
+            // 正交相机才有「半视宽」这个与深度无关的常数；透视相机的水平可见范围随 z 变化，
+            // 而本项目的取景约定就是正交（FitCamera），因此这里不猜、直接跳过。
+            if (cam == null || !cam.orthographic)
+            {
+                return;
+            }
+
+            float halfView = cam.orthographicSize * cam.aspect;
+            float minX = halfView;
+            float maxX = world.Width - halfView;
+
+            Vector3 position = cam.transform.position;
+            position.x = minX > maxX
+                ? world.Width * 0.5f
+                : Mathf.Clamp(position.x + deltaCells, minX, maxX);
+            cam.transform.position = position;
         }
     }
 }
