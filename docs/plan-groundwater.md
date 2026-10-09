@@ -191,12 +191,18 @@ git add Assets/Scripts/Simulation/ParticleWorld.cs Assets/Scripts/Simulation/Par
 git commit -m "feat(sim): 地下水改运动状态判定——静止固体不能置换液体"
 ```
 
+**实测新增（已随本任务落地，供后续查阅）**：
+- **tick 0 守卫**：`Set`/`SetPhase` 仅在 `_tick > 0` 时给宽限——构造期场景第一帧一律视作静止（否则「刚放置 = 运动中」会让所有用 `Set` 搭的场景第一帧自行塌陷）。
+- **显式过期**：运动状态用双缓冲 `byte[]`（每扫描交换 + 清空 pending），**不看 `Tick`、无模运算**。时间函数式判定（序号模 256）会产生「幽灵动量」——旧值回绕成"刚运动过"、无需写入即翻真，休眠路径与全扫路径由此发散（实测每 256 扫描咬一次，4 个 A/B 透明性用例失败）。
+- **扫描中 `Set`/`SetPhase`**（OnLogic 内相变）在下一扫描生效；`MarkInMotion` 同时写 live 与 pending（本扫描内即刻可读）。
+- `WaterParticleTests.SandBlock_SinksThrough_Water_InOpenBasin` 的沙块由 y=7..9 抬到 **y=8..10**（与池面留一格空气，先真实落一格取得动量再沉底）——tick 0 贴在池面的静止沙块按 v2 语义「静止即稳定」不再自行下沉，旧场景靠幽灵动量通过，已校正。
+
 ---
 
 ### Task 2: 竖井用例改回「照旧沉底」
 
 **Files:**
-- Modify: `Assets/Tests/EditMode/WaterParticleTests.cs`
+- Modify: `Assets/Tests/EditMode/WaterParticleTests.cs`（仅竖井用例；SandBlock 场景已在 Task 1 调整完毕）
 
 - [ ] **Step 1: 恢复原始竖井用例**
 
@@ -343,11 +349,13 @@ git commit -m "test(sim): 竖井用例改回照旧沉底（运动状态判定下
             RunCycles(world, 200);
 
             Assert.AreEqual(2, CountType(world, ParticleIds.Water), "水量守恒");
-            Assert.AreNotEqual(ParticleIds.Water, world.GetCell(3, 3).typeId, "水囊已排空");
-            Assert.AreNotEqual(ParticleIds.Water, world.GetCell(4, 3).typeId);
-            Assert.AreEqual(2, CountTypeInColumn(world, 2, ParticleIds.Water), "两格水都流进竖井");
+            Assert.AreNotEqual(ParticleIds.Water, world.GetCell(3, 3).typeId, "缺口那格的水已流出（上方石头随后塌入自封）");
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 3).typeId, "内侧那格被塌下来的石头封住");
+            Assert.AreEqual(1, CountTypeInColumn(world, 2, ParticleIds.Water), "流出的那格落在竖井里");
         }
 ```
+
+（实测说明（审查代理探针，200 周期稳定）：1 格宽缺口只会放出一格水——(3,3) 的水斜落进竖井后，上方石头当帧塌进空格把缺口封住，第二格水留在 (4,3)。这是「石头落进空气不受闸门约束」的涌现自封行为，不是 bug；要整囊放空需要挖更宽的缺口。）
 
 - [ ] **Step 3: 离线跑验证**
 
