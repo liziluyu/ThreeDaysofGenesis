@@ -13,6 +13,8 @@ namespace TapTap2026.Game
     /// <remarks>
     /// <para>每帧把字段写回 <c>world.Light</c>、并把昼夜参数推给 <see cref="ParticleRenderer"/>：运行时在 Inspector
     /// 改参数即时生效；世界因改尺寸被重建（<see cref="ParticleSimulationDriver.Resize"/>）后也会自动重新应用。</para>
+    /// <para>三个基本参数（<see cref="Intensity"/> / <see cref="LitTicks"/> / <see cref="DarkTicks"/>）**运行期可写**——
+    /// 游戏内由 <see cref="ParticleEditor"/> 右上角的光照面板的三个输入框驱动；面板与 Inspector 写的是同一份字段。</para>
     /// <para>通断是占空比循环：亮 <see cref="LitTicks"/> 刻 → 暗 <see cref="DarkTicks"/> 刻 → 循环。
     /// 亮的每一刻向每一列最上面的非气体粒子（固体或液体——光打到水面就停）注入 <see cref="Intensity"/> 的热量。</para>
     /// <para>过渡长度不需要接线：由 <see cref="LightController.Daylight"/> 自动给出
@@ -59,22 +61,28 @@ namespace TapTap2026.Game
             get { return _enabled; }
         }
 
-        /// <summary>当前生效的亮相位刻数。</summary>
+        /// <summary>当前生效的亮相位刻数。**可写**——写的是本组件的字段，下一帧 <see cref="Update"/> 即写回
+        /// <c>world.Light</c>（游戏内的光照面板走这条路；直接写世界会被本组件每帧覆盖）。
+        /// 负数按 0 处理（钳制语义与 <see cref="LightController.LitTicks"/> 一致）。</summary>
         public int LitTicks
         {
             get { return _litTicks; }
+            set { _litTicks = value < 0 ? 0 : value; }
         }
 
-        /// <summary>当前生效的暗相位刻数。</summary>
+        /// <summary>当前生效的暗相位刻数。**可写**（见 <see cref="LitTicks"/>）；负数按 0 处理。</summary>
         public int DarkTicks
         {
             get { return _darkTicks; }
+            set { _darkTicks = value < 0 ? 0 : value; }
         }
 
-        /// <summary>当前生效的光照强度。</summary>
+        /// <summary>当前生效的光照强度。**可写**（见 <see cref="LitTicks"/>）。
+        /// NaN / 无穷按 0 处理（钳制语义与 <see cref="LightController.Intensity"/> 一致）。</summary>
         public float Intensity
         {
             get { return _intensity; }
+            set { _intensity = (float.IsNaN(value) || float.IsInfinity(value)) ? 0f : value; }
         }
 
         /// <summary>当前生效的云层消光系数。</summary>
