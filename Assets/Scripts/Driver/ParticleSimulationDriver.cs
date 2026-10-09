@@ -97,13 +97,19 @@ namespace TapTap2026.Game
         }
 
         /// <summary>进入高速模式：转发给内核会话（把倍速钉到控制器满档，退出时钉回 1×）。幂等，已在模式中则无事发生。
-        /// 本方法只做转发——输入与显示在 <see cref="ParticleEditor"/>。</summary>
+        /// 暂停中进入会先 <see cref="Resume"/>——否则 tick 循环被暂停挡住，会话永远停在 0/<see cref="HighSpeedSession.DurationLogicTicks"/>
+        /// 且模式锁定编辑与退出热键，形成死锁。跑满时长后驱动会重新 <see cref="Pause"/>（见 Update）。
+        /// 本方法只做转发与暂停解除——输入与显示在 <see cref="ParticleEditor"/>。</summary>
         public void EnterHighSpeed()
         {
             HighSpeedSession session = HighSpeed;
             if (session != null)
             {
                 session.Enter(_speed);
+                if (session.Active)
+                {
+                    Resume();
+                }
             }
         }
 
