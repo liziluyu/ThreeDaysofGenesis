@@ -174,6 +174,35 @@ namespace TapTap2026.Tests
         }
 
         [Test]
+        public void Choose_WithOutOfRangeIndex_ReturnsFalseAndKeepsState()
+        {
+            DialogueRunner runner = Started(BranchJson);
+            runner.Next(); // 进入带选项的句
+            Assert.IsTrue(runner.IsChoicePoint);
+
+            Assert.IsFalse(runner.Choose(-1), "负下标应失败");
+            Assert.IsFalse(runner.Choose(2), "越界下标应失败");
+            Assert.AreEqual("start", runner.CurrentSegment.id, "越界选择不应改段");
+            Assert.AreEqual(1, runner.Index, "越界选择不应改下标");
+            Assert.IsTrue(runner.IsChoicePoint, "越界选择后仍停在选项点");
+            Assert.IsFalse(runner.Finished, "越界选择不应结束对话");
+            Assert.AreEqual(2, runner.History.Count, "越界选择不应写入历史");
+        }
+
+        [Test]
+        public void Choose_AtNonChoicePoint_ReturnsFalseAndKeepsState()
+        {
+            DialogueRunner runner = Started(LinearJson);
+
+            Assert.IsFalse(runner.Choose(0), "非选项点 Choose 应失败");
+            Assert.AreEqual("a", runner.CurrentSegment.id);
+            Assert.AreEqual(0, runner.Index);
+            Assert.AreEqual("一", runner.CurrentLine.text);
+            Assert.IsFalse(runner.Finished, "非选项点 Choose 不应结束对话");
+            Assert.AreEqual(1, runner.History.Count, "非选项点 Choose 不应写入历史");
+        }
+
+        [Test]
         public void OnEnd_FiresOnceAtEnd()
         {
             DialogueRunner runner = new DialogueRunner();
