@@ -113,6 +113,24 @@ namespace TapTap2026.Simulation
         private bool _unknownTypeReported;
         private bool _motionSleepEnabled = true;
         private bool _groundwaterSealingEnabled = true;
+
+        /// <summary>
+        /// 逐格「运动中」标记（live，0 = 静止 / 1 = 运动中）：地下水闸门用它判断固体能否排开液体。
+        /// 内容 = 上一扫描位移过的格 + 刚放置的格（<see cref="Set"/> / <see cref="SetPhase"/> 与
+        /// <see cref="Swap"/> 经 <see cref="MarkInMotion"/> 写入，本扫描内即刻可读）；
+        /// 由 <see cref="RotateMomentumAtScanStart"/> 在每次 <see cref="Scan"/> 开头与 pending 缓冲交换，
+        /// **显式过期**——判据不看 <see cref="Tick"/>、无模运算，因此不会出现「序号按模 256 回绕后凭空变真」
+        /// 的幽灵动量（幽灵会让静止的石头在全扫描路径里自己沉进水里，且与休眠路径逐位发散）。
+        /// </summary>
+        private byte[] _inMotion;
+
+        /// <summary>
+        /// 本扫描的位移 / 放置集合（pending）：<see cref="MarkInMotion"/> 同时写它，
+        /// 下一次扫描开始时转正为 <see cref="_inMotion"/>（即「上一扫描位移过」从此可见），
+        /// 再下一次扫描开始时过期。与 <see cref="_candidates"/> / <see cref="_scanCandidates"/> 同一套双缓冲惯例。
+        /// </summary>
+        private byte[] _inMotionPending;
+
         private bool _motionScanActive;
         private int _motionCellsEvaluatedLastStep;
 
@@ -239,11 +257,24 @@ namespace TapTap2026.Simulation
                 }
             }
 
+            // 运动状态的传播格固定需要 +1 行：固体向下移动会把**原格正上方**的同伴标成运动中
+            //（见 Swap 的接力标记），那颗同伴必须在下一扫描被求值，否则接力断掉。是否求值取决于
+            // 本并集，所以这里把 dy = +1 行固定并入——不赌各类型 MotionReadReach 的声明凑巧覆盖
+            //（宁多求值一行，不影响逐位语义）。置位越界格由 MarkInMotionAbove 自己裁掉。
+            if (halfByDy[reach + 1] < 1)
+            {
+                halfByDy[reach + 1] = 1;
+            }
+
             if (maxDy < minDy)
             {
                 // 类型表里没有任何带行为的类型：没有任何行需要唤醒。
                 minDy = 0;
                 maxDy = -1;
+            }
+            else if (maxDy < 1)
+            {
+                maxDy = 1;
             }
 
             var wakeHalf = new sbyte[maxDy - minDy + 1];
@@ -262,6 +293,8 @@ namespace TapTap2026.Simulation
             _scanCandidates = new ulong[_chunkCount * WordsPerChunk];
             _logicCells = new ulong[_chunkCount * WordsPerChunk]; // 初建为空网格 ⇒ 全 0（没有格带逻辑）
             _processedBits = new ulong[(_cells.Length + 63) >> 6];
+            _inMotion = new byte[_cells.Length];
+            _inMotionPending = new byte[_cells.Length];
             for (int i = 0; i < _candidates.Length; i++)
             {
                 _candidates[i] = ulong.MaxValue;
@@ -393,14 +426,16 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 地下水规则开关（默认 <c>true</c>）：固体置换液体前，若它左右同一行都被固体堵住
-        /// （越界按固体算），置换不成立——石头 / 沙 / 土里封闭的水不再被上方固体挤上去。
+        /// 地下水规则开关（默认 <c>true</c>）：**固体置换液体前必须处于运动中**
+        /// （<see cref="HasMomentum"/>：上一扫描位移过，或运行中刚放置）——静止的固体推不动液体，
+        /// 石头 / 沙 / 土里封闭的水不再被上方静止的固体挤上去。
         /// 为 false 时退回旧的 rank 置换行为（A/B 对照与回归验证）。
         /// 运行期切换会整张置位运动候选位图（静止粒子需要重新求值），可在播放中安全地做 A/B 对照。
         /// </summary>
         /// <remarks>
-        /// 纯读取规则：不开状态、不消耗随机流、读距 (x±1, y) 在类型表运动阅读盒并集之内，
-        /// 运动休眠透明性不受影响（回归见 <c>GroundwaterTests.MotionSleepTransparency_WithGroundwaterRule</c>）。
+        /// 纯读取规则：不开状态、不消耗随机流；运动状态（<see cref="_inMotion"/>）的维护与开关无关，
+        /// 关掉开关也照常记账。运动休眠透明性不受影响
+        /// （回归见 <c>GroundwaterTests.MotionSleepTransparency_WithGroundwaterRule</c>）。
         /// </remarks>
         public bool GroundwaterSealingEnabled
         {
@@ -414,7 +449,7 @@ namespace TapTap2026.Simulation
 
                 _groundwaterSealingEnabled = value;
 
-                // 闸门翻转会改变「已静止粒子」的置换决策（被夹住的沙开始下沉、或反过来被挡），
+                // 闸门翻转会改变「已静止粒子」的置换决策（开关关掉后静止的沙开始下沉、或反过来被挡），
                 // 它们没有写入、不会被自然唤醒——整张候选位图置位一次，等价于「刚构造完」的初态。
                 // 休眠关闭时不消费位图，留给 MotionSleepEnabled 的 setter 在重新打开时统一置位。
                 if (_motionSleepEnabled)
@@ -425,6 +460,54 @@ namespace TapTap2026.Simulation
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// (x,y) 上的内容是否处于运动中：上一扫描位移过，或刚放置（见 <see cref="_inMotion"/>）。
+        /// 越界返回 false。地下水闸门（<see cref="ParticleRules.CanDisplace"/>）读它。
+        /// </summary>
+        public bool HasMomentum(int x, int y)
+        {
+            if (!IsInBounds(x, y))
+            {
+                return false;
+            }
+
+            return _inMotion[y * _width + x] != 0;
+        }
+
+        /// <summary>
+        /// 把 (x,y) 的内容标记为「运动中」：本扫描内即刻可读（刚放置的格当场就能置换液体），
+        /// 并写入 pending —— 下一次扫描开始时转正，再下一次扫描开始时过期。
+        /// </summary>
+        private void MarkInMotion(int x, int y)
+        {
+            int index = y * _width + x;
+            _inMotion[index] = 1;
+            _inMotionPending[index] = 1;
+        }
+
+        /// <summary>把 (x,y) 正上方那格标记为「运动中」——它是下一步会跟随落下的同伴。</summary>
+        private void MarkInMotionAbove(int x, int y)
+        {
+            int above = y + 1;
+            if ((uint)above < (uint)_height)
+            {
+                MarkInMotion(x, above);
+            }
+        }
+
+        /// <summary>
+        /// 扫描开始时的动量轮转：pending 的集合转正为 live（= 上一扫描位移过的格 + 扫描之间放置的格），
+        /// 旧 live 清空后用作下一轮的 pending。由 <see cref="Scan"/> 在每次扫描（运动帧 / 逻辑帧、
+        /// 休眠开 / 关）开头调用一次——显式过期，全程 O(格数/字节) 且稳态零分配。
+        /// </summary>
+        private void RotateMomentumAtScanStart()
+        {
+            byte[] live = _inMotion;
+            _inMotion = _inMotionPending;
+            _inMotionPending = live;
+            Array.Clear(_inMotionPending, 0, _inMotionPending.Length);
         }
 
         /// <summary>
@@ -579,6 +662,34 @@ namespace TapTap2026.Simulation
             // 两个被写格本身标成「本帧已处理」：本帧稍后扫到它们时跳过（等价于旧 bit0 语义）。
             MarkProcessed(a);
             MarkProcessed(b);
+
+            // 地下水闸门：两端格各记「运动中」——本扫描内即刻可读（下一步就能置换液体），
+            // 下一扫描起仍有效（显式过期见 RotateMomentumAtScanStart）。
+            MarkInMotion(x0, y0);
+            MarkInMotion(x1, y1);
+
+            // 接力：只有**向下移动的固体**才把它**原格正上方**的同伴记为运动中——沙柱 / 整块沙逐格
+            // 下落时，上一颗腾出的空位（随即被水填上）由下一颗接着置换，靠的就是这一格标记。
+            // 液体↔液体（水↔水对流）、气体换位与水平换位（y0 == y1）都不置位：否则池面上一块静止的
+            // 固体被水下对流「从底下」凭空点亮动量，随即自己沉进水里（对流拖石板）。
+            // 两格已在上面交换完毕：向下移动的那份此刻正躺在较低的那格里。
+            if (y0 != y1)
+            {
+                int lowerX = y0 < y1 ? x0 : x1;
+                int lowerY = y0 < y1 ? y0 : y1;
+                int upperX = y0 < y1 ? x1 : x0;
+                int upperY = y0 < y1 ? y1 : y0;
+                ushort moverId = _cells[lowerY * _width + lowerX].typeId;
+                if (moverId != ParticleRegistry.AirTypeId && moverId < _types.Length)
+                {
+                    ParticleType mover = _types[moverId];
+                    if (mover != null && (mover.Info.Tags & ParticleTags.Solid) != 0)
+                    {
+                        MarkInMotionAbove(upperX, upperY);
+                    }
+                }
+            }
+
             MarkCandidates(x0, y0);
             MarkCandidates(x1, y1);
             MarkCandidatesThisScan(x0, y0, x1, y1);
@@ -688,6 +799,14 @@ namespace TapTap2026.Simulation
             cell.typeId = typeId;
             cell.flags = _stamp;
             _writeVersion++;
+
+            // 地下水闸门：**运行中**放置的物质视作「运动中」——画笔直接放进水里的沙石照旧下沉。
+            // 构造期（tick 0）例外：初始条件一律视作静止，不给宽限期，否则用 Set 搭出来的初始布局
+            // 在第一遍运动扫描里会被整片当作「刚运动过」，水囊首帧即被抽动。
+            if (_tick > 0)
+            {
+                MarkInMotion(x, y);
+            }
 
             // 运动休眠：新物质落入本格——本格与周围 R 内的邻居都要重新求值（下一帧），
             // 本帧扫描中邻居立即唤醒（同帧级联）；本格标成「本帧已处理」，本帧稍后扫到时跳过。
@@ -836,6 +955,14 @@ namespace TapTap2026.Simulation
             cell.typeId = typeId;
             cell.flags = _stamp;
             _writeVersion++;
+
+            // 地下水闸门：**运行中**相变出来的物质视作「运动中」（与 Set 的新格同一语义）——
+            // 扫描中（OnLogic 内）相变同样在下一扫描继续有效。
+            // 与 Set 同理，构造期（tick 0）不给宽限期——初始条件一律视作静止。
+            if (_tick > 0)
+            {
+                MarkInMotion(x, y);
+            }
 
             // 运动休眠：相变后的新形态与周围邻居都要重新求值（下一帧），本帧扫描中邻居立即唤醒；
             // 本格标成「本帧已处理」。
@@ -1208,6 +1335,10 @@ namespace TapTap2026.Simulation
             // 而漏求值（全扫描路径靠「每 tick 处理所有格」掩盖了这一点，休眠路径不能）。
             // bit0 仍照旧由写入维护（类型作者契约与既有测试都依赖它），只是不再作为跳过判据。
             Array.Clear(_processedBits, 0, _processedBits.Length);
+
+            // 地下水闸门：动量在扫描边界轮转——pending（本扫描期间位移 / 放置的格）转正为 live，
+            // 旧 live 清空后接替为 pending。必须在任何求值之前完成；休眠开 / 关、运动帧 / 逻辑帧走同一处。
+            RotateMomentumAtScanStart();
 
             if (_motionSleepEnabled)
             {

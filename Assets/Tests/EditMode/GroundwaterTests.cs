@@ -4,8 +4,8 @@ using TapTap2026.Simulation;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 地下水规则（<see cref="ParticleRules.CanDisplace"/> 的「被夹住不放行」闸门）：
-    /// 固体置换液体前若左右同一行都被固体堵住（越界按固体算），置换不成立。
+    /// 地下水规则（<see cref="ParticleRules.CanDisplace"/> 的「静止固体不让路」闸门）：
+    /// 固体置换液体前必须处于运动中（上一扫描位移过，或运行中刚放置）——静止的固体推不动液体。
     /// 单测走隔离类型表；水囊 / 联通 / 释放 / 休眠 A/B 走生产注册路径（依赖 ParticleIds 回填）。
     /// </summary>
     public sealed class GroundwaterTests
@@ -113,68 +113,73 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void CanDisplace_SolidWedgedBetweenSolids_CannotEnterLiquid()
+        public void CanDisplace_StaticSolid_CannotEnterLiquid()
         {
             ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
             world.Set(1, 1, StoneId);
-            world.Set(2, 1, StoneId);
-            world.Set(1, 0, WaterId);
+            world.Set(1, 0, StoneId);   // 先垫底，让上面的石头静止下来
+            world.StepMotion();          // tick 0 的初始布局本就没有宽限：石头下方是石头，不动、也无运动状态
+            world.Set(1, 0, WaterId);    // 垫底换成水
+            world.StepMotion();          // 石头已静止 → 推不动水
 
             Assert.IsFalse(
                 ParticleRules.CanDisplace(world, 1, 1, 1, 0),
-                "左右都被固体堵住 → 置换液体不成立");
+                "静止石头不能置换液体");
         }
 
         [Test]
-        public void CanDisplace_AnyOpenSide_CanEnterLiquid()
+        public void CanDisplace_SolidThatJustFell_CanEnterLiquid()
         {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(1, 0, WaterId);
-            // 右侧 (2,1) 是空气：旁路存在 → 允许置换。
-            Assert.IsTrue(ParticleRules.CanDisplace(world, 1, 1, 1, 0));
-        }
-
-        [Test]
-        public void CanDisplace_LiquidSideIsAnEscape()
-        {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(2, 1, WaterId);   // 右侧是液体：旁路（开阔水域里沙的两侧就是水）
-            world.Set(1, 0, WaterId);
+            ParticleWorld world = CreateIsolatedWorld(1, 3);
+            world.Set(0, 2, StoneId);
+            world.Set(0, 0, WaterId);
+            world.StepMotion();          // 石头落进 (0,1)（空气目标不受闸门约束）→ 获得运动状态
 
             Assert.IsTrue(
-                ParticleRules.CanDisplace(world, 1, 1, 1, 0),
-                "一侧是液体 → 允许置换（池塘照旧下沉靠这条）");
+                ParticleRules.CanDisplace(world, 0, 1, 0, 0),
+                "刚下落的石头可以置换液体");
         }
 
         [Test]
-        public void CanDisplace_GasSideIsAnEscape()
-        {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(2, 1, AtmosphereId);   // 右侧是气体：旁路
-            world.Set(1, 0, WaterId);
-
-            Assert.IsTrue(
-                ParticleRules.CanDisplace(world, 1, 1, 1, 0),
-                "一侧是气体 → 允许置换");
-        }
-
-        [Test]
-        public void CanDisplace_WorldEdgeCountsAsBlockedSide()
+        public void CanDisplace_FreshlyPlacedSolid_CanEnterLiquid()
         {
             ParticleWorld world = CreateIsolatedWorld(1, 2);
-            world.Set(0, 1, StoneId);
             world.Set(0, 0, WaterId);
+            world.StepMotion();          // 先让世界跑一帧（tick ≥ 1）：tick 0 是初始条件、一律视作静止
+            world.Set(0, 1, StoneId);    // 运行中放置 → 享有宽限期（视作刚运动过）
+
+            Assert.IsTrue(
+                ParticleRules.CanDisplace(world, 0, 1, 0, 0),
+                "运行中放置的石头视作运动中（画笔直接放进水里照旧下沉）");
+        }
+
+        [Test]
+        public void CanDisplace_GraceExpiresAfterOneScan()
+        {
+            ParticleWorld world = CreateIsolatedWorld(1, 3);
+            world.Set(0, 0, StoneId);
+            world.StepMotion();          // tick ≥ 1
+            world.Set(0, 1, StoneId);    // 运行中放置：有宽限，但下方是石头不会移动
+            world.StepMotion();          // 宽限所在的那次扫描
+            world.StepMotion();          // 宽限过期
+            world.Set(0, 0, WaterId);    // 地板换成水
 
             Assert.IsFalse(
                 ParticleRules.CanDisplace(world, 0, 1, 0, 0),
-                "两侧越界按固体算 → 置换不成立");
+                "宽限只持续一个扫描，之后不再算运动中");
+        }
+
+        [Test]
+        public void GroundwaterSealingDisabled_StillTracksMomentum()
+        {
+            ParticleWorld world = CreateIsolatedWorld(1, 2);
+            world.Set(0, 0, WaterId);
+            world.StepMotion();
+            world.Set(0, 1, StoneId);
+            world.GroundwaterSealingEnabled = false;
+
+            Assert.IsTrue(world.HasMomentum(0, 1), "开关只影响闸门，不影响运动状态维护");
+            Assert.IsTrue(ParticleRules.CanDisplace(world, 0, 1, 0, 0), "开关关 → 退回旧行为");
         }
 
         [Test]
