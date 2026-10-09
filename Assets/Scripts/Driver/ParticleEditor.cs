@@ -14,6 +14,7 @@ namespace TapTap2026.Game
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
     /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
     /// **H** 进入**高速模式**（倍速钉满档 16×、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
+    /// 结算面板末尾追加一行**胜负结论**——过关「过关！」绿、未过关「未过关：<c>理由</c>」红，取自 <see cref="GameController"/>）；
     /// **Enter 或 H** 确认退出——退出后倍速回 1×、仍保持暂停，由玩家自己按空格继续）；
     /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
     /// **右上角光照面板**：三个输入框直接写 <see cref="ParticleLightDriver"/> 的**强度 / 亮相位刻数 / 暗相位刻数**
@@ -33,6 +34,8 @@ namespace TapTap2026.Game
     /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者），本类只管输入与显示：
     /// <see cref="ParticleSimulationDriver.HighSpeedActive"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
     /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
+    /// <para>阶段限制：<see cref="SetPlacementFilter"/> 由 <see cref="GameController"/> 在阶段启动时按 JSON 调用，
+    /// 与 Inspector 白名单取交集（只缩小、不放开）；清空（null / 空数组）即恢复默认白名单。</para>
     /// <para>光照面板写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：该组件每帧把字段写回世界，
     /// 写世界会被下一帧覆盖。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
     /// </remarks>
@@ -41,6 +44,10 @@ namespace TapTap2026.Game
     {
         [SerializeField] private ParticleSimulationDriver _driver;
         [SerializeField] private ParticleRenderer _renderer;
+
+        [Tooltip("可选：高速模式结算面板据此追加一行胜负结论。留空则 Awake 里 GetComponent → FindObjectOfType 兜底；" +
+                 "仍找不到就只不显示胜负行（不报错）。")]
+        [SerializeField] private GameController _gameController;
 
         [Tooltip("可选：右上角光照面板（强度 / 亮相位刻数 / 暗相位刻数三个输入框）的写入口。留空则 Awake 里 " +
                  "GetComponent → FindObjectOfType 兜底；仍找不到就不画光照面板（不报错）。")]
@@ -96,6 +103,11 @@ namespace TapTap2026.Game
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
         private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();
         private readonly HashSet<ushort> _placeableGas = new HashSet<ushort>();
+
+        /// <summary>阶段投放限制（<see cref="SetPlacementFilter"/>）：非 null 时只允许集合里的 typeId 投放。null = 无限制。
+        /// 在 <see cref="IsPlaceable"/> 里与既有白名单取交集。</summary>
+        private HashSet<ushort> _placementFilter;
+
         private ushort[] _placeable = new ushort[0];
         private int _cursor;
         private ushort _typeId;
@@ -104,6 +116,13 @@ namespace TapTap2026.Game
         private string _probeText;
         private string _highSpeedHudText;
         private string[] _highSpeedReportLines;
+
+        /// <summary>结算行末尾那一行是不是胜负结论（<see cref="BuildHighSpeedReport"/> 时确定）。</summary>
+        private bool _highSpeedReportHasVerdict;
+
+        /// <summary>胜负结论是否为过关（决定结算面板那一行的颜色）。</summary>
+        private bool _highSpeedVerdictPass;
+
         private float _lastSinglePlacementTime = float.NegativeInfinity;
 
         /// <summary>光照面板三个输入框的当前文本（草稿）。失焦时与驱动器同步，聚焦时原样保留用户敲的内容。</summary>
@@ -114,6 +133,12 @@ namespace TapTap2026.Game
         /// <summary>正在接收键盘的光照输入框控件名（空 = 没有）。<see cref="OnGUI"/> 里更新，
         /// <see cref="Update"/> 据此把键盘热键整段让给输入框。</summary>
         private string _focusedLightControl = string.Empty;
+
+        /// <summary>结算面板胜负行的绿色（过关）。</summary>
+        private static readonly Color PassColor = new Color(0.25f, 0.9f, 0.35f);
+
+        /// <summary>结算面板胜负行的红色（未过关）。</summary>
+        private static readonly Color FailColor = new Color(1f, 0.35f, 0.35f);
 
         /// <summary>光照输入框解析不出合法值时的文本色（不提交，见 <see cref="DrawLightPanel"/>）。</summary>
         private static readonly Color InvalidLightColor = new Color(1f, 0.45f, 0.45f);
@@ -175,6 +200,17 @@ namespace TapTap2026.Game
             if (_renderer == null)
             {
                 _renderer = FindObjectOfType<ParticleRenderer>();
+            }
+
+            // 结算面板的胜负行来源；找不到就只是不显示那一行（可选依赖，不报错）。
+            if (_gameController == null)
+            {
+                _gameController = GetComponent<GameController>();
+            }
+
+            if (_gameController == null)
+            {
+                _gameController = FindObjectOfType<GameController>();
             }
 
             // 右上角光照面板的写入口；找不到就整块不画（可选依赖，不报错）。
@@ -402,6 +438,7 @@ namespace TapTap2026.Game
             session.Exit(_driver.Speed);
             _highSpeedHudText = null;
             _highSpeedReportLines = null;
+            _highSpeedReportHasVerdict = false;
         }
 
         /// <summary>
@@ -415,6 +452,7 @@ namespace TapTap2026.Game
             {
                 _highSpeedHudText = null;
                 _highSpeedReportLines = null;
+                _highSpeedReportHasVerdict = false;
                 return;
             }
 
@@ -454,8 +492,11 @@ namespace TapTap2026.Game
         /// <summary>
         /// 结算行：遍历注册表，列出**产生或死亡非零**的类型，每行 <c>名称 产生 N 死亡 M</c>；
         /// 全零类型过滤掉。空气（typeId 0）不显示——它只是被抹除留下的真空，不是「产生」。
+        /// 若 <see cref="GameController.HasVerdict"/> 为真（本会话已求过胜负），末尾追加一行结论：
+        /// 过关 <c>过关！</c> / 未过关 <c>未过关：&lt;理由&gt;</c>，并把过关与否记进
+        /// <see cref="_highSpeedVerdictPass"/> 供 <see cref="DrawHighSpeedReport"/> 上色。
         /// </summary>
-        private static string[] BuildHighSpeedReport(HighSpeedSession session)
+        private string[] BuildHighSpeedReport(HighSpeedSession session)
         {
             ParticleType[] types = ParticleRegistry.Types;
             var lines = new List<string>();
@@ -481,10 +522,19 @@ namespace TapTap2026.Game
                     DisplayName(type), births, deaths));
             }
 
+            _highSpeedReportHasVerdict = _gameController != null && _gameController.HasVerdict;
+            if (_highSpeedReportHasVerdict)
+            {
+                _highSpeedVerdictPass = _gameController.LastResult;
+                lines.Add(_highSpeedVerdictPass
+                    ? "过关！"
+                    : "未过关：" + (_gameController.LastReason ?? string.Empty));
+            }
+
             return lines.ToArray();
         }
 
-        /// <summary>结算面板：屏幕中央的 <see cref="GUI.Box"/> + 逐行统计 + 确认提示。</summary>
+        /// <summary>结算面板：屏幕中央的 <see cref="GUI.Box"/> + 逐行统计 + 胜负行（末行，绿 / 红）+ 确认提示。</summary>
         private void DrawHighSpeedReport()
         {
             const float width = 360f;
@@ -501,7 +551,18 @@ namespace TapTap2026.Game
             float y = box.y + 8f + lineHeight;
             for (int i = 0; i < _highSpeedReportLines.Length; i++)
             {
-                GUI.Label(new Rect(box.x + 12f, y, width - 24f, lineHeight), _highSpeedReportLines[i]);
+                var line = new Rect(box.x + 12f, y, width - 24f, lineHeight);
+                if (_highSpeedReportHasVerdict && i == _highSpeedReportLines.Length - 1)
+                {
+                    GUI.color = _highSpeedVerdictPass ? PassColor : FailColor;
+                    GUI.Label(line, _highSpeedReportLines[i]);
+                    GUI.color = Color.white;
+                }
+                else
+                {
+                    GUI.Label(line, _highSpeedReportLines[i]);
+                }
+
                 y += lineHeight;
             }
 
@@ -645,6 +706,57 @@ namespace TapTap2026.Game
         {
             _brushRadius = Mathf.Clamp(BrushRadius + steps, MinBrushRadius, MaxBrushRadius);
             RefreshHud();
+        }
+
+        /// <summary>
+        /// 按名字列表限制可投放的粒子类型（按 <see cref="ParticleTypeInfo.DebugName"/> 或类名匹配，规则同
+        /// <see cref="ResolveTypeNames"/>）：生效的是「名单 ∩ 既有白名单」——名单只会**缩小**可投范围，
+        /// 不会把草 / 湿土等原本不可投放的类型放进来。重算后自动选中第一个可投类型。
+        /// </summary>
+        /// <param name="allowedNames">允许投放的类型名；null 或空数组 = 清除限制、恢复默认白名单行为。
+        /// 查不到的名字记警告并跳过（同 <see cref="ResolveTypeNames"/>）。</param>
+        /// <remarks>
+        /// 名单与既有白名单的交集为空时记错误并**忽略这次调用**（<see cref="_placementFilter"/> 与可投放列表保持原样）——
+        /// 既不能让编辑器落进「一个类型都选不了」的死状态，也不能因为一次配置错误就悄悄把限制丢掉。
+        /// <para><b>调用时机</b>：必须在 <c>Awake</c> 之后（注册表已由 <c>BeforeSceneLoad</c> 钩子填好、
+        /// 本组件也已完成初始白名单解析）。<see cref="GameController"/> 在阶段启动时调用，晚于所有 <c>Awake</c>，安全。</para>
+        /// </remarks>
+        public void SetPlacementFilter(string[] allowedNames)
+        {
+            if (allowedNames == null || allowedNames.Length == 0)
+            {
+                _placementFilter = null;
+                _placeable = CollectPlaceableTypes();
+            }
+            else
+            {
+                HashSet<ushort> previousFilter = _placementFilter;
+                ushort[] previousPlaceable = _placeable;
+
+                var filter = new HashSet<ushort>();
+                ResolveTypeNames(allowedNames, filter);
+
+                _placementFilter = filter;
+                _placeable = CollectPlaceableTypes();
+
+                if (_placeable.Length == 0)
+                {
+                    Debug.LogError(
+                        "[ParticleEditor] SetPlacementFilter：名单与既有白名单的交集为空，本次调用被忽略，保持当前可投放类型不变。");
+                    _placementFilter = previousFilter;
+                    _placeable = previousPlaceable;
+                    return;
+                }
+            }
+
+            if (_placeable.Length == 0)
+            {
+                Debug.LogError(
+                    "[ParticleEditor] SetPlacementFilter：没有任何可投放的粒子类型。请确认 ParticleRegistration.RegisterAll() 已执行。");
+                return;
+            }
+
+            Select(0);
         }
 
         /// <summary>
@@ -883,6 +995,13 @@ namespace TapTap2026.Game
                 return false;
             }
 
+            // 阶段限制（GameController.SetPlacementFilter）：名单外的类型一律不可投放。
+            // _placementFilter == null（默认）时这一步整段跳过，行为与加过滤前逐位一致。
+            if (_placementFilter != null && !_placementFilter.Contains((ushort)typeId))
+            {
+                return false;
+            }
+
             // Gas 默认不可手刷；白名单（_placeableGasTypes，默认火）里的 Gas 例外放行。
             bool isGas = (type.Info.Tags & ParticleTags.Gas) != 0;
             return !isGas || _placeableGas.Contains((ushort)typeId);
@@ -891,7 +1010,7 @@ namespace TapTap2026.Game
         /// <summary>
         /// 把 Inspector 上的类型名列表解析成 typeId 集合：按 <see cref="ParticleTypeInfo.DebugName"/> 或类名匹配
         /// 注册表里的每一个类型。找不到的名字记一条警告并跳过（拼错类型名不会静默失效）。
-        /// 注册表由 <c>BeforeSceneLoad</c> 钩子填充，本方法只在 <c>Awake</c> 里调用，因此读得到全部类型。
+        /// 注册表由 <c>BeforeSceneLoad</c> 钩子填充，本方法只在 <c>Awake</c> 与 <c>SetPlacementFilter</c> 里调用，因此读得到全部类型。
         /// </summary>
         private static void ResolveTypeNames(string[] names, HashSet<ushort> destination)
         {

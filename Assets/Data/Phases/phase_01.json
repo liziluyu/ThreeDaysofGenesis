@@ -1,0 +1,16 @@
+{
+  "dialogueId": "phase_01_intro",
+  "nextPhaseId": "phase_02",
+  "sandboxWidth": 160,
+  "sandboxHeight": 90,
+  "victory": {
+    "minSurfaceTemperature": 5.0,
+    "maxSurfaceTemperature": 40.0,
+    "particles": [
+      {
+        "type": "GrassParticle",
+        "minBirths": 10
+      }
+    ]
+  }
+}

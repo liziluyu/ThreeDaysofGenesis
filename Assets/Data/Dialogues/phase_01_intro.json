@@ -1,0 +1,12 @@
+{
+  "id": "phase_01_intro",
+  "onEnd": "start_simulation",
+  "segments": [
+    {
+      "id": "start",
+      "lines": [
+        { "speaker": "", "text": "开发期占位：第一阶段开始，随便玩。" }
+      ]
+    }
+  ]
+}

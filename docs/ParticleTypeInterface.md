@@ -1277,7 +1277,8 @@ Assets/Tests/EditMode/
   WeatherParticleTests.cs                     气象：浮力方向（热升/冷沉/死区，含绝热直减降温）/水平热压流（直调原语，隔离表）+ 湿度场（蒸发提升附近湿度 / 水平冷→热 / 竖直越热越向上 / 随风平流 / 输送守恒 / 凝结释放潜热）+ 降雨（碰并凑整、液体不持有湿度）+ 水循环总量守恒 + 云渲染（湿度染白）+ 云遮光（按列 Beer–Lambert 衰减、逐列独立）（生产注册路径——跨类型相变依赖 ParticleIds 回填；云遮光测试用隔离表 + `new ParticleWorld(w,h,seed,types)` 直构）
   ThermalDriftTests.cs                        大气水平热压流的风向记忆（隔离类型表，直接调 TryThermalDrift / OnMotion）：两格走廊不再逐帧往返（B1 回归）/ 大温差净输运保留 / 梯度消失即清记忆允许新方向 / 写记忆不破坏 bit0 处理标记 / 浮力换行清记忆 / 反向漂移被挡且记忆保留
   AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填（含「不带 Organic」的防截胡断言）/ 吸水发芽（头顶水变大气）且守恒 / 水柱到顶也能发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 逐格生长消耗一格水 / 只剩一格保命水不长 / 株高到顶不长 / 四种死法各自还水 / 被固体覆盖走湿度场且守恒 / 液体上方不算压 / 环境低温（T=0）不冻死 / 不移动 / 撒种顶水位 +1 且基质不消耗 / 全流程（发芽→补水→生长→过热死）总量守恒
-  GrassParticleTests.cs                       草的寿命（生产注册路径，随机刻默认 0 ⇒ 隔离出唯一的衰老变量）：新生草从 shade = 0（最年轻档）开始 / 不满 TicksPerShadeStep 帧颜色档不动、满一档 +1 / 第 1200 逻辑帧寿终（终态只允许空气或腐殖质）/ 衰老与所在逻辑帧的场 pass 不消耗世界随机流（对照世界取下一个 NextUInt 相等）/ 颜色渐变（调色板长度 = ShadeCount、红分量随年龄非递减、最老档比最年轻档更偏黄、渲染像素经 ParticlePixelBuffer 按 shade 查表后同样更偏黄绿）  FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、不浮空；锚点含火链——贴地圆刷 13 格全落、悬空 0 格；大气可投、越界不可投）+ 烤热沙石与 1/20 淬熄 + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/5 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
+  GrassParticleTests.cs                       草的寿命（生产注册路径，随机刻默认 0 ⇒ 隔离出唯一的衰老变量）：新生草从 shade = 0（最年轻档）开始 / 不满 TicksPerShadeStep 帧颜色档不动、满一档 +1 / 第 1200 逻辑帧寿终（终态只允许空气或腐殖质）/ 衰老与所在逻辑帧的场 pass 不消耗世界随机流（对照世界取下一个 NextUInt 相等）/ 颜色渐变（调色板长度 = ShadeCount、红分量随年龄非递减、最老档比最年轻档更偏黄、渲染像素经 ParticlePixelBuffer 按 shade 查表后同样更偏黄绿）
+  FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、不浮空；锚点含火链——贴地圆刷 13 格全落、悬空 0 格；大气可投、越界不可投）+ 烤热沙石与 1/20 淬熄 + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/5 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
   MotionSleepTests.cs                        运动休眠（阶段 B）：休眠透明性（同一受热场景 sleep on/off 跑 200 周期后逐格 typeId / shade / 非 bit0 flags、热场、湿度场一致）/ 静止水池求值数为 0（写入后回升）/ 石头净空链的 19 格远写唤醒（清空最远那格后石头正确滑动）/ 湿度变化（无写入）也唤醒读温度的决策 / MotionSleepEnabled=false 回退全扫描且与 true 逐格一致（含来回切换）
   LogicScanTests.cs                          逻辑帧混合扫描：休眠开时活跃场景（石头底/土层/草皮/一池水/湿土，光照开、随机刻 48）300 周期 ×（3 运动帧 + 1 逻辑帧）sleep on/off 逐位透明（Cells 口径同 MotionSleepTests + 热场 + 湿度场）/ **火注热的同帧可见性回归**（320×180 生产形态：全网格大气 + 陆海 + 光照 + 随机刻 48，预热 540 周期后在 y=28 点 x=40..119 一排火，之后 300 周期**每周期**比状态哈希、末态逐格断开——未把扫描中的热变化同帧并入候选位图时首个点火周期即发散）/ HasLogic 契约（hasLogic:false 的 OnLogic 有副作用也永不被调、默认 true 每逻辑帧照常调；覆盖混合扫描与全网格两条路径）/ 回归：休眠开时沸点之上的水仍蒸发（OnLogic 未被休眠）
   HeatSkipTests.cs                           热传导不动点跳过：静止世界首帧真跑后持续跳过 / 注热后恢复执行再收敛 / 改格类型后恢复执行再收敛 / 灯照脉冲必须被下一帧热 pass 传导、暗相收敛后进入跳过 / 跳过 vs 每帧重算（FixpointSkipEnabled）逐位透明
@@ -1286,7 +1287,7 @@ Assets/Tests/EditMode/
   DialogueRunnerTests.cs                      对话系统（纯 C#，不碰模拟；见 `docs/DialogueSystem.md`）：JSON 解析（合法 / 畸形 / 无 segments / 角色表缺失）/ 进度推进 / 选项点阻塞与跳转 / 非法 goto 以警告收尾 / `OnEnd` 只触发一次 / 历史顺序 / Restart / 空段立即结束
 ```
 
-测试总数 **257**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 19 + `GrassParticleTests` 5 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 8 + `CameraPanTests` 5 + `DialogueRunnerTests` 15。
+测试总数 **288**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 19 + `GrassParticleTests` 5 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。EditMode 测试程序集引用 `TapTap2026.Simulation` + `TapTap2026.Game`（后者只为 `CameraPanTests` 这类渲染/驱动层测试；测试逻辑仍以纯模拟断言为主）。
 
@@ -1406,7 +1407,7 @@ Particle Sandbox
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 内核（纯 C#） | `Simulation/HighSpeedSession.cs` + `Simulation/HighSpeedMonitor.cs` | 状态机、产生 / 死亡计数、采样、完成判定；不引用 UnityEngine |
+| 内核（纯 C#） | `Simulation/HighSpeedSession.cs` + `Simulation/HighSpeedMonitor.cs` | 状态机、产生 / 死亡计数、采样、完成判定、终态存量扫描；不引用 UnityEngine |
 | 驱动 | `ParticleSimulationDriver`：`HighSpeed`（懒建，用 `settings.HighSpeedLogicFrames`）/ `EnterHighSpeed()` / `HighSpeedActive`；每逻辑帧转发一次 `OnLogicTick()`；见到 `Completed` 自动 `Pause()` | 只做转发与暂停 |
 | 输入 / 显示 | `ParticleEditor`：`H` 进入；模式中**除空格（暂停）外的输入全锁**；左下角 HUD（**实测倍速** + 进度 + 实时地表温度 / 湿度）；结算面板用 `Enter` 或 `H` 确认退出 | 只做输入与渲染 |
 
@@ -1435,6 +1436,7 @@ namespace TapTap2026.Simulation
         public void OnLogicTick();                  // 每逻辑帧一次（世界跑完这一帧之后）
         public long GetBirths(int typeId);
         public long GetDeaths(int typeId);
+        public long GetFinalCount(int typeId);   // 跑满时长那一刻全网格扫一次：typeId 的存量格数（含空气；未结算 / 越界 / Exit 为 0）
     }
 }
 ```
@@ -1472,6 +1474,14 @@ namespace TapTap2026.Simulation
   **不重扫网格**。没有非气体格的列贡献 0，除数恒为网格宽 W。
 - **世界平均湿度** = `湿度总量 / (W·H)`：O(1)，直接读 `HumidityField.Total`。
 
+### 终态存量扫描（完成时一次）
+
+跑到 `duration` 那一刻（`OnLogicTick` 置 `Completed` **之前**）对全网格做**一次** `O(W·H)` 存量扫描：
+遍历每格的 `typeId` 累加出**每种 typeId 的存量格数**（空气 `typeId 0` 也计），存入按类型表长度分配的
+`long[]`，经 `GetFinalCount(typeId)` 读取——**未结算 / 越界 typeId / 已 `Exit`** 一律返回 0。
+它是**纯观察者**：只读 `ParticleWorld.GetCell`，**零 RNG 消耗、零格子 / 场写入**，不影响世界推进结果；
+此后 `OnLogicTick` 是空操作，存量定格在完成那一刻，不再重扫。这也是本模式唯一一次全网格读。
+
 ### 湿度总量：守恒核实结论与 O(1) 增量维护
 
 **核实结论：`HumidityStepKernel` 的 pair 运送净守恒。** 内核每帧把旧场 `Array.Copy` 到新场，
@@ -1488,16 +1498,16 @@ namespace TapTap2026.Simulation
 
 ### 确定性：纯观察者保证
 
-监视器**零 RNG 消耗、零格子写入、零场写入**——只读 `ParticleWorld.Cells` 与类型标签；
-`Enter` / `Exit` 只挂 / 摘 `_monitor` 并改 `SpeedController` 状态，不碰网格。
-因此「同种子 + 同命令序列」下，挂监视器的世界与不挂的世界逐格（`typeId` / `flags` / `shade` / Q / 湿度）
+监视器与终态存量扫描**零 RNG 消耗、零格子写入、零场写入**——只读 `ParticleWorld.Cells` / `GetCell` 与类型标签；
+`Enter` / `Exit` 只挂 / 摘 `_monitor`、清 / 置 `_finalCounts` 并改 `SpeedController` 状态，不碰网格。
+因此「同种子 + 同命令序列」下，挂监视器（含跑满时长触发一次扫描）的世界与不挂的世界逐格（`typeId` / `flags` / `shade` / Q / 湿度）
 以及随机流位置（后续 `NextUInt()` 序列）**完全一致**——`HighSpeedSessionTests` 有回归测试。
 
 ### 进入 / 退出语义
 
 - `Enter(speed)`：**幂等**；`SetSpeed(SpeedController.MaxSpeed)`（钉到满档、**手动档**——不是自适应；跑不满
-  由预算封顶，实测吞吐看 `EffectiveSpeed`），创建并挂上监视器，清零计时 / 样本 / 两个 `Latest*`。
-- `Exit(speed)`：**幂等**；摘监视器、清计数，再 `SetSpeed(SpeedController.MinSpeed)`（钉回 1×——普通编辑模式
+  由预算封顶，实测吞吐看 `EffectiveSpeed`），创建并挂上监视器，清零计时 / 样本 / 两个 `Latest*` 与终态存量。
+- `Exit(speed)`：**幂等**；摘监视器、清计数与终态存量，再 `SetSpeed(SpeedController.MinSpeed)`（钉回 1×——普通编辑模式
   恒 1×，不恢复进入前的档位）。**暂停由驱动 / 编辑器负责**，内核不管暂停。
 - `OnLogicTick()` 在未进入或已 `Completed` 时是**空操作**——所以完成后 `ElapsedLogicTicks` 精确停在
-  `duration`，不会溢出（满程样本数 = `duration / 10`）。
+  `duration`，不会溢出（满程样本数 = `duration / 10`），终态存量也定格在完成那一刻（不再重扫）。

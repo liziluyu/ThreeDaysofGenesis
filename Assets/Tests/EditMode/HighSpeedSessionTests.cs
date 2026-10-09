@@ -6,7 +6,8 @@ namespace TapTap2026.Tests
     /// <summary>
     /// <see cref="HighSpeedSession"/> 的行为契约：进入 / 退出恢复倍速状态、产生 / 死亡计数（含空气、Swap 不计）、
     /// 采样节拍与最新值（未采样为 NaN）、地表高度的增量维护、湿度总量的 O(1) 增量镜像与逐格真源一致，
-    /// 以及「监视器是纯观察者」的确定性回归（挂 / 不挂监视器，世界逐格与 RNG 流位置完全一致）。
+    /// 跑满时长的一次性终态存量扫描（含空气；未结算 / Exit 为 0），
+    /// 以及「监视器 / 扫描是纯观察者」的确定性回归（挂与不挂会话，世界逐格与 RNG 流位置完全一致）。
     /// </summary>
     /// <remarks>
     /// 全部用隔离类型表（<see cref="TestTables.Build"/>）构造世界，不触碰全局注册表；只调公开 API，
@@ -352,7 +353,207 @@ namespace TapTap2026.Tests
             session.Exit(speed);
         }
 
+        // ============================== 终态存量扫描 ==============================
+
+        /// <summary>
+        /// 跑满时长那一刻对全网格扫一次存量：每种 typeId 的格数（空气也计）与逐格真源一致；
+        /// 计数格数用 <c>GetCell(x,y).typeId</c> 自行统计做对照。
+        /// </summary>
+        [Test]
+        public void FinalCount_CountsEveryTypeAcrossTheGridIncludingAir()
+        {
+            const ushort stone = 1;
+            const ushort water = 2;
+            const ushort soil = 3;
+
+            ParticleWorld world = new ParticleWorld(
+                4, 3, 23u,
+                TestTables.Build(new TestStaticParticle(), new TestStaticParticle(), new TestStaticParticle()));
+
+            for (int x = 0; x < 4; x++)
+            {
+                world.Set(x, 0, stone);            // 4 格石头
+            }
+
+            world.Set(0, 1, water);                // 2 格水
+            world.Set(1, 1, water);
+            world.Set(2, 1, soil);                 // 1 格土；其余 5 格是空气
+
+            var speed = new SpeedController();
+            var session = new HighSpeedSession(world, 3);
+            session.Enter(speed);
+
+            Assert.AreEqual(0L, session.GetFinalCount(stone), "未跑满时长前不扫描");
+
+            for (int i = 0; i < 3; i++)
+            {
+                session.OnLogicTick();
+            }
+
+            Assert.IsTrue(session.Completed);
+            Assert.AreEqual(4L, session.GetFinalCount(stone));
+            Assert.AreEqual(2L, session.GetFinalCount(water));
+            Assert.AreEqual(1L, session.GetFinalCount(soil));
+            Assert.AreEqual(12 - 4 - 2 - 1, session.GetFinalCount(ParticleRegistry.AirTypeId), "空气也计数");
+
+            for (ushort typeId = 0; typeId < world.Types.Length; typeId++)
+            {
+                Assert.AreEqual(
+                    CountCells(world, typeId), session.GetFinalCount(typeId),
+                    $"typeId {typeId} 的存量与逐格真源一致");
+            }
+
+            Assert.AreEqual(0L, session.GetFinalCount(999), "越界 typeId 返回 0");
+
+            session.Exit(speed);
+        }
+
+        /// <summary>未跑满时长（未结算）时 <c>GetFinalCount</c> 恒为 0。</summary>
+        [Test]
+        public void FinalCount_ReturnsZeroBeforeCompletion()
+        {
+            ParticleWorld world = new ParticleWorld(2, 2, 29u, TestTables.Build(new TestStaticParticle()));
+            world.Set(0, 0, 1);
+
+            var speed = new SpeedController();
+            var session = new HighSpeedSession(world, 5);
+            session.Enter(speed);
+
+            Assert.AreEqual(0L, session.GetFinalCount(0));
+            Assert.AreEqual(0L, session.GetFinalCount(1));
+
+            for (int i = 0; i < 4; i++)
+            {
+                session.OnLogicTick();
+            }
+
+            Assert.IsFalse(session.Completed);
+            Assert.AreEqual(0L, session.GetFinalCount(1), "第 duration − 1 帧仍未结算 ⇒ 0");
+
+            session.Exit(speed);
+        }
+
+        /// <summary>Exit 之后存量归零（会话结束后不再可读）。</summary>
+        [Test]
+        public void FinalCount_ReturnsZeroAfterExit()
+        {
+            ParticleWorld world = new ParticleWorld(2, 2, 31u, TestTables.Build(new TestStaticParticle()));
+            world.Set(0, 0, 1);
+
+            var speed = new SpeedController();
+            var session = new HighSpeedSession(world, 2);
+            session.Enter(speed);
+            session.OnLogicTick();
+            session.OnLogicTick();
+
+            Assert.IsTrue(session.Completed);
+            Assert.AreEqual(1L, session.GetFinalCount(1));
+
+            session.Exit(speed);
+            Assert.AreEqual(0L, session.GetFinalCount(1), "Exit 清终态存量");
+            Assert.AreEqual(0L, session.GetFinalCount(ParticleRegistry.AirTypeId));
+        }
+
+        /// <summary>
+        /// 终态扫描只在跑满时长那一刻发生一次：完成后再 <c>OnLogicTick</c> 不重扫，
+        /// 完成之后的格子改动不会反映到已定格的存量里。
+        /// </summary>
+        [Test]
+        public void FinalCount_IsScannedExactlyOnce()
+        {
+            ParticleWorld world = new ParticleWorld(3, 3, 37u, TestTables.Build(new TestStaticParticle()));
+            world.Set(0, 0, 1);
+
+            var speed = new SpeedController();
+            var session = new HighSpeedSession(world, 2);
+            session.Enter(speed);
+            session.OnLogicTick();
+            session.OnLogicTick();
+
+            Assert.IsTrue(session.Completed);
+            Assert.AreEqual(1L, session.GetFinalCount(1));
+            Assert.AreEqual(8L, session.GetFinalCount(ParticleRegistry.AirTypeId));
+
+            world.Set(1, 1, 1);                    // 完成之后的世界改动
+            for (int i = 0; i < 3; i++)
+            {
+                session.OnLogicTick();
+            }
+
+            Assert.AreEqual(1L, session.GetFinalCount(1), "完成后的改动不被重扫进来");
+            Assert.AreEqual(8L, session.GetFinalCount(ParticleRegistry.AirTypeId));
+            Assert.AreEqual(2, session.ElapsedLogicTicks, "完成后计时不再增长");
+
+            session.Exit(speed);
+        }
+
+        /// <summary>
+        /// 终态扫描是纯观察者：同种子同命令序列，跑到「完成 + 扫描」那一刻，挂会话的世界与裸世界逐格相等、
+        /// 随机流位置一致（后续 <c>NextUInt</c> 逐值相同），且存量与逐格真源一致。
+        /// </summary>
+        [Test]
+        public void FinalScan_IsPureObserver_WorldAndRngStreamStayIdentical()
+        {
+            const int frames = 30;
+
+            ParticleWorld reference = BuildDeterminismWorld();
+            ParticleWorld monitored = BuildDeterminismWorld();
+
+            var speed = new SpeedController();
+            var session = new HighSpeedSession(monitored, frames);
+            session.Enter(speed);
+
+            for (int i = 0; i < frames; i++)
+            {
+                reference.StepLogic();
+                monitored.StepLogic();
+                session.OnLogicTick();
+            }
+
+            Assert.IsTrue(session.Completed, "帧数恰好覆盖完成 + 扫描那一刻");
+
+            for (int i = 0; i < reference.CellCount; i++)
+            {
+                Assert.AreEqual(
+                    (int)reference.Cells[i].typeId, (int)monitored.Cells[i].typeId,
+                    $"格子 {i} 的 typeId 不一致");
+                Assert.AreEqual(reference.Heat.Values[i], monitored.Heat.Values[i], $"格子 {i} 的热量不一致");
+                Assert.AreEqual(
+                    reference.Humidity.GetAt(i), monitored.Humidity.GetAt(i), $"格子 {i} 的湿度不一致");
+            }
+
+            Assert.AreEqual(reference.NextUInt(), monitored.NextUInt(), "终态扫描不得消耗随机流");
+            Assert.AreEqual(reference.NextUInt(), monitored.NextUInt());
+
+            for (ushort typeId = 0; typeId < monitored.Types.Length; typeId++)
+            {
+                Assert.AreEqual(
+                    CountCells(monitored, typeId), session.GetFinalCount(typeId),
+                    $"typeId {typeId} 的存量与逐格真源一致");
+            }
+
+            session.Exit(speed);
+        }
+
         // ============================== 辅助 ==============================
+
+        /// <summary>逐格统计 typeId 的格数（<c>GetFinalCount</c> 的真源对照）。</summary>
+        private static long CountCells(ParticleWorld world, ushort typeId)
+        {
+            long count = 0;
+            for (int y = 0; y < world.Height; y++)
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    if (world.GetCell(x, y).typeId == typeId)
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            return count;
+        }
 
         /// <summary>再推进 <see cref="HighSpeedSession.SampleInterval"/> 个逻辑帧，逼出一个新样本。</summary>
         private static void SampleOnce(HighSpeedSession session)

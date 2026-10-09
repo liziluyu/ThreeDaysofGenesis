@@ -1,0 +1,28 @@
+{
+  "sandboxWidth": 240,
+  "sandboxHeight": 135,
+  "availableParticles": [
+    "SandParticle",
+    "WaterParticle",
+    "SoilParticle",
+    "GrassSeedParticle",
+    "FireParticle"
+  ],
+  "victory": {
+    "minSurfaceTemperature": 10.0,
+    "maxSurfaceTemperature": 30.0,
+    "minAverageHumidity": 0.35,
+    "maxAverageHumidity": 0.75,
+    "particles": [
+      {
+        "type": "GrassParticle",
+        "minBirths": 40,
+        "maxDeaths": 200
+      },
+      {
+        "type": "WaterParticle",
+        "minBirths": 5
+      }
+    ]
+  }
+}

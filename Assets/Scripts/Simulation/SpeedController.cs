@@ -138,6 +138,20 @@ namespace TapTap2026.Simulation
             get { return _speed; }
         }
 
+        /// <summary>本实例的档位边界（构造注入，经夹取）——钉满档/钉回最低档应问实例而不是类常量
+        /// <see cref="MaxSpeed"/>/<see cref="MinSpeed"/>：后者只是默认值，资产可把上限配成别的数。</summary>
+        public float MinSpeedLimit
+        {
+            get { return _minSpeed; }
+        }
+
+        /// <summary><inheritdoc cref="MinSpeedLimit"/></summary>
+        public float MaxSpeedLimit
+        {
+            get { return _maxSpeed; }
+        }
+
+
         /// <summary>是否处于自适应档。默认 false（手动档）。</summary>
         public bool Adaptive
         {
