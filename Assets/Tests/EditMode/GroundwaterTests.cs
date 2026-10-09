@@ -202,5 +202,41 @@ namespace TapTap2026.Tests
                 ParticleRules.CanDisplace(world, 1, 1, 1, 0),
                 "开关关 → 退回旧的 rank 置换行为");
         }
+
+        [Test]
+        public void WaterPocketInStone_StaysBitIdentical()
+        {
+            // 前提：默认世界热学死寂——无光照、环境热 0、辐射 0 ⇒ T 恒 0，无相变 / 对流；
+            // 本用例只验证地下水闸门下的完全静止（若将来默认参数变化，失败信息需另行判断）。
+            ParticleWorld world = CreateProductionWorld(12, 12);
+            FillRect(world, 0, 0, 11, 11, ParticleIds.Stone);
+            FillRect(world, 4, 4, 6, 6, ParticleIds.Water);
+
+            ulong before = LayoutHash(world);
+            int waterBefore = CountType(world, ParticleIds.Water);
+
+            RunCycles(world, 120);
+
+            Assert.AreEqual(before, LayoutHash(world), "石头里的水囊与整块石头都不许动");
+            Assert.AreEqual(waterBefore, CountType(world, ParticleIds.Water), "水量守恒");
+        }
+
+        [Test]
+        public void BrushShapedWaterPocketInStone_StaysBitIdentical()
+        {
+            ParticleWorld world = CreateProductionWorld(20, 16);
+            FillRect(world, 0, 0, 19, 15, ParticleIds.Stone);
+            // 画刷形状：4×3 主体 + 斜边（模拟手绘的水囊边界）。
+            FillRect(world, 6, 6, 9, 8, ParticleIds.Water);
+            world.Set(10, 8, ParticleIds.Water);
+            world.Set(10, 9, ParticleIds.Water);
+            world.Set(11, 9, ParticleIds.Water);
+
+            ulong before = LayoutHash(world);
+
+            RunCycles(world, 120);
+
+            Assert.AreEqual(before, LayoutHash(world), "画刷画出的水囊不许动");
+        }
     }
 }
