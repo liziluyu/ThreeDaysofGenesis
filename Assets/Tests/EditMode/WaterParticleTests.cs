@@ -4,7 +4,7 @@ using TapTap2026.Simulation;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿、确定性、
+    /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿（下落的固体在运动中，照旧可排开液体；静止固体则不能——见地下水规则）、确定性、
     /// 孤立水滴静止不抖动（平地 / 世界底行）、
     /// 液体热对流（暖水换位 / 死区 / 不抢下落 / 夜间海面反超陆面的涌现回归），
     /// 以及蒸发（慢蒸发不可见 / 沸腾可见 / 潜热吸热）与生产注册路径的回填与标签。
@@ -62,6 +62,23 @@ namespace TapTap2026.Tests
             }
 
             return count;
+        }
+
+        /// <summary>某类型的最高一格的 y；不存在时返回 -1。</summary>
+        private static int HighestTypeY(ParticleWorld world, ushort typeId)
+        {
+            for (int y = world.Height - 1; y >= 0; y--)
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    if (world.GetCell(x, y).typeId == typeId)
+                    {
+                        return y;
+                    }
+                }
+            }
+
+            return -1;
         }
 
         private static int RowCount(ParticleWorld world, ushort typeId, int y)
@@ -231,8 +248,9 @@ namespace TapTap2026.Tests
 
 
         /// <summary>
-        /// rank 规则的集成验证：沙（Solid，rank 3）从水柱上方落下，沉穿水到底；
-        /// 等量的水被置换上浮。沙与水各自守恒。
+        /// rank 规则的集成验证：沙（Solid，rank 3）从水柱上方落下，沉穿水到底；等量的水被置换上浮。
+        /// 沙与水各自守恒。下落的沙在运动中，照旧可排开液体（运动状态闸门——静止的固体则不能，
+        /// 见 <see cref="GroundwaterTests"/>）。
         /// </summary>
         [Test]
         public void Sand_SinksThrough_Water()
@@ -266,6 +284,92 @@ namespace TapTap2026.Tests
             Assert.AreEqual(WaterId, world.GetCell(4, 4).typeId);
             Assert.AreEqual(3, CountType(world, WaterId), "水量守恒");
             Assert.AreEqual(1, CountType(world, SandId), "沙量守恒");
+        }
+
+        /// <summary>
+        /// 开阔水域照旧：沙依旧沉穿水柱到底、等量的水被置换上浮
+        /// （下落的沙在运动中，照旧可排开液体）。这是地下水规则不得破坏的既有玩法。
+        /// </summary>
+        [Test]
+        public void Sand_SinksThrough_Water_InOpenBasin()
+        {
+            ParticleWorld world = CreateSandWorld(9, 12);
+            FillRow(world, 0, StoneId);
+
+            // 两侧石墙离水池足够远：池内每一列的水左右都是水，被向下压时有横向让位空间。
+            for (int y = 1; y < 12; y++)
+            {
+                world.Set(1, y, StoneId);
+                world.Set(7, y, StoneId);
+            }
+
+            // 5×4 水池，池面正上方一颗沙。
+            for (int y = 1; y <= 4; y++)
+            {
+                for (int x = 2; x <= 6; x++)
+                {
+                    world.Set(x, y, WaterId);
+                }
+            }
+
+            world.Set(4, 6, SandId);
+
+            for (int i = 0; i < 120; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(SandId, world.GetCell(4, 1).typeId, "开阔水域：沙照旧沉到底");
+            Assert.AreEqual(20, CountType(world, WaterId), "水量守恒");
+            Assert.AreEqual(1, CountType(world, SandId), "沙量守恒");
+            Assert.AreEqual(5, HighestTypeY(world, WaterId), "被挤出的水浮到原水面之上（池底被沙占掉一格）");
+        }
+
+        /// <summary>
+        /// 大块沙（3×3）也照旧沉穿开阔水池：块先从池面上方一格落下取得真实运动
+        /// （地下水闸门只放行「运动中」的固体置换液体），整块下沉、摊在池底，水被挤高。
+        /// </summary>
+        [Test]
+        public void SandBlock_SinksThrough_Water_InOpenBasin()
+        {
+            ParticleWorld world = CreateSandWorld(13, 14);
+            FillRow(world, 0, StoneId);
+
+            for (int y = 1; y < 14; y++)
+            {
+                world.Set(1, y, StoneId);
+                world.Set(11, y, StoneId);
+            }
+
+            // 9 格宽 × 6 深的水池，池面上方一整块 3×3 沙——与水面之间留一格空气：
+            // tick 0 由 Set 搭出的初始布局一律视作静止（无宽限期），沙块必须先真实下落一格取得
+            // 运动状态，才能在下一帧置换池面的水（地下水闸门只放行“运动中”的固体）。
+            for (int y = 1; y <= 6; y++)
+            {
+                for (int x = 2; x <= 10; x++)
+                {
+                    world.Set(x, y, WaterId);
+                }
+            }
+
+            for (int y = 8; y <= 10; y++)
+            {
+                for (int x = 5; x <= 7; x++)
+                {
+                    world.Set(x, y, SandId);
+                }
+            }
+
+            for (int i = 0; i < 300; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(9, CountType(world, SandId), "沙量守恒");
+            Assert.AreEqual(54, CountType(world, WaterId), "水量守恒");
+            Assert.AreEqual(SandId, world.GetCell(6, 1).typeId, "整块沙沉降到底（同行相邻格先落者腾出的水让它一路沉底）");
+            Assert.LessOrEqual(HighestTypeY(world, SandId), 6, "沙不高于原水面（全部没入池内）");
+            Assert.GreaterOrEqual(HighestTypeY(world, WaterId), 7, "被挤出的水升到原水面之上");
         }
 
         /// <summary>

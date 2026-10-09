@@ -99,7 +99,9 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// <paramref name="toX"/>,<paramref name="toY"/> 能否被 <paramref name="fromX"/>,<paramref name="fromY"/> 上的粒子占据。
-        /// 空气可进入；静态格不可；否则比较类别标签，高 rank 可以置换低 rank（固体沉穿液体与气体，同类互不置换）。
+        /// 空气可进入；静态格不可；否则比较类别标签，高 rank 可以置换低 rank，但**固体置换液体**还要求该固体
+        /// **处于运动中**（见 <see cref="ParticleWorld.HasMomentum"/>）——静止的固体推不动液体
+        /// （固体沉穿液体与气体，同类互不置换）。
         /// </summary>
         public static bool CanDisplace(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
@@ -130,7 +132,20 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            return TagRank(self.Info.Tags) > TagRank(other.Info.Tags);
+            int selfRank = TagRank(self.Info.Tags);
+            int otherRank = TagRank(other.Info.Tags);
+
+            // 地下水：只有「运动中」的固体才能排开液体（上一运动扫描位移过，或刚放置）。
+            // 静止的岩石无论如何都不会把水挤上去——水囊形状、是否与池塘联通都不影响。
+            if (selfRank > LiquidRank
+                && (other.Info.Tags & ParticleTags.Liquid) != 0
+                && world.GroundwaterSealingEnabled
+                && !world.HasMomentum(fromX, fromY))
+            {
+                return false;
+            }
+
+            return selfRank > otherRank;
         }
 
         /// <summary>正下方可进入则交换，下落一格。</summary>

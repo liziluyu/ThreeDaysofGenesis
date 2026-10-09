@@ -8,7 +8,7 @@ namespace TapTap2026.Game
 {
     /// <summary>
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
-    /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；
+    /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
     /// **右键**在可投放类型间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
@@ -86,15 +86,16 @@ namespace TapTap2026.Game
 
         [Header("投放白名单")]
         [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
-                 "草、湿土、腐殖质、腐殖土、水生植物只能由模拟产生，默认已列入。")]
+                 "草、湿土、腐殖质、腐殖土、水生植物、树干、树叶只能由模拟产生，默认已列入。")]
         [SerializeField] private string[] _unplaceableTypes =
         {
             "GrassParticle", "WetSoilParticle", "HumusParticle", "HumusSoilParticle", "AquaticPlantParticle",
+            "TreeTrunkParticle", "TreeLeafParticle",
         };
 
         [Tooltip("「单颗投放」白名单（按 DebugName 或类名匹配）：右键切到这些类型时，无论笔刷半径多大，" +
-                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认草种子与水生态种子，将来可追加。")]
-        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle", "AquaticSeedParticle" };
+                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认草种子、水生态种子与树木种子，将来可追加。")]
+        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle", "AquaticSeedParticle", "TreeSeedParticle" };
 
         [Tooltip("可手动投放的 Gas 类型白名单（按 DebugName 或类名匹配）：Gas 默认一律不可投放" +
                  "（蒸汽 / 云 / 大气是水循环的中间态，只能由相变产生），火是当前唯一可手刷的例外。")]
@@ -157,6 +158,9 @@ namespace TapTap2026.Game
         {
             get { return new Rect(Screen.width - LightPanelWidth - 6f, 4f, LightPanelWidth, LightPanelHeight); }
         }
+
+        /// <summary>当前树木物种（Shift+滚轮切换；仅选中树木种子时参与投放与 HUD，见 <see cref="CycleTreeSpecies"/>）。</summary>
+        private int _treeSpecies;
 
         /// <summary>笔刷半径下限（格）。</summary>
         public const int MinBrushRadius = 1;
@@ -311,14 +315,29 @@ namespace TapTap2026.Game
                 CycleType();
             }
 
+            // 滚轮调半径；按住 Shift（左右皆可）时改为循环切换树木物种（见 TreeSpecies）。
             float scroll = Input.mouseScrollDelta.y;
             if (scroll > 0f)
             {
-                AdjustRadius(1);
+                if (IsShiftHeld())
+                {
+                    CycleTreeSpecies(1);
+                }
+                else
+                {
+                    AdjustRadius(1);
+                }
             }
             else if (scroll < 0f)
             {
-                AdjustRadius(-1);
+                if (IsShiftHeld())
+                {
+                    CycleTreeSpecies(-1);
+                }
+                else
+                {
+                    AdjustRadius(-1);
+                }
             }
 
             // 光照面板（输入框）正在被使用时**屏蔽放置**：左键点进输入框时指针同时也在网格上，
@@ -708,6 +727,23 @@ namespace TapTap2026.Game
             RefreshHud();
         }
 
+        /// <summary>左右 Shift 是否按住（legacy Input Manager，没有 Input System）。</summary>
+        private static bool IsShiftHeld()
+        {
+            return Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        }
+
+        /// <summary>
+        /// 循环切换树木物种（0..<see cref="TreeSpecies.SpeciesCount"/>-1）并刷新 HUD。
+        /// 与当前选中类型无关、始终生效（无害）；物种只在选中树木种子时参与投放与 HUD 显示。
+        /// </summary>
+        public void CycleTreeSpecies(int steps)
+        {
+            int count = TreeSpecies.SpeciesCount;
+            _treeSpecies = ((_treeSpecies + steps) % count + count) % count;
+            RefreshHud();
+        }
+
         /// <summary>
         /// 按名字列表限制可投放的粒子类型（按 <see cref="ParticleTypeInfo.DebugName"/> 或类名匹配，规则同
         /// <see cref="ResolveTypeNames"/>）：生效的是「名单 ∩ 既有白名单」——名单只会**缩小**可投范围，
@@ -851,6 +887,12 @@ namespace TapTap2026.Game
             if (!world.Set(cx, cy, _typeId))
             {
                 return 0;
+            }
+
+            if (_typeId == ParticleIds.TreeSeed)
+            {
+                // Set 已把 flags 清成边沿标记、shade 重新抽样过；这里盖上物种位并把 shade 折进该物种色片。
+                TreeSpecies.Stamp(world, cx, cy, _treeSpecies, TreeSpecies.SeedColorsPerSpecies);
             }
 
             _lastSinglePlacementTime = Time.unscaledTime;
@@ -1069,7 +1111,8 @@ namespace TapTap2026.Game
 
             _hudColor = info.Palette[0];
             string brush = _singlePlacement.Contains(_typeId) ? "单颗" : $"r={BrushRadius}";
-            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{_placeable.Length}  {brush}";
+            string species = _typeId == ParticleIds.TreeSeed ? "  " + TreeSpecies.NameOf(_treeSpecies) : string.Empty;
+            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{_placeable.Length}{species}  {brush}";
         }
 
         /// <summary>类型的显示名：优先 <see cref="ParticleTypeInfo.DebugName"/>，没填则回退类名。</summary>

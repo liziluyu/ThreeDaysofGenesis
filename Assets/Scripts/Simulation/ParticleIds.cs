@@ -23,7 +23,8 @@ namespace TapTap2026.Simulation
         /// <summary>土壤。受重力的粉末，摩擦度 0.5 + 粘性 0.5（旁边有固体时约 3:1 的安息角）。</summary>
         public static ushort Soil;
 
-        /// <summary>水。受重力的液体（Liquid 标签）：下落 → 斜滑 → 横流摊平，无安息角；被固体沉穿。
+        /// <summary>水。受重力的液体（Liquid 标签）：下落 → 斜滑 → 横流摊平，无安息角；被固体沉穿
+        /// （**下落的固体在运动中**；静止的固体推不动水——见 `ParticleRules.CanDisplace` 的地下水闸门）。
         /// 受热蒸发成水汽（进入湿度场），是湿度场唯一的水汽来源。随机刻命中且半径 2 格内有土壤/湿土/腐殖土时，
         /// 以 20% 概率把其中第一个冲刷成沙。</summary>
         public static ushort Water;
@@ -85,5 +86,26 @@ namespace TapTap2026.Simulation
         /// 可在编辑器手刷（ParticleEditor 的 Gas 白名单 _placeableGasTypes 默认放行火）。
         /// **只能追加到清单末尾**。</summary>
         public static ushort Fire;
+
+        /// <summary>树木种子。受重力的固体粉末：随机刻命中且「落土（三土之一）+ 物种基质档」满足时，
+        /// 按物种概率发芽成树干——松/柏耐旱（任意土即可）、杨/橡喜湿（还需八邻有湿土）、
+        /// 柳最喜水（正下方必须恰为湿土）；比草种子的「命中即发」明显更慢（1/D 概率）。
+        /// flags 私有位：bit3-5 = 物种、bit6-7 = 打击计数（3 次无发芽条件霉烂成腐殖质）。
+        /// 可由编辑器单颗投放（ParticleEditor 白名单），树种用 Shift+滚轮切换。
+        /// **只能追加到清单末尾**。</summary>
+        public static ushort TreeSeed;
+
+        /// <summary>树干。固体 + Organic，靠空的 OnMotion 定植（非 IsStatic——静态类型收不到 OnLogic）。
+        /// 由树木种子发芽生成；**每逻辑帧**：逐格判定死亡（失去扎根即整段级联倒下、温度 &gt; 50 死），
+        /// 顶格负责生长（按物种 H 向上爬升，再按有序偏移表造冠——被固液挡住的表项跳过、全表填满转成熟，
+        /// 成熟后零随机流消耗）。flags 私有位：bit3-5 = 物种、bit6-7 = 生长阶段（0/1/2）。不可在编辑器中选择。
+        /// **只能追加到清单末尾**。</summary>
+        public static ushort TreeTrunk;
+
+        /// <summary>树叶。固体 + Organic，长在原地（OnMotion / OnLogic 空体）。**随机刻**里三种死法：
+        /// 温度 &gt; 50、正上方被固体（非树叶）压、支撑半径内没有树干——整树倒下后树叶逐个枯落，
+        /// 三种死法都按世界 20% 有机衰变留腐殖质（落叶归根）。flags 私有位：bit3-5 = 物种。
+        /// 不可在编辑器中选择。**只能追加到清单末尾**。</summary>
+        public static ushort TreeLeaf;
     }
 }

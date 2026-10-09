@@ -81,7 +81,7 @@ public struct Cell
 | bit2 | `Forced` | 通用（类型无关） | 受外部作用力 / 被推动 |
 | bit3-7 | 类型私有 | 各类型自行定义 | 必须在**该类型文件头部注释**里登记占用位 |
 
-已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）、**草** bit3-5（`CellFlags.GrassAgeRemainderMask`，年龄的逻辑帧余数 0..4；年龄高位存在 `Cell.shade` 里，见 §4「草的寿命」）。
+已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）、**草** bit3-5（`CellFlags.GrassAgeRemainderMask`，年龄的逻辑帧余数 0..4；年龄高位存在 `Cell.shade` 里，见 §4「草的寿命」）、**树木三件套（种子 / 树干 / 树叶）** bit3-5（`CellFlags.TreeSpeciesMask`，物种编号 0..4；三种树木类型共用）与 bit6-7（`CellFlags.TreeStageMask`＝树干生长阶段 0..2；`CellFlags.TreeSeedStrikeMask`＝树木种子的空转计数 0..3——同一组位按「一格一类型」互斥）；草与树不同时占一格，bit3-5 的两种用途互不冲突）。
 
 规则：
 
@@ -227,7 +227,9 @@ public readonly struct ParticleTypeInfo
 - 同类之间 `rank` 相等，互不置换 ⇒ 沙能堆、石头能垒。
 - 固体落进液体/气体时 rank 更高 ⇒ 下沉穿过。
 
-`ParticleRules` 提供 `TagRank(ParticleTags)`、`TagsAt(world, x, y)`（一次取回整组标签）、`HasTag(world, x, y, tags)`（任意命中一个标签即为 true；越界/空气/空槽返回 `None`）与 `IsSolid(world, x, y)` 等原语，类型代码直接调用；`CanDisplace` / `CanFlowThrough` 已内置上述规则，并额外拒绝静态格（`IsStatic`）目标。`CanDisplace` 对**越界目标一律返回 false**（否则越界会被当成「空气可进入」，调用方以为能移动、随后的 `Swap` 却静默失败）；同时仍会拒绝静态格目标。
+**地下水闸门**：固体置换**液体**还要求该固体处于**运动中**（上一运动扫描位移过，或运行中刚由 `Set` / `SetPhase` 放置——构造期 tick 0 的初始条件一律视作静止；见 `ParticleWorld.HasMomentum`）。静止的固体无论形状、是否与池塘联通都不能把水挤上去，石头 / 沙里封闭的水因此成为不动的「地下水」（土例外：干土会按既有土壤反应把正上方的水吸成湿土）；下落的沙石照旧沉底（下落本身即运动）。气体目标不受此闸门约束。开关 `ParticleWorld.GroundwaterSealingEnabled` 默认开，关掉退回旧 rank 行为。
+
+`ParticleRules` 提供 `TagRank(ParticleTags)`、`TagsAt(world, x, y)`（一次取回整组标签）、`HasTag(world, x, y, tags)`（任意命中一个标签即为 true；越界/空气/空槽返回 `None`）与 `IsSolid(world, x, y)` 等原语，类型代码直接调用；`CanDisplace` / `CanFlowThrough` 已内置上述规则，并额外拒绝静态格（`IsStatic`）目标。`CanDisplace` 对**越界目标一律返回 false**（否则越界会被当成「空气可进入」，调用方以为能移动、随后的 `Swap` 却静默失败）；同时仍会拒绝静态格目标；`CanDisplace` 另内置上述**地下水闸门**（固体 → 液体要求运动中）。
 
 **吸水与湿土的水迁移（土 ⇄ 湿土）**：这是一对**具体类型之间的反应**，因此按「A 生成 B 走 `ParticleIds`」的约定直接引用 `ParticleIds.Soil` / `ParticleIds.WetSoil`（不是通用标签规则）。模型是 **湿土 = 干土 + 一份水**：水总量 = 水格 + 湿土格 + 湿度场，全程守恒。
 
@@ -1237,6 +1239,7 @@ Assets/Scripts/
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
     MotionReadBox.cs                          类型的运动阅读盒 (X, Up, Down)：OnMotion 对 _cells 的轴对齐读距，世界求反转并集作为运动休眠的写入唤醒集
+    TreeSpecies.cs                           树木物种静态表（五物种 杨/橡/松/柏/柳 = flags bit3-5 编号，只能追加）：H 树干高 / N 生长分母 / D 发芽分母 / 基质档（Drought 任意三土；Moist 三土且八邻有湿土；Wet 正下方必须湿土）/ 树冠有序偏移表（数组顺序＝生长顺序；**表自支撑**——除首项外每项与树干列或更早项 Chebyshev 相邻，生长守卫据此防浮空叶）/ 支撑半径 / 色片色数；含物种位读写 helper `Read` / `Stamp`（Stamp 在 Set/SetPhase 之后调用：重写 bit3-5 并把世界已抽样的 shade 折进本物种色片，零额外随机流；编辑器与粒子共用）
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
     SpeedController.cs                        倍速控制器（纯 C#，不引用 UnityEngine）：手动档 ×2/÷2 调档（[1,16]，也可由 `_speedMax` 封顶）+ 自适应档 AIMD（平滑「每 tick 耗时」EMA × 驱动注入的周期长度（`LogicTicksPerMotionTick`）× min(需求, cap) 折算周期成本——需求超预算时成本饱和、必触发降档；0.75/0.95 双水位线死区 + 每 10 帧一次评估的门控 + 滞回），每真实帧给出「本帧跑几个运动 tick」；超预算丢账不追账、预算上限保底 1 tick；另导出实测倍率 `EffectiveSpeed`（分子分母分别 EMA 再相除，稳态 1× 归一）供 HUD 显示
     Particles/
@@ -1253,13 +1256,16 @@ Assets/Scripts/
       AquaticSeedParticle.cs                  水生态种子（固体粉末，**不带 Organic**；flags bit5-6 与草种子共用 = 无发芽条件计数。随机刻命中且「正上方是水 + 正下方是软底」时**吸收头顶那格水**、自身发芽成 1 格水生植物；连续 3 次无发芽条件则变成腐殖质。不可在右键循环，但可单颗投放）
       AquaticPlantParticle.cs                 水生植物（固体，**不带 Organic**，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**每格植物 ⇔ 一格水**（1:1）。**随机刻**里按顺序：① 正上方是固体（非同类）被压死 → 向下整段**还成水**（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙} 失去扎根 → 向上整段**还成水**；③ 八邻无液体脱水 → 单格还成水；④ 温度 > 50 或 < 0 → 单格还成水；⑤ 生长：头顶是水且上方还有水且株高 < 3 → 消耗头顶那格水长高一格；⑥ 10% 概率撒种：找「软底 + 正上方是水 + 水柱顶上有接收格」的列，水位 +1、水格变成种子（**基质不消耗**）。被固体压埋时那份水注入八邻气体格的湿度场。不可在编辑器中选择）
       FireParticle.cs                         火（气体，第一个粒子级热源；v2 角色模型——每逻辑帧按八邻重判**附着火 / 游离火**。附着火定在原地：接触点燃邻接的草（八邻固定序，1/20 每逻辑帧；有草且不贴淬熄物时不摇熄灭骰）、**本格火温 ≥ 60° 才**烤干邻接湿土并按湿土→干土热容差 **−1.2T** 结算潜热（水汽走湿度场守恒）、格温 < 400 注热 250（烤热贴着的沙/石）、正上方是气体且 T ≥ 200 时 1/10 抛射火舌；游离火不注热，在 OnLogic 末尾按 (x,y,Tick) 哈希上升/摇曳（50% 正上、25% 左上、25% 右上，被挡不下降；OnMotion 留空）。熄灭每帧恰一骰、档位互斥：正下方石头/沙/液体压顶立灭 > 贴液体 1/5 > 贴石头/沙/湿土 1/20（干土与腐殖类不参与淬熄）> 游离火 T<40 立灭 > 游离火 1/8 > 附着无燃料 1/120。shade 是温度分档派生量（≥300 亮黄…<40 暗红，+哈希 ±1，不消耗随机流）。投放资格 CanPlaceAt：不覆盖实体、需锚点不浮空（投放锚点含火链——圆刷贴地可铺满整团火；物理附着不含火）；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质。显式行为：火无法停留在石头/沙/水面上）
+      TreeSeedParticle.cs                     树木种子（固体粉末，摩擦 / 粘性 0.5，运动 = StepSolid；flags bit3-5 = 物种、bit6-7 = 空转计数。**随机刻**命中且「正上方非固非液 + 正下方按物种基质档（松/柏耐旱＝任意三土；杨/橡喜湿＝三土且八邻有湿土；柳最喜水＝正下方必须湿土）」时按 **1/D 概率**发芽成树干（D=2..4，比草种子的命中即发慢）：先判后摇、掷骰未中不计打击原地等待；3 次无发芽条件霉烂成腐殖质、空转不消耗随机数。可单颗投放，Shift+滚轮切换物种）
+      TreeTrunkParticle.cs                    树干（固体 + Organic，非 IsStatic、OnMotion 空；flags bit3-5 = 物种、bit6-7 = 生长阶段 0 爬升 / 1 造冠 / 2 成熟。**每逻辑帧**：① 温度 > 50 死（低温致死取 0，同水生植物——环境温可低到 0）；② 失去扎根（下格非三土 / 树干）→ 本格与上方整段连续树干级联 Clear；③ 顶格生长——阶段 0 按物种 H 向上爬升（先查后掷 1/N），阶段 1 按有序偏移表取「第一个未填充且当前可放」项 Set 成树叶（可放＝界内 + 非固液 + 八邻已有树格防浮空；被挡项跳过不卡死、腾空后补长；全表填满转成熟，此后零随机流消耗）。不可手刷）
+      TreeLeafParticle.cs                     树叶（固体 + Organic，非 IsStatic，OnMotion / OnLogic 空体；flags bit3-5 = 物种。**随机刻**三种死法：① 温度 > 50（低温致死取 0）；② 正上方是固体且非树叶（**液体不压**——树叶可泡水里，与草的有意不同）；③ 本物种支撑半径（Chebyshev 环由内向外扫描、命中即返回）内无树干——整树倒下后逐个枯落。三种死法都走 Clear，按世界 20% 有机衰变留腐殖质。不可手刷）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 取昼夜天空色、粒子与云按 1 → 夜晚亮度变暗；昼夜参数由 ParticleLightDriver 推送）
   Driver/
     ParticleSimulationSettings.cs             全局模拟参数（ScriptableObject）：网格尺寸、_motionRate（运动帧 60）/ _logicRate（逻辑帧 20）、倍速预算 `_speedBudgetFraction`（0.5）与倍率上限 `_speedMax`（16）、热力学系数、随机刻格数
     ParticleSimulationDriver.cs               MonoBehaviour：两级固定步长驱动（运动帧 60 Hz / 逻辑帧 20 Hz）+ 上屏调度；每真实帧跑几个运动帧由 `SpeedController` 决定（暴露 `Speed` 属性，只做 Stopwatch 测量与转发）；`_simulate`（关 = 暂停全部帧），暴露 `Pause()` / `Resume()` / `Paused`（无输入判断）
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
-    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土不可手刷）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、**按住左右方向键 / A D 把相机在沙箱内左右平移**（`_panLeftKeys` / `_panRightKeys` / `_panSpeed` = 30 格/秒；相机位置与「视口不越出网格左右边界」的夹取在 `ParticleRenderer.PanCamera`，见 §9）、鼠标旁显示当前类型、左上角读数末尾追加当前倍速（普通模式恒 `×1`——`=` / `-` / `Tab` 调速热键已移除，速度只由高速模式改变，见 §10「倍速」）、**右上角光照面板**（三个输入框 = 光照强度 / 亮相位刻数 / 暗相位刻数，直接写 `ParticleLightDriver` 的三个可写属性；输入非法标红不提交、失焦弹回真值；输入框拿着键盘时暂停 / 高速 / 平移热键让位；高速模式与 `SuppressInput` 时变灰）；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却 / Gas 可手刷例外）
+    ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/湿土/树干/树叶不可手刷）、滚轮调半径 1..10（**Shift+滚轮**循环切换树木物种，HUD 在选中树木种子时显示物种名）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、**按住左右方向键 / A D 把相机在沙箱内左右平移**（`_panLeftKeys` / `_panRightKeys` / `_panSpeed` = 30 格/秒；相机位置与「视口不越出网格左右边界」的夹取在 `ParticleRenderer.PanCamera`，见 §9）、**右上角光照面板**（三个输入框 = 光照强度 / 亮相位刻数 / 暗相位刻数，直接写 `ParticleLightDriver` 的三个可写属性；输入非法标红不提交、失焦弹回真值；输入框拿着键盘时暂停 / 高速 / 平移热键让位；高速模式与 `SuppressInput` 时变灰）、鼠标旁显示当前类型、左上角读数末尾追加当前倍速（普通模式恒 `×1`——`=` / `-` / `Tab` 调速热键已移除，速度只由高速模式改变，见 §10「倍速」）；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却〔草种子/水生态种子/树木种子〕 / Gas 可手刷例外）
     ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度 / 云层消光接到 world.Light，并把昼夜天空色与夜晚亮度推给 ParticleRenderer；其中**强度 / 亮相位刻数 / 暗相位刻数三个属性可写**（运行期由 ParticleEditor 的光照面板驱动，钳制语义与 LightController 同名属性一致）
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
@@ -1272,7 +1278,8 @@ Assets/Tests/EditMode/
   ParticleWorldTests.cs                       世界/钩子/确定性/像素映射（含调试热力叠加：越热越红、空气格也叠、满量程 <= 0 失效）/热力学（默认环境热量、逐格读改、越界语义、AddHeat 累加、T = Q / C 换算、按扁平下标读温度、Swap 搬运 Q、Set/Clear 继承 Q、四邻传导与界内热量守恒、界面导热率取两侧 σ 平均、顶行向虚空持续散热 / 内部行不散热 / 关闭即封闭 / 夹紧到稳定上限、辐射只作用于暴露面（顶行 / 上方是气体或空）、空气柱照常全柱辐射、辐射按材料 ε 缩放、空气 ε 可配、辐射功率注入收敛、光照下收敛到稳态温度、热源粒子在 OnMotion 内查改）与光照（每列最上面的非气体——液体挡光、亮暗占空比循环、关闭 / 零强度不施热、关闭不推进相位、昼夜日照度 Daylight 按「下一时段长度的 1/10」自动过渡（含昼 / 夜极限保持、退化周期与黄昏坡道夹紧）、亮度只缩粒子与云不动天空色） + 摩擦度与粘性→净空换算/粘性只在旁边有固体时生效/摩擦度 1 不滚落/斜落净空判据/干散材料安息角随摩擦度（1:1/2:1/10:1）/高粘性石头垛远陡于干石对照/固体互阻/沙堆守恒收敛/土堆比同摩擦度无粘性更陡（隔离类型表）+ 随机刻（默认关闭 / 每逻辑帧命中计数 / 跳过空气与静态 / 夹在 [0, CellCount] / 同种子同批次）
                                                + 分段扫描（运动帧只跑 OnMotion 不跑 OnLogic / 逻辑帧先 OnLogic 再同格 OnMotion / OnLogic 把本格相变后跳过本帧运动；休眠开启时逻辑帧走混合扫描：候选格跑完整两钩子、其余 HasLogic 格只跑 OnLogic，见 §7「逻辑帧混合扫描」）+ 气体竖直 Swap 绝热直减（上升冷却 / 下沉增温 / 固体不结算）/ Set 与 SetPhase 的湿度驱逐 / StepRain 凝结释放潜热
   SandStoneParticleTests.cs                   石头/沙子/土壤的生产注册路径（RegisterAll 回填 + 标签 + 摩擦度/粘性断言）+ 安息角剖面（三角堆）测试
-  WaterParticleTests.cs                       水：直落/平底摊平成水平面/沙沉穿水置换上浮/同种子确定性/孤立水滴静止不抖动（平地 + 世界底行）+ 慢蒸发带走潜热 / 顶行不蒸发 / 接收格不足不蒸发 + 液体热对流（上冷下暖暖水上浮换位 / 死区内不动 / 上方非液体不触发 / 海陆昼夜模拟锁「夜间海面比陆面暖」涌现回归）+ 生产注册路径（隔离表为主）
+  WaterParticleTests.cs                       水：直落/平底摊平成水平面/沙沉穿水置换上浮（下落的沙在运动中）/同种子确定性/孤立水滴静止不抖动（平地 + 世界底行）+ 开阔水域下沉回归（单颗 + 3×3 沙块沉底、水位抬高、守恒）+ 慢蒸发带走潜热 / 顶行不蒸发 / 接收格不足不蒸发 + 液体热对流（上冷下暖暖水上浮换位 / 死区内不动 / 上方非液体不触发 / 海陆昼夜模拟锁「夜间海面比陆面暖」涌现回归）+ 生产注册路径（隔离表为主）
+  GroundwaterTests.cs                         地下水（运动状态闸门，生产注册路径）：闸门单测（静止固体不能置换 / 刚下落的可以 / 运行中放置的宽限一个扫描后过期 / 开关关回退旧行为且不影响状态维护 / 空气目标不受影响）+ 石头水囊与画刷水囊逐位稳定（120 周期哈希不变）+ 联通池塘的竖井地下水（沙沿井沉底、水囊纹丝不动、守恒）+ 挖开释放（1 格宽缺口先放一格水、上方石头塌入自封）+ 沙柱接力钻穿水柱（删掉接力标记即变红）+ 运动休眠透明性 A/B + 石中气穴照旧冒泡
   WetSoilParticleTests.cs                     土 ⇄ 湿土：水被土喝掉（含热量并进湿土）/ **有压才渗**（孤立湿土永久持水不沉底 / 被水压着才下渗且锋面身后保持湿润）/ 被挡侧渗 / 下渗温度门（T < 60）/ 上行 50% 概率门 / 换格水带热 T(源)×1.2 两侧温度不跳 / 受热上行润湿上方干土 / 受热在空气下蒸发（播撒不可见 + 带走潜热）/ 空气吸饱则不蒸发 / 无干土可接则保持湿 / 常温不蒸发 / 湿土照样下落 / 调色板逐档更深 / 生产注册路径
   WeatherParticleTests.cs                     气象：浮力方向（热升/冷沉/死区，含绝热直减降温）/水平热压流（直调原语，隔离表）+ 湿度场（蒸发提升附近湿度 / 水平冷→热 / 竖直越热越向上 / 随风平流 / 输送守恒 / 凝结释放潜热）+ 降雨（碰并凑整、液体不持有湿度）+ 水循环总量守恒 + 云渲染（湿度染白）+ 云遮光（按列 Beer–Lambert 衰减、逐列独立）（生产注册路径——跨类型相变依赖 ParticleIds 回填；云遮光测试用隔离表 + `new ParticleWorld(w,h,seed,types)` 直构）
   ThermalDriftTests.cs                        大气水平热压流的风向记忆（隔离类型表，直接调 TryThermalDrift / OnMotion）：两格走廊不再逐帧往返（B1 回归）/ 大温差净输运保留 / 梯度消失即清记忆允许新方向 / 写记忆不破坏 bit0 处理标记 / 浮力换行清记忆 / 反向漂移被挡且记忆保留
@@ -1287,7 +1294,7 @@ Assets/Tests/EditMode/
   DialogueRunnerTests.cs                      对话系统（纯 C#，不碰模拟；见 `docs/DialogueSystem.md`）：JSON 解析（合法 / 畸形 / 无 segments / 角色表缺失）/ 进度推进 / 选项点阻塞与跳转 / 非法 goto 以警告收尾 / `OnEnd` 只触发一次 / 历史顺序 / Restart / 空段立即结束
 ```
 
-测试总数 **288**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 16 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 19 + `GrassParticleTests` 5 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24。
+测试总数 **333**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 18 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 19 + `GrassParticleTests` 5 + `FireParticleTests` 24 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24 + `TreeParticleTests` 29 + `GroundwaterTests` 14。
 
 程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。EditMode 测试程序集引用 `TapTap2026.Simulation` + `TapTap2026.Game`（后者只为 `CameraPanTests` 这类渲染/驱动层测试；测试逻辑仍以纯模拟断言为主）。
 

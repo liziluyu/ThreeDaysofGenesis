@@ -80,6 +80,47 @@ namespace TapTap2026.Simulation
         public const int SeedStrikeShift = 5;
 
         /// <summary>
+        /// bit3-5：**树木（种子 / 树干 / 树叶）私有**——物种编号 0..<see cref="TreeSpecies.Count"/>-1。
+        /// 三种树木类型共用同一组位（一格在同一时刻只属于一个类型，与大气 bit3-4、草种子 bit5-6、
+        /// **草** bit3-5 的年龄余数同理共享安全）。读用本掩码、清用 <see cref="TreeSpeciesClearMask"/>、
+        /// 写用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（尤其保留 bit0）。三种类型各自在文件头部登记了该占用。
+        /// </summary>
+        public const byte TreeSpeciesMask = 0x38;
+
+        /// <summary><see cref="TreeSpeciesMask"/> 的清除掩码（<c>~0x38 &amp; 0xFF</c>）。</summary>
+        public const byte TreeSpeciesClearMask = 0xC7;
+
+        /// <summary><see cref="TreeSpeciesMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int TreeSpeciesShift = 3;
+
+        /// <summary>
+        /// bit6-7：**树木种子私有**——「被随机刻命中但没有发芽条件」的连续计数（0..3）。
+        /// 与草种子 / 水生态种子的 <see cref="SeedStrikeMask"/>（bit5-6）**不是**同一组：树木种子把
+        /// bit3-5 让给了物种，计数改用 bit6-7（一格在同一时刻只有一个类型，互不冲突）。
+        /// <see cref="TreeTrunkParticle"/> 用同一组位存生长阶段，两者不同时存在。
+        /// </summary>
+        public const byte TreeSeedStrikeMask = 0xC0;
+
+        /// <summary><see cref="TreeSeedStrikeMask"/> 的清除掩码（<c>~0xC0 &amp; 0xFF</c>）。</summary>
+        public const byte TreeSeedStrikeClearMask = 0x3F;
+
+        /// <summary><see cref="TreeSeedStrikeMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int TreeSeedStrikeShift = 6;
+
+        /// <summary>
+        /// bit6-7：**树干私有**——生长阶段（0 爬升 / 1 造冠 / 2 成熟，见
+        /// <see cref="TreeTrunkParticle.StageGrowing"/> 等）。与树木种子的打击计数同组位、
+        /// 不同时存在（一格只有一个类型）。
+        /// </summary>
+        public const byte TreeStageMask = 0xC0;
+
+        /// <summary><see cref="TreeStageMask"/> 的清除掩码（<c>~0xC0 &amp; 0xFF</c>）。</summary>
+        public const byte TreeStageClearMask = 0x3F;
+
+        /// <summary><see cref="TreeStageMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int TreeStageShift = 6;
+
+        /// <summary>
         /// bit3-5：**草私有**（<see cref="GrassParticle"/>）——年龄的**逻辑帧余数**（0..<c>TicksPerShadeStep − 1</c>）。
         /// 草的年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + 本余数：`shade` 存高档
         /// （它同时就是**颜色档**——渲染只读 `shade` 查表，所以「越老越黄绿」天然成立），余数存低档。
