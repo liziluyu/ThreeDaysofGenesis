@@ -41,9 +41,11 @@
   3. 只有当热 pass 进入不动点跳过（见 P1）时脏集为空、逻辑帧才真正赢（2.57×，与提交声称的 −82% 同源）。
 - 每周期总账（3 运动 + 1 逻辑）仍是正收益：1.08×（草地火）~ 6.63×（不动点静止场）；运动帧单项 3.7×~194×。**混合扫描的正确性无问题**（逐位对拍通过），只是收益依赖 P1。
 - 修法方向：脏格按写入唤醒同一条通道（生产表 87 格并集）置位、而不是整 chunk；或给逻辑帧单独维护温度候选位图；`FlushDirty` 改脏索引紧凑列表（int[] + count）替代全表扫描。
-- ✅ 已修（2026-10-07）：两条都采纳——① `FlushDirty` 改**逐格 Chebyshev 半径 2 唤醒球**（复用写入唤醒的 `MarkOffsets`，新增 `HeatWakeHalf` 半宽表），不再按 16×16 chunk 整块置位；
-  ② 两张场的脏记录改**紧凑脏索引列表**（`int[]` + count，`MarkDirty` 与 Burst 内核在 `dirty[]` 0→1 时登记），`FlushTemperatureDirty` 与 `ClearDirty` 都从 O(W·H) 降为 O(脏格数)。
-  候选集仍是真实依赖集的超集（球 ⊇ `TryThermalDrift` 的 `x ± 2` 读距），逐位等价由 `MotionSleepTests` / `LogicScanTests` 回归覆盖。**P2 的收益未在本机重测**（本机只有 Unity Mono；桩工程口径不可比）。
+- ✅ 已修（分两步，2026-10-07 / 2026-10-09）：
+  ① 两张场的脏记录改**紧凑脏索引列表**（`int[]` + count，`MarkDirty` 与 Burst 内核在 `dirty[]` 0→1 时登记），`FlushTemperatureDirty` 与 `ClearDirty` 从 O(W·H) 降为 O(脏格数)——这半一次到位；
+  ② 逐格唤醒球走了弯路：`6c14f1b` 的第一版用逐格 `MarkOffsets` 刷球，复审实测**负收益**（热场每帧脏时 FlushDirty 0.098→0.40ms、混合扫描 on/off 从 0.74× 恶化到 0.45×、armed chunk 数不变），`5ccc63c` 返工为**密度自适应三档**——稀疏（≤格数/32）逐格刷球（掩码出循环、每行一次 word 级 OR）、密集（≤格数/2）回退 chunk 整块置位、饱和一趟全表填充。
+  复审实测（net9 桩，256×128）：静止石头场 FlushDirty 0.417→0.0146ms（28.6×）、完整逻辑帧 on/off 0.51×→0.98×、稀疏脏集武装面 512bit→100bit；on/off 逐位等价（320 周期混合场景 + 中途切换 + 200 种子 fuzz + 900 周期生产火 + 6 场景跨版本摘要）。
+  候选集仍是真实依赖集的超集（球 ⊇ `TryThermalDrift` 的 `x ± 2` 读距）。**注意**：上述数字仍是桩口径，Unity Mono/Burst 下的绝对值未复核。
 
 ## P3 SpeedController：预算模型的三个失配（非崩溃，语义/配置风险）
 
@@ -62,9 +64,21 @@
 
 - 位置：`ProjectSettings.asset:592-593`（358ad7c）+ `Assets/Plugins/NuGet/*.dll.meta`。
 - 实测（构建产物 `Builds/Dev261006_2144`）：player 内含 McpPlugin / Microsoft.CodeAnalysis（Roslyn）/ SignalR 等 136 个程序集，`RuntimeInitializeOnLoads.json` 注册了 MCP 的 `MainThreadInstaller.Init`（BeforeSceneLoad）——**打包版在首个场景前执行编辑器桥代码**；GameAssembly.dll 44.7MB、global-metadata.dat 9.76MB。Mono 构建同样包含（既有问题），IL2CPP 把它 AOT 化，放大构建时间/体积并新增缺 AOT 代码的 ExecutionEngineException 面。player 实测能正常启动、无外连，未观察到运行期故障。
-- 修法：`Assets/Plugins/NuGet/*.dll` 的 .meta platformData 改仅 Editor（或移入 Editor 专用目录），同步砍体积与构建时间。
-- ✅ 已修（2026-10-07）：41 个 `*.dll.meta` 的 platformData 全量改为 Editor-only（`Any: enabled 0` + `Editor: enabled 1`），`AGENTS.md` 已记。
-  **未重新打包验证体积 / 构建时间**（既有构建产物仍含 MCP 桥）。
+- ~~修法：`Assets/Plugins/NuGet/*.dll` 的 .meta platformData 改仅 Editor（或移入 Editor 专用目录），同步砍体积与构建时间。~~
+- ❌ **已回退（2026-10-08）：meta 改 Editor-only 这条路走不通，打包直接失败。**
+  `b23663d` 把 40 个 `*.dll.meta` 改成 Editor-only 后，下一次 Standalone（IL2CPP）打包在脚本编译阶段中止：
+  `Error building Player because scripts had compiler errors`，日志 2118 条 `CS0246`/`CS0234`，**全部落在
+  `com.IvanMurzak.Unity.MCP.Runtime`**（`Runtime/Converter` 1287、`Runtime/Data` 258、`Runtime/Extensions` 168 …），
+  报的是 `Reflector` / `SerializedMember` / `Logs` / `ILogger` / `JsonElement` / `R3.ReactiveProperty` 等找不到类型。
+  原因：该 asmdef 不限定平台（只被 `UNITY_MCP_READY` 的 `defineConstraints` 把关），**player 仍要编译它**，
+  而它 `overrideReferences` 里显式引用的 `McpPlugin.dll` / `ReflectorNet.dll` / `R3.dll` / `System.Text.Json.dll`
+  被改成 Editor-only 后从 player 的引用集里消失 ⇒ 整组类型解析失败。即：**只要引用方 asmdef 还在 player 目标里，
+  被引用 DLL 的平台裁剪就不可能单独生效**，只会把报错从「静默打包进去」变成「打包失败」。
+  另外这条路本身也不稳定：包内 `NuGetPluginConfigurator.ConfigureAll()` 会按 `NuGetConfig.Packages` 的
+  `includeInBuild` 在每次 restore 时把 PluginImporter 写回「include in build」，手改的 meta 会被插件覆写。
+- 待定的真修法（都需要动程序集纳入，不是 meta 能解决）：把 MCP 包整体排除在 player 之外——例如发布打包用不含该包的
+  工程副本，或把 `com.ivanmurzak.unity.mcp` 嵌到 `Packages/` 下本地化后把它的 Runtime/Editor asmdef 限定 Editor 平台；
+  否则就是接受现状（player 内含 MCP，~1.13GB Development 构建、`GameAssembly.dll` 45.8MB）。
 
 ## P5 微项（可顺手清理，不阻塞）
 
@@ -89,12 +103,16 @@
 
 | 提交 | 主题 | 对应条目 |
 |---|---|---|
-| `b23663d` | chore(plugins): NuGet 依赖 DLL 平台限定为 Editor-only | P4 |
-| `6c14f1b` | perf(simulation): 脏格改紧凑索引列表 + 温度唤醒球逐格置位 | P1 / P2 |
+| `b23663d` | chore(plugins): NuGet 依赖 DLL 平台限定为 Editor-only | P4（**2026-10-08 回退**：该改动使打包编译失败） |
+| `6c14f1b` | perf(simulation): 脏格改紧凑索引列表 + 温度唤醒球逐格置位 | P1 / P2（**逐格球部分复审实测负收益，由 `5ccc63c` 返工**） |
 | `34cf65b` | fix(simulation): SpeedController 周期成本按目标需求折算、周期长度由驱动注入 | P3a / P3b / P3c / P3d |
 | `6264fa7` | feat(game): 速度只由高速模式改变——普通编辑恒 1×、高速钉满档 | P3（档位语义：生产不再有玩家可调倍速） |
 | `04c6837` | perf(simulation): 火逻辑帧八邻单趟扫描合并附着判定 | P5① |
 | `26b2ba0` | chore(rendering): 运行期 quad 旗标统一为 HideFlags.DontSave | P5④ |
+| `5ccc63c` | perf(simulation): FlushDirty 改密度自适应三档 | P2（返工，实测收益见 P2 条目） |
 
-未随代码一起复核的项：P2 的收益复测（本机只有 Unity Mono，桩工程口径不可比）、P4 的打包体积 / 构建时间
-（未重新打包）、P5③ 的 URP prefiltering 陈旧集（未动）。
+未随代码一起复核的项：P2/P5① 的 Unity Mono/Burst 实机耗时（全部为 net9 桩口径）、P5③ 的 URP prefiltering 陈旧集（未动）。
+
+**P4 回退（2026-10-08 还原、2026-10-09 落提交）**：`b23663d` 的 Editor-only meta 改动已全部还原（40 个 `*.dll.meta` 与 `b23663d^` 逐字节一致），
+Standalone/IL2CPP 打包复测 `Succeeded errors=0`（Development，1.13GB；player 仍含 MCP 桥、`GameAssembly.dll` 45.8MB）。
+P4 的打包体积收益仍未落地——meta 路线已证否，见上文 P4 条目。
