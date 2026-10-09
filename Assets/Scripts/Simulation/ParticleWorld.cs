@@ -112,6 +112,7 @@ namespace TapTap2026.Simulation
         private Cell _outside;
         private bool _unknownTypeReported;
         private bool _motionSleepEnabled = true;
+        private bool _groundwaterSealingEnabled = true;
         private bool _motionScanActive;
         private int _motionCellsEvaluatedLastStep;
 
@@ -388,6 +389,41 @@ namespace TapTap2026.Simulation
                 }
 
                 _motionSleepEnabled = value;
+            }
+        }
+
+        /// <summary>
+        /// 地下水规则开关（默认 <c>true</c>）：固体置换液体前，若它左右同一行都被固体堵住
+        /// （越界按固体算），置换不成立——石头 / 沙 / 土里封闭的水不再被上方固体挤上去。
+        /// 为 false 时退回旧的 rank 置换行为（A/B 对照与回归验证）。
+        /// 运行期切换会整张置位运动候选位图（静止粒子需要重新求值），可在播放中安全地做 A/B 对照。
+        /// </summary>
+        /// <remarks>
+        /// 纯读取规则：不开状态、不消耗随机流、读距 (x±1, y) 在类型表运动阅读盒并集之内，
+        /// 运动休眠透明性不受影响（回归见 <c>GroundwaterTests.MotionSleepTransparency_WithGroundwaterRule</c>）。
+        /// </remarks>
+        public bool GroundwaterSealingEnabled
+        {
+            get { return _groundwaterSealingEnabled; }
+            set
+            {
+                if (value == _groundwaterSealingEnabled)
+                {
+                    return;
+                }
+
+                _groundwaterSealingEnabled = value;
+
+                // 闸门翻转会改变「已静止粒子」的置换决策（被夹住的沙开始下沉、或反过来被挡），
+                // 它们没有写入、不会被自然唤醒——整张候选位图置位一次，等价于「刚构造完」的初态。
+                // 休眠关闭时不消费位图，留给 MotionSleepEnabled 的 setter 在重新打开时统一置位。
+                if (_motionSleepEnabled)
+                {
+                    for (int i = 0; i < _candidates.Length; i++)
+                    {
+                        _candidates[i] = ulong.MaxValue;
+                    }
+                }
             }
         }
 

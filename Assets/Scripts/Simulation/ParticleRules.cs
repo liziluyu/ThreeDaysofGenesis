@@ -90,6 +90,21 @@ namespace TapTap2026.Simulation
             return HasTag(world, x, y, ParticleTags.Solid);
         }
 
+        /// <summary>
+        /// 地下水规则的「旁路」判据：固体在 (x,y) 下落置换液体前，左右同一行是否至少有一侧不是固体
+        /// （越界按固体算）。两侧都被堵 = 被夹在固体之间（活塞），液体无处可让。
+        /// </summary>
+        public static bool HasLateralEscape(ParticleWorld world, int x, int y)
+        {
+            return IsOpenSide(world, x - 1, y) || IsOpenSide(world, x + 1, y);
+        }
+
+        /// <summary>(x,y) 是否是可让液体通过的「旁路」：界内且不带 <see cref="ParticleTags.Solid"/> 标签。</summary>
+        private static bool IsOpenSide(ParticleWorld world, int x, int y)
+        {
+            return world.IsInBounds(x, y) && !IsSolid(world, x, y);
+        }
+
         /// <summary>(x,y) 是否挡住光（带 Solid 或 Liquid 标签）：光照只穿过气体与空，打到水面/地面即停。
         /// 越界与空气均为 false。</summary>
         public static bool BlocksLight(ParticleWorld world, int x, int y)
@@ -99,7 +114,9 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// <paramref name="toX"/>,<paramref name="toY"/> 能否被 <paramref name="fromX"/>,<paramref name="fromY"/> 上的粒子占据。
-        /// 空气可进入；静态格不可；否则比较类别标签，高 rank 可以置换低 rank（固体沉穿液体与气体，同类互不置换）。
+        /// 空气可进入；静态格不可；否则比较类别标签，高 rank 可以置换低 rank，但**固体置换液体**还要求
+        /// 左右至少一侧有旁路（见 <see cref="HasLateralEscape"/>）——否则被夹住的固体推不动液体
+        /// （固体沉穿液体与气体，同类互不置换）。
         /// </summary>
         public static bool CanDisplace(ParticleWorld world, int fromX, int fromY, int toX, int toY)
         {
@@ -130,7 +147,21 @@ namespace TapTap2026.Simulation
                 return false;
             }
 
-            return TagRank(self.Info.Tags) > TagRank(other.Info.Tags);
+            int selfRank = TagRank(self.Info.Tags);
+            int otherRank = TagRank(other.Info.Tags);
+
+            // 地下水：固体置换液体前，若它左右同一行都被固体堵住（越界按固体算），
+            // 液体无旁路可让（活塞效应）→ 这次置换不成立。只约束「固体 → 液体」；
+            // 斜落净空链同样经过本方法，水囊拐角因此也进不去。
+            if (selfRank > LiquidRank
+                && (other.Info.Tags & ParticleTags.Liquid) != 0
+                && world.GroundwaterSealingEnabled
+                && !HasLateralEscape(world, fromX, fromY))
+            {
+                return false;
+            }
+
+            return selfRank > otherRank;
         }
 
         /// <summary>正下方可进入则交换，下落一格。</summary>
