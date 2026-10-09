@@ -1,21 +1,24 @@
-# 地下水规则实施计划
+# 地下水规则实施计划（v2：运动状态判定）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**目标：** 固体置换液体前若左右同一行都被固体堵住则不成立——石头 / 沙 / 土里封闭的水不再上浮，成为不动的「地下水」。
+**目标：** 固体置换液体前必须处于运动中（上一运动扫描位移过或刚放置）——静止岩石无论形状、是否与池塘联通都不再被抽动，成为稳定的「地下水」。
 
-**架构：** 纯读取规则，零新增状态。判定挂在 `ParticleRules.CanDisplace`（唯一置换闸门，直落与斜落净空链共用）；开关放在 `ParticleWorld`（默认开，可 A/B 对照）。不改 `Cell` 布局、注册表、渲染、驱动。
+**架构：** `ParticleWorld` 加逐格 `_lastMovedTick`（byte）+ `HasMomentum` 查询，写入在 `Swap` / `Set` / `SetPhase` 里维护；`ParticleRules.CanDisplace` 把 v1 的「左右被夹住」闸门换成「运动中」闸门（删除 `HasLateralEscape`/`IsOpenSide`）。v1 规则实测会漏（画刷形状水囊、联通池塘被逐格抽上去），设计文档 `docs/design-groundwater.md` 已更新为 v2。
 
-**技术栈：** Unity 2022.3.62f1 / C# / NUnit EditMode（286 个既有用例）。设计文档：`docs/design-groundwater.md`。
+**技术栈：** Unity 2022.3.62f1 / C# / NUnit EditMode。
 
-**运行测试：** 编辑器在线优先用 MCP `tests-run`（EditMode）；离线用批处理（**不要加 `-quit`**）：
+**测试：**
+- **离线通道**（委托子代理执行；本机 Unity 安装目录的 Roslyn + MonoBleedingEdge，编译真实源码并反射跑 `[Test]`）：
+  ```bash
+  bash /tmp/offline-tests/run.sh                       # 全量（约 3 分钟；跳过 CameraPanTests / DialogueRunnerTests：依赖真实 UnityEngine/编辑器）
+  bash /tmp/offline-tests/run.sh GroundwaterTests      # 指定 fixture
+  bash /tmp/offline-tests/run.sh WaterParticleTests.cs # 指定文件
+  ```
+  基线（改动前）：total=279 pass=276 fail=3（3 个失败全部是 GroundwaterTests 里被 v1 规则漏洞影响的用例）。
+- **真机复跑**（用户执行）：编辑器在线用 MCP `tests-run`；离线用批处理（编辑器实际装在 `D:\uni all\editor\2022.3.62f1`，**不要加 `-quit`**）。
 
-```powershell
-& 'D:\Unity\2022.3.62f1\Editor\Unity.exe' -batchmode -runTests `
-  -projectPath . -testPlatform EditMode -testResults Temp\results.xml -logFile Temp\unity-editmode.log
-```
-
-**提交：** 每任务一次本地提交；**不推送远程**（用户要求）。新文件的 `.meta` 由 Unity 生成，提交时一并 `git add`。
+**提交：** 每任务一次本地提交；**不推送远程**。新文件 `.meta` 由 Unity 生成、后续补交。
 
 ---
 
@@ -23,255 +26,102 @@
 
 | 文件 | 动作 | 职责 |
 |---|---|---|
-| `Assets/Scripts/Simulation/ParticleRules.cs` | 修改 | `CanDisplace` 加地下水闸门 + `HasLateralEscape` 判据 + 注释契约 |
-| `Assets/Scripts/Simulation/ParticleWorld.cs` | 修改 | `GroundwaterSealingEnabled` 开关（默认 `true`） |
-| `Assets/Tests/EditMode/GroundwaterTests.cs` | 新建 | 规则单测 + 水囊稳定 + 联通地下水 + 挖开释放 + 休眠 A/B + 气体不受影响 |
-| `Assets/Tests/EditMode/WaterParticleTests.cs` | 修改 | 改写竖井用例为新语义 + 新增开阔水域下沉回归 |
-| `Assets/Scripts/Simulation/ParticleIds.cs` | 修改 | 水条目的注释同步 |
-| `Assets/Scripts/Simulation/Particles/WaterParticle.cs` | 修改 | 头注释同步（「固体沉穿水」加例外） |
-| `docs/ParticleTypeInterface.md` | 修改 | §4 置换规则补例外；§6 共享原语说明补一句；§10 文件清单水一行同步 |
-| `AGENTS.md` | 修改 | 「跨类型规则只看标签」处补一句 |
+| `Assets/Scripts/Simulation/ParticleWorld.cs` | 修改 | `_lastMovedTick` 状态 + `HasMomentum` + `Swap`/`Set`/`SetPhase` 标记 |
+| `Assets/Scripts/Simulation/ParticleRules.cs` | 修改 | 闸门改为「运动中」；删除 `HasLateralEscape`/`IsOpenSide` |
+| `Assets/Tests/EditMode/GroundwaterTests.cs` | 修改 | 单测换成运动状态语义；行为用例保留并校正 |
+| `Assets/Tests/EditMode/WaterParticleTests.cs` | 修改 | 竖井用例改回「照旧沉底」；保留开阔水域两个回归 |
+| `Assets/Scripts/Simulation/ParticleIds.cs`、`Particles/WaterParticle.cs` | 修改 | 注释同步 |
+| `docs/ParticleTypeInterface.md`、`AGENTS.md` | 修改 | 文档同步（含修正编辑器路径） |
 
 ---
 
-### Task 1: 规则 + 开关 + 置换闸门单测
+### Task 1: 运动状态 + 闸门替换 + 单测
 
 **Files:**
-- Modify: `Assets/Scripts/Simulation/ParticleRules.cs`（`CanDisplace`，约 104–134 行）
-- Modify: `Assets/Scripts/Simulation/ParticleWorld.cs`（`_motionSleepEnabled` 附近，约 114 行与 375 行）
-- Create: `Assets/Tests/EditMode/GroundwaterTests.cs`
+- Modify: `Assets/Scripts/Simulation/ParticleWorld.cs`
+- Modify: `Assets/Scripts/Simulation/ParticleRules.cs`
+- Modify: `Assets/Tests/EditMode/GroundwaterTests.cs`
 
-- [ ] **Step 1: 新建测试文件与闸门单测**
+- [ ] **Step 1: 改 `ParticleWorld`（状态 + 查询 + 写标记）**
 
-创建 `Assets/Tests/EditMode/GroundwaterTests.cs`：
-
-```csharp
-using NUnit.Framework;
-using TapTap2026.Simulation;
-
-namespace TapTap2026.Tests
-{
-    /// <summary>
-    /// 地下水规则（<see cref="ParticleRules.CanDisplace"/> 的「被夹住不放行」闸门）：
-    /// 固体置换液体前若左右同一行都被固体堵住（越界按固体算），置换不成立。
-    /// 单测走隔离类型表；水囊 / 联通 / 释放 / 休眠 A/B 走生产注册路径（依赖 ParticleIds 回填）。
-    /// </summary>
-    public sealed class GroundwaterTests
-    {
-        private const uint SeedValue = 20261009u;
-
-        // 隔离类型表：水 = 1、石头 = 2（TestTables.Build 约定第 n 个粒子 = typeId n + 1）。
-        private const ushort WaterId = 1;
-        private const ushort StoneId = 2;
-
-        [SetUp]
-        public void SetUp()
-        {
-            ParticleRegistration.RegisterAll();
-        }
-
-        private static ParticleWorld CreateIsolatedWorld(int width, int height)
-        {
-            return new ParticleWorld(
-                width, height, SeedValue,
-                TestTables.Build(new WaterParticle(), new StoneParticle()));
-        }
-
-        private static ParticleWorld CreateProductionWorld(int width, int height)
-        {
-            return new ParticleWorld(width, height, SeedValue);
-        }
-
-        private static void FillRect(ParticleWorld world, int x0, int y0, int x1, int y1, ushort typeId)
-        {
-            for (int y = y0; y <= y1; y++)
-            {
-                for (int x = x0; x <= x1; x++)
-                {
-                    Assert.IsTrue(world.Set(x, y, typeId), $"Set({x},{y}) 应成功");
-                }
-            }
-        }
-
-        private static int CountType(ParticleWorld world, ushort typeId)
-        {
-            int count = 0;
-            for (int y = 0; y < world.Height; y++)
-            {
-                for (int x = 0; x < world.Width; x++)
-                {
-                    if (world.GetCell(x, y).typeId == typeId)
-                    {
-                        count++;
-                    }
-                }
-            }
-
-            return count;
-        }
-
-        /// <summary>布局哈希（typeId / shade / 非 bit0 的 flags；FNV-1a，无分配）。</summary>
-        private static ulong LayoutHash(ParticleWorld world)
-        {
-            unchecked
-            {
-                ulong h = 1469598103934665603UL;
-                Cell[] cells = world.Cells;
-                for (int i = 0; i < cells.Length; i++)
-                {
-                    h = (h ^ cells[i].typeId) * 1099511628211UL;
-                    h = (h ^ cells[i].shade) * 1099511628211UL;
-                    h = (h ^ (ulong)(cells[i].flags & CellFlags.ProcessedParityMask)) * 1099511628211UL;
-                }
-
-                return h;
-            }
-        }
-
-        /// <summary>全状态哈希（布局 + 每格热量 / 湿度位模式）。</summary>
-        private static ulong StateHash(ParticleWorld world)
-        {
-            unchecked
-            {
-                ulong h = LayoutHash(world);
-                for (int y = 0; y < world.Height; y++)
-                {
-                    for (int x = 0; x < world.Width; x++)
-                    {
-                        h = (h ^ (ulong)System.BitConverter.SingleToInt32Bits(world.Heat.GetHeat(x, y))) * 1099511628211UL;
-                        h = (h ^ (ulong)System.BitConverter.SingleToInt32Bits(world.Humidity.Get(x, y))) * 1099511628211UL;
-                    }
-                }
-
-                return h;
-            }
-        }
-
-        /// <summary>跑一个逻辑周期（3 运动帧 + 1 逻辑帧，同生产节拍）。</summary>
-        private static void RunCycles(ParticleWorld world, int cycles)
-        {
-            for (int i = 0; i < cycles; i++)
-            {
-                world.StepMotion();
-                world.StepMotion();
-                world.StepMotion();
-                world.StepLogic();
-            }
-        }
-
-        [Test]
-        public void CanDisplace_SolidWedgedBetweenSolids_CannotEnterLiquid()
-        {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(2, 1, StoneId);
-            world.Set(1, 0, WaterId);
-
-            Assert.IsFalse(
-                ParticleRules.CanDisplace(world, 1, 1, 1, 0),
-                "左右都被固体堵住 → 置换液体不成立");
-        }
-
-        [Test]
-        public void CanDisplace_AnyOpenSide_CanEnterLiquid()
-        {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(1, 0, WaterId);
-            // 右侧 (2,1) 是空气：旁路存在 → 允许置换。
-            Assert.IsTrue(ParticleRules.CanDisplace(world, 1, 1, 1, 0));
-        }
-
-        [Test]
-        public void CanDisplace_WorldEdgeCountsAsBlockedSide()
-        {
-            ParticleWorld world = CreateIsolatedWorld(1, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(0, 0, WaterId);
-
-            Assert.IsFalse(
-                ParticleRules.CanDisplace(world, 0, 1, 0, 0),
-                "两侧越界按固体算 → 置换不成立");
-        }
-
-        [Test]
-        public void CanDisplace_AirTargetIsUnaffected()
-        {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(2, 1, StoneId);
-            // (1,0) 保持空气：目标是气体/空 → 本闸门不适用（气体照旧可被置换）。
-            Assert.IsTrue(ParticleRules.CanDisplace(world, 1, 1, 1, 0));
-        }
-
-        [Test]
-        public void GroundwaterSealingDisabled_RestoresLegacyDisplacement()
-        {
-            ParticleWorld world = CreateIsolatedWorld(3, 2);
-            world.Set(0, 1, StoneId);
-            world.Set(1, 1, StoneId);
-            world.Set(2, 1, StoneId);
-            world.Set(1, 0, WaterId);
-            world.GroundwaterSealingEnabled = false;
-
-            Assert.IsTrue(
-                ParticleRules.CanDisplace(world, 1, 1, 1, 0),
-                "开关关 → 退回旧的 rank 置换行为");
-        }
-    }
-}
-```
-
-- [ ] **Step 2: 跑一次确认编译失败（TDD 红灯）**
-
-Run: 批处理 `-runTests`（或 MCP `tests-run`）。
-Expected: 编译错误——`GroundwaterSealingEnabled` 尚不存在（C# 下红灯即编译失败）。
-
-- [ ] **Step 3: 实现开关**
-
-`Assets/Scripts/Simulation/ParticleWorld.cs`，在 `private bool _motionSleepEnabled = true;`（约 114 行）下一行加字段：
-
-```csharp
-        private bool _groundwaterSealingEnabled = true;
-```
-
-在 `MotionSleepEnabled` 属性（约 375 行）之后加属性：
+字段（放在 `_groundwaterSealingEnabled` 附近）：
 
 ```csharp
         /// <summary>
-        /// 地下水规则开关（默认 <c>true</c>）：固体置换液体前，若它左右同一行都被固体堵住
-        /// （越界按固体算），置换不成立——石头 / 沙 / 土里封闭的水不再被上方固体挤上去。
-        /// 为 false 时退回旧的 rank 置换行为（A/B 对照与回归验证）。
+        /// 逐格「最近一次位移的扫描序号」（byte 存储，与 <see cref="Tick"/> 按模 256 比较）。
+        /// 地下水闸门用它判断固体是否处于运动中；写入点：<see cref="Swap"/>（两端格与两格正上方）、
+        /// <see cref="Set"/> / <see cref="SetPhase"/>（新格记「上一扫描」，等价刚放置的视作刚运动过）。
         /// </summary>
-        /// <remarks>
-        /// 纯读取规则：不开状态、不消耗随机流、读距 (x±1, y) 在类型表运动阅读盒并集之内，
-        /// 运动休眠透明性不受影响（回归见 <c>GroundwaterTests.MotionSleepTransparency_WithGroundwaterRule</c>）。
-        /// </remarks>
-        public bool GroundwaterSealingEnabled
+        private readonly byte[] _lastMovedTick;
+```
+
+构造函数里（`_processedBits` 分配处附近）：`_lastMovedTick = new byte[_cells.Length];`
+
+新增方法（放在 `GroundwaterSealingEnabled` 属性附近）：
+
+```csharp
+        /// <summary>
+        /// (x,y) 上的内容是否处于运动中：上一运动扫描位移过（或本帧新放置，见 <see cref="_lastMovedTick"/>）。
+        /// 越界返回 false。地下水闸门（<see cref="ParticleRules.CanDisplace"/>）读它。
+        /// </summary>
+        public bool HasMomentum(int x, int y)
         {
-            get { return _groundwaterSealingEnabled; }
-            set { _groundwaterSealingEnabled = value; }
+            if (!IsInBounds(x, y))
+            {
+                return false;
+            }
+
+            return (byte)(_tick - _lastMovedTick[y * _width + x]) == 1;
+        }
+
+        /// <summary>把 (x,y) 的内容标记为「本次扫描位移过」。</summary>
+        private void MarkMoved(int x, int y)
+        {
+            _lastMovedTick[y * _width + x] = (byte)_tick;
+        }
+
+        /// <summary>把 (x,y) 正上方那格标记为「位移过」——它是下一步会跟随落下的同伴。</summary>
+        private void MarkMovedAbove(int x, int y)
+        {
+            int above = y + 1;
+            if ((uint)above < (uint)_height)
+            {
+                _lastMovedTick[above * _width + x] = (byte)_tick;
+            }
         }
 ```
 
-- [ ] **Step 4: 实现判定**
+在 `Swap` 里、写完两格之后（与 `MarkProcessed(a)` / `MarkProcessed(b)` 相邻处）加：
 
-`Assets/Scripts/Simulation/ParticleRules.cs`：把 `CanDisplace` 末尾的 `return TagRank(self.Info.Tags) > TagRank(other.Info.Tags);` 替换为：
+```csharp
+            // 地下水闸门：两端格与两格正上方都记「本次扫描位移过」。
+            MarkMoved(x0, y0);
+            MarkMoved(x1, y1);
+            MarkMovedAbove(x0, y0);
+            MarkMovedAbove(x1, y1);
+```
+
+在 `Set` 与 `SetPhase` 里、写完 `cell.typeId` / `cell.flags` 之后加：
+
+```csharp
+            // 地下水闸门：刚放置 / 相变出来的物质视作「上一扫描位移过」——画笔直接放进水里的沙石照旧下沉。
+            _lastMovedTick[index] = (byte)(_tick - 1);
+```
+
+- [ ] **Step 2: 改 `ParticleRules`（闸门替换 + 删除 v1 判据）**
+
+删除 `HasLateralEscape` 与 `IsOpenSide` 两个方法；`CanDisplace` 末尾改为：
 
 ```csharp
             int selfRank = TagRank(self.Info.Tags);
             int otherRank = TagRank(other.Info.Tags);
 
-            // 地下水：固体置换液体前，若它左右同一行都被固体堵住（越界按固体算），
-            // 液体无旁路可让（活塞效应）→ 这次置换不成立。只约束「固体 → 液体」；
-            // 斜落净空链同样经过本方法，水囊拐角因此也进不去。
+            // 地下水：只有「运动中」的固体才能排开液体（上一运动扫描位移过，或刚放置）。
+            // 静止的岩石无论如何都不会把水挤上去——水囊形状、是否与池塘联通都不影响。
             if (selfRank > LiquidRank
                 && (other.Info.Tags & ParticleTags.Liquid) != 0
                 && world.GroundwaterSealingEnabled
-                && !HasLateralEscape(world, fromX, fromY))
+                && !world.HasMomentum(fromX, fromY))
             {
                 return false;
             }
@@ -279,128 +129,97 @@ Expected: 编译错误——`GroundwaterSealingEnabled` 尚不存在（C# 下红
             return selfRank > otherRank;
 ```
 
-并更新 `CanDisplace` 的 XML 注释（把「高 rank 可以置换低 rank」改成「高 rank 可以置换低 rank，但固体置换液体还要求左右至少一侧有旁路，见 `HasLateralEscape`」）。
+`CanDisplace` 的 XML 注释同步改为「高 rank 可以置换低 rank，但**固体置换液体**还要求该固体处于运动中（见 `ParticleWorld.HasMomentum`）」。
 
-在同一类里加两个方法（放在 `IsSolid` 之后）：
+- [ ] **Step 3: 改单测（`GroundwaterTests.cs`）**
+
+删除 v1 的 5 个闸门单测（`CanDisplace_SolidWedgedBetweenSolids_CannotEnterLiquid`、`CanDisplace_AnyOpenSide_CanEnterLiquid`、`CanDisplace_LiquidSideIsAnEscape`、`CanDisplace_GasSideIsAnEscape`、`CanDisplace_WorldEdgeCountsAsBlockedSide`），替换为：
 
 ```csharp
-        /// <summary>
-        /// 地下水规则的「旁路」判据：固体在 (x,y) 下落置换液体前，左右同一行是否至少有一侧不是固体
-        /// （越界按固体算）。两侧都被堵 = 被夹在固体之间（活塞），液体无处可让。
-        /// </summary>
-        public static bool HasLateralEscape(ParticleWorld world, int x, int y)
+        [Test]
+        public void CanDisplace_StaticSolid_CannotEnterLiquid()
         {
-            return IsOpenSide(world, x - 1, y) || IsOpenSide(world, x + 1, y);
+            ParticleWorld world = CreateIsolatedWorld(3, 2);
+            world.Set(1, 1, StoneId);
+            world.Set(1, 0, StoneId);   // 先垫底，让上面的石头静止下来
+            world.StepMotion();          // 宽限期过期（石头下方是石头，不动）
+            world.Set(1, 0, WaterId);    // 垫底换成水
+            world.StepMotion();          // 石头已静止 → 推不动水（也不应移动）
+
+            Assert.IsFalse(
+                ParticleRules.CanDisplace(world, 1, 1, 1, 0),
+                "静止石头不能置换液体");
         }
 
-        /// <summary>(x,y) 是否是可让液体通过的「旁路」：界内且不带 <see cref="ParticleTags.Solid"/> 标签。</summary>
-        private static bool IsOpenSide(ParticleWorld world, int x, int y)
+        [Test]
+        public void CanDisplace_SolidThatJustFell_CanEnterLiquid()
         {
-            return world.IsInBounds(x, y) && !IsSolid(world, x, y);
+            ParticleWorld world = CreateIsolatedWorld(1, 3);
+            world.Set(0, 2, StoneId);
+            world.Set(0, 0, WaterId);
+            world.StepMotion();          // 石头落进 (0,1)（空气目标不受闸门约束）→ 获得运动状态
+
+            Assert.IsTrue(
+                ParticleRules.CanDisplace(world, 0, 1, 0, 0),
+                "刚下落的石头可以置换液体");
+        }
+
+        [Test]
+        public void CanDisplace_FreshlyPlacedSolid_CanEnterLiquid()
+        {
+            ParticleWorld world = CreateIsolatedWorld(1, 2);
+            world.Set(0, 1, StoneId);
+            world.Set(0, 0, WaterId);
+
+            Assert.IsTrue(
+                ParticleRules.CanDisplace(world, 0, 1, 0, 0),
+                "刚放置的石头视作运动中（画笔直接放进水里照旧下沉）");
         }
 ```
 
-- [ ] **Step 5: 跑测试确认绿灯**
+`CanDisplace_AirTargetIsUnaffected` 与 `GroundwaterSealingDisabled_RestoresLegacyDisplacement` 保留原样（后者仍有效 ✔）。
 
-Run: 批处理 `-runTests`（可加 `-testFilter GroundwaterTests` 缩范围）。
-Expected: 5 个新用例全过；输出 `Test run completed. Exiting with code 0`。
+- [ ] **Step 4: 离线跑，验证规则替换**
 
-- [ ] **Step 6: 本地提交**
+Run: `bash /tmp/offline-tests/run.sh GroundwaterTests`
+Expected: **全部通过**（3 个运动状态单测 + 空气目标 + 开关关 + 水囊稳定 2 个 + 联通 / 挖开 2 个——注意最后两个的期望是按 v1 写的，见 Task 3；若它们失败，先确认失败原因与设计一致再交给控制器判定，不要自行改断言）。
+
+- [ ] **Step 5: 本地提交**
 
 ```bash
-git add Assets/Scripts/Simulation/ParticleRules.cs Assets/Scripts/Simulation/ParticleWorld.cs Assets/Tests/EditMode/GroundwaterTests.cs Assets/Tests/EditMode/GroundwaterTests.cs.meta
-git commit -m "feat(sim): 地下水规则——左右被固体夹住的固体不能置换液体"
+git add Assets/Scripts/Simulation/ParticleWorld.cs Assets/Scripts/Simulation/ParticleRules.cs Assets/Tests/EditMode/GroundwaterTests.cs
+git commit -m "feat(sim): 地下水改运动状态判定——静止固体不能置换液体"
 ```
 
 ---
 
-### Task 2: 水囊稳定（含画刷形状）
+### Task 2: 竖井用例改回「照旧沉底」
 
 **Files:**
-- Test: `Assets/Tests/EditMode/GroundwaterTests.cs`（追加）
+- Modify: `Assets/Tests/EditMode/WaterParticleTests.cs`
 
-- [ ] **Step 1: 追加两个用例**
+- [ ] **Step 1: 恢复原始竖井用例**
 
-追加到 `GroundwaterTests`（`LayoutHash` 之前的位置随意）：
-
-```csharp
-        [Test]
-        public void WaterPocketInStone_StaysBitIdentical()
-        {
-            ParticleWorld world = CreateProductionWorld(12, 12);
-            FillRect(world, 0, 0, 11, 11, ParticleIds.Stone);
-            FillRect(world, 4, 4, 6, 6, ParticleIds.Water);
-
-            ulong before = LayoutHash(world);
-            int waterBefore = CountType(world, ParticleIds.Water);
-
-            RunCycles(world, 120);
-
-            Assert.AreEqual(before, LayoutHash(world), "石头里的水囊与整块石头都不许动");
-            Assert.AreEqual(waterBefore, CountType(world, ParticleIds.Water), "水量守恒");
-        }
-
-        [Test]
-        public void BrushShapedWaterPocketInStone_StaysBitIdentical()
-        {
-            ParticleWorld world = CreateProductionWorld(20, 16);
-            FillRect(world, 0, 0, 19, 15, ParticleIds.Stone);
-            // 画刷形状：4×3 主体 + 斜边（模拟手绘的水囊边界）。
-            FillRect(world, 6, 6, 9, 8, ParticleIds.Water);
-            world.Set(10, 8, ParticleIds.Water);
-            world.Set(10, 9, ParticleIds.Water);
-            world.Set(11, 9, ParticleIds.Water);
-
-            ulong before = LayoutHash(world);
-
-            RunCycles(world, 120);
-
-            Assert.AreEqual(before, LayoutHash(world), "画刷画出的水囊不许动");
-        }
-```
-
-- [ ] **Step 2: 跑测试确认绿灯**
-
-Run: 批处理（或 MCP `tests-run`）。
-Expected: 全过。若「水囊在动」——说明闸门没生效或斜落路径漏网，停下核查 `CanDisplace`（`TrySlide` 逐格调用它）。
-
-- [ ] **Step 3: 本地提交**
-
-```bash
-git add Assets/Tests/EditMode/GroundwaterTests.cs
-git commit -m "test(sim): 地下水——封闭水囊与画刷水囊逐位稳定的回归"
-```
-
----
-
-### Task 3: 竖井用例改写 + 开阔水域下沉回归
-
-**Files:**
-- Modify: `Assets/Tests/EditMode/WaterParticleTests.cs`（类头注释、约 232–269 行的 `Sand_SinksThrough_Water`）
-
-- [ ] **Step 1: 改写竖井用例为新语义**
-
-把 `WaterParticleTests.cs` 中 `Sand_SinksThrough_Water`（约 233–269 行，含 XML 注释）整体替换为：
+把 `Sand_RestsOnWater_InOneWideStoneShaft`（含其 XML 注释与「活塞」措辞）整体替换回原用例（仍在 1 格宽石竖井里，但沙照旧沉底）：
 
 ```csharp
         /// <summary>
-        /// 地下水规则（活塞效应）：沙被**两侧石壁夹住**时推不动水——水无处可让，置换不成立。
-        /// 沙停在水面上、水柱纹丝不动。（旧语义是「沙沉穿水」，随地下水设计改写；
-        /// 开阔水域的下沉由 <see cref="Sand_SinksThrough_Water_InOpenBasin"/> 守住。）
+        /// rank 规则的集成验证：沙（Solid，rank 3）从水柱上方落下，沉穿水到底；
+        /// 等量的水被置换上浮。沙与水各自守恒。（运动状态闸门：下落的沙本身在运动中，照旧可排开液体。）
         /// </summary>
         [Test]
-        public void Sand_RestsOnWater_InOneWideStoneShaft()
+        public void Sand_SinksThrough_Water()
         {
             ParticleWorld world = CreateSandWorld(8, 12);
             FillRow(world, 0, StoneId);
 
-            // 两侧石墙把水关在一格宽的竖井里——沙在其中左右都被夹住。
+            // 两侧石墙把水关在一格宽的竖井里——没有侧壁水会横流摊开（那是正确行为，
+            // 由 Water_LevelsOut_OnFlatFloor 验证），本测试专看竖直方向上的置换。
             for (int y = 1; y <= 6; y++)
             {
                 world.Set(3, y, StoneId);
                 world.Set(5, y, StoneId);
             }
-
             // 三格水柱立在井底，井口上方一颗沙。
             for (int y = 1; y <= 3; y++)
             {
@@ -414,144 +233,62 @@ git commit -m "test(sim): 地下水——封闭水囊与画刷水囊逐位稳定
                 world.StepLogic();
             }
 
-            Assert.AreEqual(SandId, world.GetCell(4, 4).typeId, "被石壁夹住的沙停在水面上（活塞顶住）");
-            Assert.AreEqual(WaterId, world.GetCell(4, 1).typeId, "水柱纹丝不动");
-            Assert.AreEqual(WaterId, world.GetCell(4, 2).typeId);
+            Assert.AreEqual(SandId, world.GetCell(4, 1).typeId, "沙应沉到水柱底部");
+            Assert.AreEqual(WaterId, world.GetCell(4, 2).typeId, "水被置换上浮");
             Assert.AreEqual(WaterId, world.GetCell(4, 3).typeId);
+            Assert.AreEqual(WaterId, world.GetCell(4, 4).typeId);
             Assert.AreEqual(3, CountType(world, WaterId), "水量守恒");
             Assert.AreEqual(1, CountType(world, SandId), "沙量守恒");
         }
-
-        /// <summary>
-        /// 开阔水域照旧：两侧石墙离得足够远（沙左右是水，有旁路）时，沙依旧沉穿水柱到底、
-        /// 等量的水被置换上浮。这是地下水规则不得破坏的既有玩法。
-        /// </summary>
-        [Test]
-        public void Sand_SinksThrough_Water_InOpenBasin()
-        {
-            ParticleWorld world = CreateSandWorld(9, 12);
-            FillRow(world, 0, StoneId);
-
-            // 两侧石墙离水池足够远：池内每一列的水左右都有水的旁路。
-            for (int y = 1; y < 12; y++)
-            {
-                world.Set(1, y, StoneId);
-                world.Set(7, y, StoneId);
-            }
-
-            // 5×4 水池，池面正上方一颗沙。
-            for (int y = 1; y <= 4; y++)
-            {
-                for (int x = 2; x <= 6; x++)
-                {
-                    world.Set(x, y, WaterId);
-                }
-            }
-
-            world.Set(4, 6, SandId);
-
-            for (int i = 0; i < 120; i++)
-            {
-                world.StepLogic();
-            }
-
-            Assert.AreEqual(SandId, world.GetCell(4, 1).typeId, "开阔水域：沙照旧沉到底");
-            Assert.AreEqual(20, CountType(world, WaterId), "水量守恒");
-            Assert.AreEqual(1, CountType(world, SandId), "沙量守恒");
-            Assert.AreEqual(5, HighestTypeY(world, WaterId), "被挤出的水浮到原水面之上（池底被沙占掉一格）");
-        }
 ```
 
-- [ ] **Step 2: 追加整块沙下沉用例与 `HighestTypeY` 辅助（辅助放在 `CountType` 之后）**
+- [ ] **Step 2: 类头注释改回**
 
-```csharp
-        [Test]
-        public void SandBlock_SinksThrough_Water_InOpenBasin()
-        {
-            ParticleWorld world = CreateSandWorld(13, 14);
-            FillRow(world, 0, StoneId);
+类头里的「被固体沉穿（左右未被夹住时；被夹住则按地下水规则不让路）」改回「被固体沉穿（下落的固体在运动中，照旧可排开液体；静止固体则不能——见地下水规则）」。
 
-            for (int y = 1; y < 14; y++)
-            {
-                world.Set(1, y, StoneId);
-                world.Set(11, y, StoneId);
-            }
+- [ ] **Step 3: 离线跑**
 
-            // 9 格宽 × 6 深的水池，池面正上方一整块 3×3 沙。
-            for (int y = 1; y <= 6; y++)
-            {
-                for (int x = 2; x <= 10; x++)
-                {
-                    world.Set(x, y, WaterId);
-                }
-            }
+Run: `bash /tmp/offline-tests/run.sh WaterParticleTests.cs`
+Expected: 全部通过（含竖井沉底与两个开阔水域回归）。
 
-            for (int y = 7; y <= 9; y++)
-            {
-                for (int x = 5; x <= 7; x++)
-                {
-                    world.Set(x, y, SandId);
-                }
-            }
-
-            for (int i = 0; i < 300; i++)
-            {
-                world.StepLogic();
-            }
-
-            Assert.AreEqual(9, CountType(world, SandId), "沙量守恒");
-            Assert.AreEqual(54, CountType(world, WaterId), "水量守恒");
-            Assert.AreEqual(SandId, world.GetCell(6, 1).typeId, "整块沙沉降到底（同行相邻格腾出的水就是旁路）");
-            Assert.LessOrEqual(HighestTypeY(world, SandId), 6, "沙已沉到原水面之下");
-            Assert.GreaterOrEqual(HighestTypeY(world, WaterId), 7, "被挤出的水升到原水面之上");
-        }
-
-        /// <summary>某类型的最高一格的 y；不存在时返回 -1。</summary>
-        private static int HighestTypeY(ParticleWorld world, ushort typeId)
-        {
-            for (int y = world.Height - 1; y >= 0; y--)
-            {
-                for (int x = 0; x < world.Width; x++)
-                {
-                    if (world.GetCell(x, y).typeId == typeId)
-                    {
-                        return y;
-                    }
-                }
-            }
-
-            return -1;
-        }
-```
-
-- [ ] **Step 3: 同步类头注释**
-
-把类头 XML 注释里的「被固体沉穿」改为「被固体沉穿（左右未被夹住时；被夹住则按地下水规则不让路）」。
-
-- [ ] **Step 4: 跑测试**
-
-Run: 批处理（或 MCP `tests-run`；可 `-testFilter WaterParticleTests`）。
-Expected: 两用例全过。若开阔水域用例「沙停在半途」——检查测试几何里水池是否够宽（沙左右必须有一侧是水）。
-
-- [ ] **Step 5: 本地提交**
+- [ ] **Step 4: 本地提交**
 
 ```bash
 git add Assets/Tests/EditMode/WaterParticleTests.cs
-git commit -m "test(sim): 竖井用例改写为地下水语义，新增开阔水域下沉回归"
+git commit -m "test(sim): 竖井用例改回照旧沉底（运动状态判定下活塞代价消失）"
 ```
 
 ---
 
-### Task 4: 联通地下水 + 挖开释放
+### Task 3: 联通地下水 + 挖开释放（按 v2 期望加入）
 
 **Files:**
-- Test: `Assets/Tests/EditMode/GroundwaterTests.cs`（追加）
+- Test: `Assets/Tests/EditMode/GroundwaterTests.cs`
 
-- [ ] **Step 1: 追加两个用例**
+- [ ] **Step 1: 追加 `CountTypeInColumn` 辅助（放在 `CountType` 之后）**
+
+```csharp
+        /// <summary>某一列 x 上某类型的格数。</summary>
+        private static int CountTypeInColumn(ParticleWorld world, int x, ushort typeId)
+        {
+            int count = 0;
+            for (int y = 0; y < world.Height; y++)
+            {
+                if (world.GetCell(x, y).typeId == typeId)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+```
+
+- [ ] **Step 2: 追加两个用例**
 
 ```csharp
         [Test]
-        public void GroundwaterConnectedToPond_StaysStill_AndSandStopsAtShaftMouth()
+        public void GroundwaterConnectedToPond_StaysStill_AndSandDrillsTheShaft()
         {
             ParticleWorld world = CreateProductionWorld(12, 12);
 
@@ -577,14 +314,15 @@ git commit -m "test(sim): 竖井用例改写为地下水语义，新增开阔水
 
             RunCycles(world, 200);
 
-            Assert.AreEqual(ParticleIds.Sand, world.GetCell(5, 4).typeId, "沙停在竖井口（左右是石壁，被夹住）");
+            // 下落的沙在运动中：沿竖井沉到井底，把井里的水逐格挤上去（1:1）；石头静止不塌，水囊不受扰动。
+            Assert.AreEqual(ParticleIds.Sand, world.GetCell(5, 2).typeId, "沙沿竖井沉到井底");
             Assert.AreEqual(1, CountType(world, ParticleIds.Sand), "沙量守恒");
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(5, 3).typeId, "井里的水被挤上去一格");
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(5, 4).typeId);
             Assert.AreEqual(ParticleIds.Water, world.GetCell(3, 2).typeId, "水囊纹丝不动");
             Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 2).typeId);
             Assert.AreEqual(ParticleIds.Water, world.GetCell(3, 3).typeId);
             Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 3).typeId);
-            Assert.AreEqual(ParticleIds.Water, world.GetCell(5, 2).typeId, "竖井里的水纹丝不动");
-            Assert.AreEqual(ParticleIds.Water, world.GetCell(5, 3).typeId);
             Assert.AreEqual(4 + 3 + 20, CountType(world, ParticleIds.Water), "水总量守恒");
         }
 
@@ -596,7 +334,7 @@ git commit -m "test(sim): 竖井用例改写为地下水语义，新增开阔水
             world.Set(3, 3, ParticleIds.Water);
             world.Set(4, 3, ParticleIds.Water);
 
-            // 在水囊左侧挖一口贯通到顶的竖井：被夹条件不再成立，水恢复普通水行为。
+            // 在水囊左侧挖一口贯通到顶的竖井：水由自身流动排出（石头静止不塌）。
             for (int y = 1; y <= 7; y++)
             {
                 world.Clear(2, y);
@@ -609,46 +347,31 @@ git commit -m "test(sim): 竖井用例改写为地下水语义，新增开阔水
             Assert.AreNotEqual(ParticleIds.Water, world.GetCell(4, 3).typeId);
             Assert.AreEqual(2, CountTypeInColumn(world, 2, ParticleIds.Water), "两格水都流进竖井");
         }
-
-- [ ] **Step 2: 加 `CountTypeInColumn` 辅助（放在 `CountType` 之后）**
-
-```csharp
-        /// <summary>某一列 x 上某类型的格数。</summary>
-        private static int CountTypeInColumn(ParticleWorld world, int x, ushort typeId)
-        {
-            int count = 0;
-            for (int y = 0; y < world.Height; y++)
-            {
-                if (world.GetCell(x, y).typeId == typeId)
-                {
-                    count++;
-                }
-            }
-
-            return count;
-        }
 ```
 
-- [ ] **Step 3: 跑测试**
+- [ ] **Step 3: 离线跑验证**
 
-Run: 批处理（或 MCP `tests-run`；可 `-testFilter GroundwaterTests`）。
-Expected: 全过。若「联通」用例里沙越过竖井口继续下沉——检查 `HasLateralEscape` 是否真的读到了竖井壁。
+Run: `bash /tmp/offline-tests/run.sh GroundwaterTests`
+Expected: 全绿。判据（不满足就停下报告，**不要**为了变绿而弱化断言）：
+1. **岩石静止**——水囊 (3,2)(4,2)(3,3)(4,3) 全程是水；若被扰动，是实现 bug。
+2. **守恒**——沙 1、水 27（联通用例）/ 水 2（挖开用例）。
+3. 沙与水的具体坐标若与断言不符（例如沙没沉到 (5,2)），把实测的确定不动点坐标写进断言并在报告里说明依据。
 
 - [ ] **Step 4: 本地提交**
 
 ```bash
 git add Assets/Tests/EditMode/GroundwaterTests.cs
-git commit -m "test(sim): 地下水——联通池塘不被动、挖开即释放"
+git commit -m "test(sim): 联通地下水与挖开释放（运动状态判定下的期望）"
 ```
 
 ---
 
-### Task 5: 运动休眠 A/B + 气体不受影响
+### Task 4: 休眠 A/B + 气体不受影响
 
 **Files:**
-- Test: `Assets/Tests/EditMode/GroundwaterTests.cs`（追加）
+- Test: `Assets/Tests/EditMode/GroundwaterTests.cs`
 
-- [ ] **Step 1: 追加两个用例与场景构建**
+- [ ] **Step 1: 追加两个用例**
 
 ```csharp
         [Test]
@@ -664,7 +387,7 @@ git commit -m "test(sim): 地下水——联通池塘不被动、挖开即释放
             {
                 if (cycle == BeforeDig)
                 {
-                    // 挖掉井壁：被夹住的沙应恢复下落——休眠路径必须与全网格路径逐位一致。
+                    // 挖掉井壁：井里的沙应因支撑消失而重新下落——休眠路径必须与全网格路径逐位一致。
                     sleeping.Clear(5, 4);
                     full.Clear(5, 4);
                 }
@@ -690,7 +413,7 @@ git commit -m "test(sim): 地下水——联通池塘不被动、挖开即释放
             Assert.AreEqual(1, CountType(world, ParticleIds.Atmosphere), "气量守恒");
         }
 
-        /// <summary>一格宽石井（井壁 x=3、x=5）+ 井底三格水 + 井口上方一颗沙（停在 (4,4)）。</summary>
+        /// <summary>一格宽石井（井壁 x=3、x=5）+ 井底三格水 + 井口上方一颗沙。</summary>
         private static ParticleWorld BuildSleepScene()
         {
             ParticleWorld world = CreateProductionWorld(9, 8);
@@ -709,12 +432,10 @@ git commit -m "test(sim): 地下水——联通池塘不被动、挖开即释放
         }
 ```
 
-- [ ] **Step 2: 跑测试**
+- [ ] **Step 2: 离线跑 + 本地提交**
 
-Run: 批处理（或 MCP `tests-run`；可 `-testFilter GroundwaterTests`）。
-Expected: 全过。休眠 A/B 若发散——说明 `(x±1, y)` 读距没被写入唤醒并集覆盖，检查 `MotionReadBox` 声明与并集构造。
-
-- [ ] **Step 3: 本地提交**
+Run: `bash /tmp/offline-tests/run.sh GroundwaterTests`
+Expected: 全绿（气穴用例的期望「升到最顶」若与实测不符，报告实际值——气体目标不受闸门约束，理论上应照旧冒泡）。
 
 ```bash
 git add Assets/Tests/EditMode/GroundwaterTests.cs
@@ -723,76 +444,54 @@ git commit -m "test(sim): 地下水——休眠透明性 A/B 与气体不受影�
 
 ---
 
-### Task 6: 文档同步 + 全量回归
+### Task 5: 文档同步 + 全量离线 + 真机复跑
 
 **Files:**
-- Modify: `Assets/Scripts/Simulation/ParticleIds.cs`（水条目，约 26–29 行的 `<summary>`）
-- Modify: `Assets/Scripts/Simulation/Particles/WaterParticle.cs`（头注释第 39 行附近）
-- Modify: `docs/ParticleTypeInterface.md`（§4 约 224–228 行；§6 约 932 行；§10 约 1279 行）
-- Modify: `AGENTS.md`（「跨类型规则只看标签不看 typeId」处）
+- Modify: `Assets/Scripts/Simulation/ParticleIds.cs`、`Assets/Scripts/Simulation/Particles/WaterParticle.cs`
+- Modify: `docs/ParticleTypeInterface.md`、`AGENTS.md`
 
-- [ ] **Step 1: 同步 `ParticleIds.cs` 与 `WaterParticle.cs` 注释**
+- [ ] **Step 1: 类型注释同步**
 
-`ParticleIds.cs` 水条目的 `<summary>` 改为：
+`ParticleIds.cs` 水条目 `<summary>` 里「被固体沉穿」后补「（**下落的固体在运动中**——静止固体推不动水，见 `ParticleRules.CanDisplace` 的地下水闸门）」。`WaterParticle.cs` 头注释「固体（rank 3）沉穿水，水被置换上浮」补「——但**静止**的固体不能；水因此能在石头 / 沙 / 土里成为不动的「地下水」」。
 
-```csharp
-        /// <summary>水。受重力的液体（Liquid 标签）：下落 → 斜滑 → 横流摊平，无安息角；被固体沉穿
-        /// （**左右未被固体夹住时**——被夹住则按地下水规则不让路，见 ParticleRules.HasLateralEscape）。</summary>
-```
+- [ ] **Step 2: `docs/ParticleTypeInterface.md` 同步**
 
-`WaterParticle.cs` 头注释「跨类型交互全部由标签 rank 产生：固体（rank 3）沉穿水，水被置换上浮；」改为：
-
-```csharp
-    //       跨类型交互全部由标签 rank 产生：固体（rank 3）沉穿水，水被置换上浮——
-    //       但固体左右都被固体堵住时置换不成立（地下水规则），水因此能停在石头/沙/土里不动；
-```
-
-- [ ] **Step 2: 同步 `docs/ParticleTypeInterface.md`**
-
-在 §4「置换规则」（约 224–228 行，`rank(自己) > rank(目标)` 那段）之后追加：
+§4 置换规则段后追加（简述，不写理由）：
 
 ```markdown
-**地下水（例外）**：固体置换**液体**还多一道闸门（`ParticleWorld.GroundwaterSealingEnabled`，默认开）：
-若固体在落下前**左右同一行两侧都被固体堵住**（越界按固体算），这次置换不成立——液体无旁路可让，
-固体推不动它。石头 / 沙 / 土里封闭的水因此停在原地成为「地下水」；开阔水域（左右有液体 / 气体旁路）
-不受影响，沙石照旧沉底。斜落净空链同样经过 `CanDisplace`，水囊拐角也进不去。气体不受此闸门约束。
+**地下水闸门**：固体置换**液体**还要求该固体处于**运动中**（上一运动扫描位移过，或刚放置；见 `ParticleWorld.HasMomentum`，
+开关 `ParticleWorld.GroundwaterSealingEnabled` 默认开）。静止的固体无论形状、是否与池塘联通都不能把液体挤上去——
+石头 / 沙 / 土里封闭的水因此成为不动的「地下水」；下落的沙石照旧沉底（下落本身即运动）。气体目标不受此闸门约束。
 ```
 
-在 §6 的「共享原语内置了静态格拒绝」一段（约 932 行）末尾补一句：
+§6「共享原语」一段补一句指向该闸门；§10 文件清单的水一行改为「沙沉穿水置换上浮（下落的沙在运动中）」+ 水囊稳定 / 联通 / 挖开等新用例说明。
+
+- [ ] **Step 3: `AGENTS.md` 同步 + 修正编辑器路径**
+
+「**跨类型规则只看标签不看 typeId**」段后补一句：
 
 ```markdown
-`CanDisplace` 还内置「固体置换液体时左右被固体夹住则拒绝」的地下水闸门（默认开，`ParticleWorld.GroundwaterSealingEnabled`）。
+固体置换液体另有一道「地下水」闸门（`ParticleWorld.GroundwaterSealingEnabled` 默认开）：只有**运动中**的固体（上一运动扫描位移过，或刚由 `Set`/`SetPhase` 放置）能排开液体——静止岩石不会把水挤上去，石头/沙/土里封闭的水因此稳定不动；下落的沙石照旧沉底（见 `docs/design-groundwater.md`）。
 ```
 
-在 §10 文件清单的水一行（约 1279 行）把「沙沉穿水置换上浮」改为「沙沉穿水置换上浮（开阔水域）/ 被石壁夹住的竖井里沙停在水面（地下水规则）」。
+并把 `Development Commands` 与 `Runtime/Tooling Preferences` 里的编辑器路径 `D:\Unity\2022.3.62f1` 更正为实际路径 `D:\uni all\editor\2022.3.62f1`（本机已验证）。
 
-- [ ] **Step 3: 同步 `AGENTS.md`**
+- [ ] **Step 4: 全量离线 + 请用户真机复跑**
 
-「**跨类型规则只看标签不看 typeId**：`ParticleTags` 的 rank 次序 … 决定谁置换谁（`ParticleRules`）。」之后补一句：
-
-```markdown
-固体置换液体另有一道「地下水」闸门（`ParticleWorld.GroundwaterSealingEnabled` 默认开）：下落者左右同一行都被固体堵住（越界按固体算）时置换不成立——石头/沙/土里封闭的水不再被挤上浮，成为不动的「地下水」；开阔水域照旧（见 `docs/design-groundwater.md`）。
-```
-
-- [ ] **Step 4: 全量回归**
-
-Run: 批处理 `-runTests`（不加过滤，跑全部 EditMode）。
-Expected: 全部通过（286 + 新增 ≈ 295 个；退出码 0）。
-
-若出现失败：逐个判断是「新语义的预期改变」（更新断言并在注释里写明原因）还是实现 bug（修实现）。**分不清就停下来问用户**，不要为了让测试变绿而弱化断言。
+Run: `bash /tmp/offline-tests/run.sh`
+Expected: 除被跳过的 2 个文件（CameraPanTests / DialogueRunnerTests）外全绿；然后请用户跑一次真机 EditMode（MCP `tests-run` 或批处理）。
 
 - [ ] **Step 5: 本地提交**
 
 ```bash
 git add Assets/Scripts/Simulation/ParticleIds.cs Assets/Scripts/Simulation/Particles/WaterParticle.cs docs/ParticleTypeInterface.md AGENTS.md
-git commit -m "docs: 同步地下水规则的接口文档、类型注释与测试清单"
+git commit -m "docs: 同步地下水运动状态闸门的接口文档、类型注释与编辑器路径"
 ```
 
 ---
 
 ## 完成标准
 
-- 全部 EditMode 测试通过（含 5 个闸门单测与 6 个行为用例）。
-- `Sand_RestsOnWater_InOneWideStoneShaft` / `Sand_SinksThrough_Water_InOpenBasin` 分别锁定「夹住不让路」与「开阔照旧沉」。
-- 水囊与画刷水囊逐位稳定；联通池塘的地下水稳定；挖开即释放；休眠 A/B 逐位一致；气穴照旧冒泡。
-- 文档四处同步完成。
+- 离线全量除跳过的 2 个文件外全绿；用户真机复跑通过。
+- 水囊（含画刷形状）、联通池塘的地下水稳定；竖井 / 开阔水域照旧下沉；挖开即释放；休眠 A/B 逐位一致；气穴照旧冒泡。
+- 文档四处同步完成（含编辑器路径更正）。
