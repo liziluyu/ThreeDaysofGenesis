@@ -49,22 +49,17 @@ namespace TapTap2026.Simulation
         private const int HeatWakeRadius = 2;
 
         /// <summary>
-        /// 热唤醒球按行的半宽表：Chebyshev 球 ⇒ 行偏移 <c>|dy| ≤ <see cref="HeatWakeRadius"/></c> 处半宽恒为
-        /// <see cref="HeatWakeRadius"/>（<c>HeatWakeHalf[dy + HeatWakeRadius]</c>）。与 <see cref="_wakeHalf"/>
-        /// 同形，供 <see cref="MarkOffsets"/> 逐行按对称 x 区间刷出整个 <c>(2R+1)²</c> 的方球。
+        /// 稀疏 / 密集脏集的分水岭：一次 <see cref="FlushTemperatureDirty"/> 的脏格数超过
+        /// <c>格数 / 本值</c> 时，逐格刷球的并集已逼近整网格，逐格成本纯亏 → 回退
+        /// <see cref="FlushDirtyChunkWide"/>（见 <see cref="FlushDirty"/>）。
         /// </summary>
-        private static readonly sbyte[] HeatWakeHalf = BuildHeatWakeHalf();
+        private const int DenseFlushCellDivisor = 32;
 
-        private static sbyte[] BuildHeatWakeHalf()
-        {
-            var halfs = new sbyte[2 * HeatWakeRadius + 1];
-            for (int i = 0; i < halfs.Length; i++)
-            {
-                halfs[i] = (sbyte)HeatWakeRadius;
-            }
-
-            return halfs;
-        }
+        /// <summary>
+        /// 极密脏集的分水岭：脏格数超过 <c>格数 / 本值</c> 时，球并集已吞掉整张网格，直接整图置位
+        /// （见 <see cref="FlushDirty"/> 的 <c>_saturatedFlushThreshold</c> 分支）。
+        /// </summary>
+        private const int SaturatedFlushCellDivisor = 2;
 
         /// <summary>四邻偏移（<see cref="EvacuateHumidity"/> 用；提成静态数组避免每次降雨都分配）。</summary>
         private static readonly int[] NeighbourX = { -1, 1, 0, 0 };
@@ -84,6 +79,12 @@ namespace TapTap2026.Simulation
         // 扫描期间的新写入继续落回 _candidates（留给下一帧），扫描末尾清空刚消费的 _scanCandidates。
         private readonly int _chunkCols;
         private readonly int _chunkCount;
+
+        /// <summary><see cref="DenseFlushCellDivisor"/> 对应的实际脏格阈值（<c>格数 / 本值</c>，构造时算一次）。</summary>
+        private readonly int _denseFlushThreshold;
+
+        /// <summary><see cref="SaturatedFlushCellDivisor"/> 对应的实际脏格阈值（构造时算一次）。</summary>
+        private readonly int _saturatedFlushThreshold;
         private readonly ulong[] _processedBits;
 
         /// <summary>
@@ -257,6 +258,8 @@ namespace TapTap2026.Simulation
 
             _chunkCols = (width + ChunkMask) >> ChunkShift;
             _chunkCount = _chunkCols * ((height + ChunkMask) >> ChunkShift);
+            _denseFlushThreshold = _cells.Length / DenseFlushCellDivisor;
+            _saturatedFlushThreshold = _cells.Length / SaturatedFlushCellDivisor;
             _candidates = new ulong[_chunkCount * WordsPerChunk];
             _scanCandidates = new ulong[_chunkCount * WordsPerChunk];
             _logicCells = new ulong[_chunkCount * WordsPerChunk]; // 初建为空网格 ⇒ 全 0（没有格带逻辑）
@@ -1596,7 +1599,7 @@ namespace TapTap2026.Simulation
         /// 两个 <paramref name="skip"/> 坐标（写操作自己的写入格）不置位。传 <c>-1</c> 作 skip 表示不排除任何格
         /// （行内实际格坐标恒非负，<c>skipY == -1</c> 永不命中）。</summary>
         /// <remarks>按行（dy）扫、行内按 64 位字 OR——唤醒集是逐行的对称 x 区间，见 <see cref="_wakeHalf"/>
-        /// （写入唤醒集）与 <see cref="HeatWakeHalf"/>（温度脏格的半径 2 球）。</remarks>
+        /// （写入唤醒集的反转盒并集）。温度脏格走专用的 <see cref="MarkHeatBall"/>，不经过这里。</remarks>
         private void MarkOffsets(
             ulong[] bits, sbyte[] halfs, int minDy, int maxDy,
             int x, int y, int skipX0, int skipY0, int skipX1, int skipY1)
@@ -1668,8 +1671,8 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 消费热图与湿度场的温度脏记录：Q 变化过的格（Δ ≠ 0）与湿度变化过的格（Δ ≠ 0，因
-        /// <c>T = Q / C</c> 且 C 含湿度项）都并入候选位图（逐格半径 2 唤醒球，见 <see cref="FlushDirty"/>），
-        /// 随后清空记录。由 <see cref="StepLogic"/> 每逻辑帧末尾调用一次。
+        /// <c>T = Q / C</c> 且 C 含湿度项）都并入候选位图（半径 2 唤醒球 / 密集回退 chunk 整块，
+        /// 见 <see cref="FlushDirty"/>），随后清空记录。由 <see cref="StepLogic"/> 每逻辑帧末尾调用一次。
         /// </summary>
         /// <remarks>
         /// 这是「温度变化 ⇒ 唤醒读温度的运动决策」的完整闭环：热图管传导 / 散热 / 光照 / 潜热，
@@ -1693,32 +1696,156 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 把紧凑脏索引列表里的每个脏格，按 Chebyshev 半径 <see cref="HeatWakeRadius"/> 的唤醒球
-        /// **逐格**并入候选位图（不做 chunk 整块置位，也不做全表扫描）。
+        /// 把紧凑脏索引列表里的每个脏格并入候选位图。按脏集**密度**三选一：
+        /// 稀疏 → 逐格 Chebyshev 半径 <see cref="HeatWakeRadius"/> 唤醒球（<see cref="MarkHeatBall"/>）；
+        /// 密集（脏格数 &gt; <see cref="_denseFlushThreshold"/>）→ chunk 整块置位（<see cref="FlushDirtyChunkWide"/>）；
+        /// 极密（脏格数 &gt; <see cref="_saturatedFlushThreshold"/>）→ 整图置位。
         /// </summary>
         /// <remarks>
-        /// 超集安全：唤醒球覆盖「运动决策读温度的最远距离」（<see cref="HeatWakeRadius"/> = 2，
+        /// <para>超集安全：三条通道都覆盖「运动决策读温度的最远距离」（<see cref="HeatWakeRadius"/> = 2，
         /// 见 <see cref="ParticleRules.TryThermalDrift"/> 的 <c>x ± 2</c> 判据），因此候选集 ⊇ 真实依赖集；
-        /// 多唤醒几格不改变任何模拟结果（与 <see cref="MotionSleepEnabled"/> 的「超集即安全」同一依据）。
-        /// 旧实现把唤醒球覆盖到的整个 16×16 chunk 置位——那是本实现的真超集，但一次真实逻辑帧后会置位
-        /// 大半网格，令休眠扫描的「整 chunk 全 0」快路径失效；逐格刷球把候选集收敛回真实依赖的邻域。
+        /// 多唤醒几格不改变任何模拟结果（与 <see cref="MotionSleepEnabled"/> 的「超集即安全」同一依据）。</para>
+        /// <para><b>为什么按密度分岔</b>：唤醒球把每个脏格换成 25 个候选位，chunk 整块置位换成 16×16——
+        /// 两者的 chunk 足迹完全相同（都先把脏格按半径 2 扩张、再量化到 chunk），区别只在**块内**置了多少位。
+        /// 稀疏场里块的绝大多数格是干净的，球保住「段内 64 位字全 0 就整段跳过」的快路径，因此值得逐格算；
+        /// 但脏集一大，球的并集本身就逼近整网格（快路径怎么都保不住），逐格 5×5 的固定成本于是纯亏，
+        /// 而 chunk 整块置位在密集场里被「整块已满 → 跳过」摊成每脏格几次字读，实测快 ~4×。
+        /// 脏格过半时连 chunk 记账也成了浪费——并集已吞掉全图，一次 O(词数) 填充最便宜，
+        /// 该逻辑帧的休眠退化为全扫描（与 off 同基准），换来的是不再为「反正都要算」的格付费。</para>
         /// </remarks>
         private void FlushDirty(int[] indices, int count)
         {
-            if (!_motionSleepEnabled)
+            if (!_motionSleepEnabled || count == 0)
             {
                 return;
             }
 
             ulong[] bits = _candidates;
+
+            if (count > _saturatedFlushThreshold)
+            {
+                for (int i = 0; i < bits.Length; i++)
+                {
+                    bits[i] = ulong.MaxValue;
+                }
+
+                return;
+            }
+
+            if (count > _denseFlushThreshold)
+            {
+                FlushDirtyChunkWide(bits, indices, count);
+                return;
+            }
+
             int width = _width;
             for (int k = 0; k < count; k++)
             {
                 int index = indices[k];
                 int y = index / width;
-                MarkOffsets(
-                    bits, HeatWakeHalf, -HeatWakeRadius, HeatWakeRadius,
-                    index - y * width, y, -1, -1, -1, -1);
+                MarkHeatBall(bits, index - y * width, y);
+            }
+        }
+
+        /// <summary>
+        /// 稀疏通道：把 (x,y) 的 Chebyshev 半径 <see cref="HeatWakeRadius"/> 唤醒球并入候选位图，
+        /// 逐行按 64 位字 OR（<c>HeatWakeRadius</c> 固定，故按行半宽恒为 2、无需通用半宽表）。
+        /// </summary>
+        /// <remarks>
+        /// 与 <see cref="MarkOffsets"/> 的通用版本相比：x 区间（及其两列掩码）对 5 行是同一个，
+        /// 提到行循环外算一次；无 <c>skip</c> 排除、无半宽表查表、无逐行 x 夹取。
+        /// <para>球半宽 2 &lt; chunk 边长 16，故 x 区间至多跨越**一条** chunk 边界（<c>cx1 - cx0 ≤ 1</c>），
+        /// 右列可直接写成「左列词 + <see cref="WordsPerChunk"/>」。</para>
+        /// </remarks>
+        private void MarkHeatBall(ulong[] bits, int x, int y)
+        {
+            int width = _width;
+            int height = _height;
+            int chunkCols = _chunkCols;
+
+            int x0 = x - HeatWakeRadius;
+            int x1 = x + HeatWakeRadius;
+            if (x0 < 0)
+            {
+                x0 = 0;
+            }
+
+            if (x1 >= width)
+            {
+                x1 = width - 1;
+            }
+
+            int cx0 = x0 >> ChunkShift;
+            int cx1 = x1 >> ChunkShift;
+            int lo = x0 & ChunkMask;
+            int hi = x1 & ChunkMask;
+            ulong maskLo = cx0 == cx1
+                ? ((1UL << (hi - lo + 1)) - 1UL) << lo
+                : ((1UL << (ChunkMask + 1 - lo)) - 1UL) << lo;
+            ulong maskHi = cx0 == cx1 ? 0UL : (1UL << (hi + 1)) - 1UL;
+
+            for (int dy = -HeatWakeRadius; dy <= HeatWakeRadius; dy++)
+            {
+                int ny = y + dy;
+                if ((uint)ny >= (uint)height)
+                {
+                    continue;
+                }
+
+                int word = (((ny >> ChunkShift) * chunkCols + cx0) << 2) + ((ny & ChunkMask) >> 2);
+                int bitBase = (ny & 3) << 4;
+                bits[word] |= maskLo << bitBase;
+                if (maskHi != 0UL)
+                {
+                    bits[word + WordsPerChunk] |= maskHi << bitBase;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 密集通道：把每个脏格周围半径 <see cref="HeatWakeRadius"/> 覆盖到的 16×16 chunk **整块**置位；
+        /// 整块已满（之前有别的脏格命中过同一 chunk）即跳过，密集场里因此摊成每脏格几次字读。
+        /// </summary>
+        /// <remarks>整块 ⊇ 球，候选集仍是真实依赖集的超集（见 <see cref="FlushDirty"/> 的 remarks）。</remarks>
+        private void FlushDirtyChunkWide(ulong[] bits, int[] indices, int count)
+        {
+            int width = _width;
+            int chunkCols = _chunkCols;
+            int chunkRows = _chunkCount / chunkCols;
+            for (int k = 0; k < count; k++)
+            {
+                int index = indices[k];
+                int y = index / width;
+                int x = index - y * width;
+
+                // 唤醒球可能跨 chunk 边界（脏格离边界不足 HeatWakeRadius），故取其覆盖到的 chunk 区间。
+                int cx0 = (x - HeatWakeRadius) >> ChunkShift;
+                int cx1 = (x + HeatWakeRadius) >> ChunkShift;
+                int cy0 = (y - HeatWakeRadius) >> ChunkShift;
+                int cy1 = (y + HeatWakeRadius) >> ChunkShift;
+                if (cx0 < 0) cx0 = 0;
+                if (cy0 < 0) cy0 = 0;
+                if (cx1 >= chunkCols) cx1 = chunkCols - 1;
+                if (cy1 >= chunkRows) cy1 = chunkRows - 1;
+
+                for (int cy = cy0; cy <= cy1; cy++)
+                {
+                    int rowBase = (cy * chunkCols) << 2;
+                    for (int cx = cx0; cx <= cx1; cx++)
+                    {
+                        int word = rowBase + (cx << 2);
+                        if (bits[word] == ulong.MaxValue && bits[word + 1] == ulong.MaxValue
+                            && bits[word + 2] == ulong.MaxValue && bits[word + 3] == ulong.MaxValue)
+                        {
+                            continue;
+                        }
+
+                        bits[word] = ulong.MaxValue;
+                        bits[word + 1] = ulong.MaxValue;
+                        bits[word + 2] = ulong.MaxValue;
+                        bits[word + 3] = ulong.MaxValue;
+                    }
+                }
             }
         }
 

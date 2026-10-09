@@ -62,6 +62,14 @@ namespace TapTap2026.Simulation
         /// 读取用本掩码、清除用 <see cref="SeedStrikeClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值
         /// <c>flags</c>（尤其保留 bit0）。<see cref="GrassSeedParticle"/> 与 <see cref="AquaticSeedParticle"/>
         /// 各自在文件头部登记了该占用。
+        /// <para><b>与 <see cref="GrassAgeRemainderMask"/> 在 bit5 重叠</b>（<c>0x60 &amp; 0x38 = 0x20</c>）。
+        /// 两位掩码语义互斥（种子的连续计数 vs 草的年龄余数），能共用 bit5 的**唯一**依据是
+        /// 「一格的私有位只被当前类型解释」：同一时刻一格只属于一个类型，而 <see cref="ParticleWorld.Set"/> /
+        /// <see cref="ParticleWorld.SetPhase"/> 换类型时**整字节覆写** <c>flags</c>（<c>cell.flags = _stamp</c>），
+        /// 旧类型的私有位随之清零、新类型读不到旧类型残留。因此种子格的 bit5 永远是连续计数的高位、
+        /// 草格的 bit5 永远是年龄余数的高位，二者不会同时有意义。任何**绕过 Set/SetPhase 直接改
+        /// <c>typeId</c> 而不整字节覆写 <c>flags</c> 的新路径**都会打破这条前提——届时必须给两者
+        /// 分派互不重叠的位。</para>
         /// </summary>
         public const byte SeedStrikeMask = 0x60;
 
@@ -79,6 +87,14 @@ namespace TapTap2026.Simulation
         /// 与 <see cref="DriftDirectionMask"/> / <see cref="SeedStrikeMask"/> 同一写法：读取用本掩码、
         /// 清除用 <see cref="GrassAgeRemainderClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（保留 bit0）。
         /// <see cref="GrassParticle"/> 在文件头部登记了该占用。
+        /// <para><b>与 <see cref="SeedStrikeMask"/> 在 bit5 重叠</b>（<c>0x38 &amp; 0x60 = 0x20</c>）。
+        /// 两位掩码语义互斥（草的年龄余数 vs 种子的连续计数），能共用 bit5 的**唯一**依据是
+        /// 「一格的私有位只被当前类型解释」：同一时刻一格只属于一个类型，而 <see cref="ParticleWorld.Set"/> /
+        /// <see cref="ParticleWorld.SetPhase"/> 换类型时**整字节覆写** <c>flags</c>（<c>cell.flags = _stamp</c>），
+        /// 旧类型的私有位随之清零、新类型读不到旧类型残留。因此草格的 bit5 永远是年龄余数的高位、
+        /// 种子格的 bit5 永远是连续计数的高位，二者不会同时有意义。任何**绕过 Set/SetPhase 直接改
+        /// <c>typeId</c> 而不整字节覆写 <c>flags</c> 的新路径**都会打破这条前提——届时必须给两者
+        /// 分派互不重叠的位。</para>
         /// </summary>
         public const byte GrassAgeRemainderMask = 0x38;
 
