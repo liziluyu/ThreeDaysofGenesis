@@ -23,7 +23,8 @@ namespace TapTap2026.Simulation
         /// <summary>土壤。受重力的粉末，摩擦度 0.5 + 粘性 0.5（旁边有固体时约 3:1 的安息角）。</summary>
         public static ushort Soil;
 
-        /// <summary>水。受重力的液体（Liquid 标签）：下落 → 斜滑 → 横流摊平，无安息角；被固体沉穿。
+        /// <summary>水。受重力的液体（Liquid 标签）：下落 → 斜滑 → 横流摊平，无安息角；被固体沉穿
+        /// （**下落的固体在运动中**；静止的固体推不动水——见 `ParticleRules.CanDisplace` 的地下水闸门）。
         /// 受热蒸发成水汽（进入湿度场），是湿度场唯一的水汽来源。随机刻命中且半径 2 格内有土壤/湿土/腐殖土时，
         /// 以 20% 概率把其中第一个冲刷成沙。</summary>
         public static ushort Water;

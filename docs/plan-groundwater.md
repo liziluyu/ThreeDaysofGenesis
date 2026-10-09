@@ -1,5 +1,7 @@
 # 地下水规则实施计划（v2：运动状态判定）
 
+> 状态：已实施（2026-10-09；离线全量 282/282 通过；待用户真机复跑确认）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **目标：** 固体置换液体前必须处于运动中（上一运动扫描位移过或刚放置）——静止岩石无论形状、是否与池塘联通都不再被抽动，成为稳定的「地下水」。
@@ -42,7 +44,7 @@
 - Modify: `Assets/Scripts/Simulation/ParticleRules.cs`
 - Modify: `Assets/Tests/EditMode/GroundwaterTests.cs`
 
-- [ ] **Step 1: 改 `ParticleWorld`（状态 + 查询 + 写标记）**
+- [x] **Step 1: 改 `ParticleWorld`（状态 + 查询 + 写标记）**
 
 字段（放在 `_groundwaterSealingEnabled` 附近）：
 
@@ -108,7 +110,7 @@
             _lastMovedTick[index] = (byte)(_tick - 1);
 ```
 
-- [ ] **Step 2: 改 `ParticleRules`（闸门替换 + 删除 v1 判据）**
+- [x] **Step 2: 改 `ParticleRules`（闸门替换 + 删除 v1 判据）**
 
 删除 `HasLateralEscape` 与 `IsOpenSide` 两个方法；`CanDisplace` 末尾改为：
 
@@ -131,7 +133,7 @@
 
 `CanDisplace` 的 XML 注释同步改为「高 rank 可以置换低 rank，但**固体置换液体**还要求该固体处于运动中（见 `ParticleWorld.HasMomentum`）」。
 
-- [ ] **Step 3: 改单测（`GroundwaterTests.cs`）**
+- [x] **Step 3: 改单测（`GroundwaterTests.cs`）**
 
 删除 v1 的 5 个闸门单测（`CanDisplace_SolidWedgedBetweenSolids_CannotEnterLiquid`、`CanDisplace_AnyOpenSide_CanEnterLiquid`、`CanDisplace_LiquidSideIsAnEscape`、`CanDisplace_GasSideIsAnEscape`、`CanDisplace_WorldEdgeCountsAsBlockedSide`），替换为：
 
@@ -179,12 +181,12 @@
 
 `CanDisplace_AirTargetIsUnaffected` 与 `GroundwaterSealingDisabled_RestoresLegacyDisplacement` 保留原样（后者仍有效 ✔）。
 
-- [ ] **Step 4: 离线跑，验证规则替换**
+- [x] **Step 4: 离线跑，验证规则替换**
 
 Run: `bash /tmp/offline-tests/run.sh GroundwaterTests`
 Expected: **全部通过**（3 个运动状态单测 + 空气目标 + 开关关 + 水囊稳定 2 个 + 联通 / 挖开 2 个——注意最后两个的期望是按 v1 写的，见 Task 3；若它们失败，先确认失败原因与设计一致再交给控制器判定，不要自行改断言）。
 
-- [ ] **Step 5: 本地提交**
+- [x] **Step 5: 本地提交**
 
 ```bash
 git add Assets/Scripts/Simulation/ParticleWorld.cs Assets/Scripts/Simulation/ParticleRules.cs Assets/Tests/EditMode/GroundwaterTests.cs
@@ -204,7 +206,7 @@ git commit -m "feat(sim): 地下水改运动状态判定——静止固体不能
 **Files:**
 - Modify: `Assets/Tests/EditMode/WaterParticleTests.cs`（仅竖井用例；SandBlock 场景已在 Task 1 调整完毕）
 
-- [ ] **Step 1: 恢复原始竖井用例**
+- [x] **Step 1: 恢复原始竖井用例**
 
 把 `Sand_RestsOnWater_InOneWideStoneShaft`（含其 XML 注释与「活塞」措辞）整体替换回原用例（仍在 1 格宽石竖井里，但沙照旧沉底）：
 
@@ -248,16 +250,16 @@ git commit -m "feat(sim): 地下水改运动状态判定——静止固体不能
         }
 ```
 
-- [ ] **Step 2: 类头注释改回**
+- [x] **Step 2: 类头注释改回**
 
 类头里的「被固体沉穿（左右未被夹住时；被夹住则按地下水规则不让路）」改回「被固体沉穿（下落的固体在运动中，照旧可排开液体；静止固体则不能——见地下水规则）」。
 
-- [ ] **Step 3: 离线跑**
+- [x] **Step 3: 离线跑**
 
 Run: `bash /tmp/offline-tests/run.sh WaterParticleTests.cs`
 Expected: 全部通过（含竖井沉底与两个开阔水域回归）。
 
-- [ ] **Step 4: 本地提交**
+- [x] **Step 4: 本地提交**
 
 ```bash
 git add Assets/Tests/EditMode/WaterParticleTests.cs
@@ -271,7 +273,7 @@ git commit -m "test(sim): 竖井用例改回照旧沉底（运动状态判定下
 **Files:**
 - Test: `Assets/Tests/EditMode/GroundwaterTests.cs`
 
-- [ ] **Step 1: 追加 `CountTypeInColumn` 辅助（放在 `CountType` 之后）**
+- [x] **Step 1: 追加 `CountTypeInColumn` 辅助（放在 `CountType` 之后）**
 
 ```csharp
         /// <summary>某一列 x 上某类型的格数。</summary>
@@ -290,7 +292,7 @@ git commit -m "test(sim): 竖井用例改回照旧沉底（运动状态判定下
         }
 ```
 
-- [ ] **Step 2: 追加两个用例**
+- [x] **Step 2: 追加两个用例**
 
 ```csharp
         [Test]
@@ -357,7 +359,7 @@ git commit -m "test(sim): 竖井用例改回照旧沉底（运动状态判定下
 
 （实测说明（审查代理探针，200 周期稳定）：1 格宽缺口只会放出一格水——(3,3) 的水斜落进竖井后，上方石头当帧塌进空格把缺口封住，第二格水留在 (4,3)。这是「石头落进空气不受闸门约束」的涌现自封行为，不是 bug；要整囊放空需要挖更宽的缺口。）
 
-- [ ] **Step 3: 离线跑验证**
+- [x] **Step 3: 离线跑验证**
 
 Run: `bash /tmp/offline-tests/run.sh GroundwaterTests`
 Expected: 全绿。判据（不满足就停下报告，**不要**为了变绿而弱化断言）：
@@ -365,7 +367,7 @@ Expected: 全绿。判据（不满足就停下报告，**不要**为了变绿而
 2. **守恒**——沙 1、水 27（联通用例）/ 水 2（挖开用例）。
 3. 沙与水的具体坐标若与断言不符（例如沙没沉到 (5,2)），把实测的确定不动点坐标写进断言并在报告里说明依据。
 
-- [ ] **Step 4: 本地提交**
+- [x] **Step 4: 本地提交**
 
 ```bash
 git add Assets/Tests/EditMode/GroundwaterTests.cs
@@ -379,7 +381,7 @@ git commit -m "test(sim): 联通地下水与挖开释放（运动状态判定下
 **Files:**
 - Test: `Assets/Tests/EditMode/GroundwaterTests.cs`
 
-- [ ] **Step 1: 追加两个用例**
+- [x] **Step 1: 追加两个用例**
 
 ```csharp
         [Test]
@@ -440,7 +442,7 @@ git commit -m "test(sim): 联通地下水与挖开释放（运动状态判定下
         }
 ```
 
-- [ ] **Step 2: 离线跑 + 本地提交**
+- [x] **Step 2: 离线跑 + 本地提交**
 
 Run: `bash /tmp/offline-tests/run.sh GroundwaterTests`
 Expected: 全绿（气穴用例的期望「升到最顶」若与实测不符，报告实际值——气体目标不受闸门约束，理论上应照旧冒泡）。
@@ -458,11 +460,11 @@ git commit -m "test(sim): 地下水——休眠透明性 A/B 与气体不受影�
 - Modify: `Assets/Scripts/Simulation/ParticleIds.cs`、`Assets/Scripts/Simulation/Particles/WaterParticle.cs`
 - Modify: `docs/ParticleTypeInterface.md`、`AGENTS.md`
 
-- [ ] **Step 1: 类型注释同步**
+- [x] **Step 1: 类型注释同步**
 
 `ParticleIds.cs` 水条目 `<summary>` 里「被固体沉穿」后补「（**下落的固体在运动中**——静止固体推不动水，见 `ParticleRules.CanDisplace` 的地下水闸门）」。`WaterParticle.cs` 头注释「固体（rank 3）沉穿水，水被置换上浮」补「——但**静止**的固体不能；水因此能在石头 / 沙 / 土里成为不动的「地下水」」。
 
-- [ ] **Step 2: `docs/ParticleTypeInterface.md` 同步**
+- [x] **Step 2: `docs/ParticleTypeInterface.md` 同步**
 
 §4 置换规则段后追加（简述，不写理由）：
 
@@ -474,7 +476,7 @@ git commit -m "test(sim): 地下水——休眠透明性 A/B 与气体不受影�
 
 §6「共享原语」一段补一句指向该闸门；§10 文件清单的水一行改为「沙沉穿水置换上浮（下落的沙在运动中）」+ 水囊稳定 / 联通 / 挖开等新用例说明。
 
-- [ ] **Step 3: `AGENTS.md` 同步 + 修正编辑器路径**
+- [x] **Step 3: `AGENTS.md` 同步 + 修正编辑器路径**
 
 「**跨类型规则只看标签不看 typeId**」段后补一句：
 
@@ -484,12 +486,12 @@ git commit -m "test(sim): 地下水——休眠透明性 A/B 与气体不受影�
 
 并把 `Development Commands` 与 `Runtime/Tooling Preferences` 里的编辑器路径 `D:\Unity\2022.3.62f1` 更正为实际路径 `D:\uni all\editor\2022.3.62f1`（本机已验证）。
 
-- [ ] **Step 4: 全量离线 + 请用户真机复跑**
+- [x] **Step 4: 全量离线 + 请用户真机复跑**
 
 Run: `bash /tmp/offline-tests/run.sh`
 Expected: 除被跳过的 2 个文件（CameraPanTests / DialogueRunnerTests）外全绿；然后请用户跑一次真机 EditMode（MCP `tests-run` 或批处理）。
 
-- [ ] **Step 5: 本地提交**
+- [x] **Step 5: 本地提交**
 
 ```bash
 git add Assets/Scripts/Simulation/ParticleIds.cs Assets/Scripts/Simulation/Particles/WaterParticle.cs docs/ParticleTypeInterface.md AGENTS.md
