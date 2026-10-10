@@ -19,7 +19,7 @@ MonoBehaviour:
   _speedBudgetFraction: 0.5
   _speedMax: 16
   _stepsPerPresent: 1
-  _highSpeedLogicFrames: 6000
+  _highSpeedLogicFrames: 2000
   _seed: 123456789
   _randomTicksPerStep: 48
   _conductivity: 0.24
