@@ -121,6 +121,18 @@ namespace TapTap2026.Simulation
         public const int TreeStageShift = 6;
 
         /// <summary>
+        /// bit6：**树叶私有**——失活标记（0 = 附着在树上、定植不动；1 = 失去支撑、竖直自由下落）。
+        /// 与 <see cref="TreeStageMask"/>（树干生长阶段）、<see cref="TreeSeedStrikeMask"/>（树木种子空转计数）
+        /// **在 bit6 重叠**：三者都用 bit6-7 这一组，能共用的唯一依据与
+        /// <see cref="GrassAgeRemainderMask"/> / <see cref="SeedStrikeMask"/> 共用 bit5 相同——「一格的私有位
+        /// 只被当前类型解释」（同一时刻一格只属于一个类型；<see cref="ParticleWorld.Set"/> /
+        /// <see cref="ParticleWorld.SetPhase"/> 换类型时整字节覆写 <c>flags</c>，旧类型残留读不到）。
+        /// 树叶的失活只需要 1 位（bit6），bit7 仍空闲。
+        /// 读用本掩码、写用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（保留 bit0 处理标记）。
+        /// <see cref="TreeLeafParticle"/> 在文件头部登记了该占用。
+        /// </summary>
+        public const byte TreeLeafDetachedMask = 0x40;
+
         /// bit3-5：**草私有**（<see cref="GrassParticle"/>）——年龄的**逻辑帧余数**（0..<c>TicksPerShadeStep − 1</c>）。
         /// 草的年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + 本余数：`shade` 存高档
         /// （它同时就是**颜色档**——渲染只读 `shade` 查表，所以「越老越黄绿」天然成立），余数存低档。

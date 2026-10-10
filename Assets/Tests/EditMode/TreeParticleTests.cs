@@ -7,7 +7,8 @@ namespace TapTap2026.Tests
     /// <summary>
     /// 树木系统（种子 / 树干 / 树叶 + 五物种静态表）：分级发芽（松/柏耐旱、杨/橡喜湿、柳须湿土）、
     /// 概率化发芽（比草种子慢）、爬升到 H、按有序偏移表造冠（被挡项跳过、腾空补长、全填满转成熟且
-    /// 成熟后零随机流消耗）、无根级联倒下、三种树叶死法、整树静止与确定性重放。
+    /// 成熟后零随机流消耗）、无根级联倒下、树叶的失活扩散（八邻一圈立刻检测）+ 竖直自由下落 +
+    /// 随机刻收尸（温度 / 被压两种即时死法保留）、整树静止与确定性重放。
     /// </summary>
     /// <remarks>
     /// 跨类型相变依赖 <see cref="ParticleIds"/> 回填，因此全部走生产注册路径
@@ -219,9 +220,9 @@ namespace TapTap2026.Tests
             ParticleTypeInfo leaf = ParticleRegistry.Types[LeafId].Info;
             Assert.IsTrue((leaf.Tags & ParticleTags.Solid) != 0);
             Assert.IsTrue((leaf.Tags & ParticleTags.Organic) != 0);
-            Assert.IsFalse(leaf.AffectedByGravity, "树叶不受重力");
+            Assert.IsTrue(leaf.AffectedByGravity, "失活树叶受重力自由下落（附着叶在 OnMotion 里直接返回）");
             Assert.IsFalse(leaf.IsStatic, "树叶必须非静态，否则收不到随机刻");
-            Assert.IsFalse(leaf.HasLogic, "树叶 OnLogic 严格空体（死法都在随机刻）");
+            Assert.IsFalse(leaf.HasLogic, "树叶 OnLogic 严格空体（失活 / 死亡都在随机刻）");
             Assert.AreEqual(0.8f, leaf.LightAbsorption, "树叶遮光率照抄草的 0.8");
             Assert.AreEqual(20, leaf.Palette.Length, "树叶调色板 = 5 物种 × 4 色");
 
@@ -835,30 +836,154 @@ namespace TapTap2026.Tests
 
         // ============================== 树叶 ==============================
 
+        /// <summary>读树叶的失活标记（flags bit6）。</summary>
+        private static bool IsLeafDetached(ParticleWorld world, int x, int y)
+        {
+            return (world.GetCell(x, y).flags & CellFlags.TreeLeafDetachedMask) != 0;
+        }
+
         [Test]
-        public void Leaf_ShedsWhenTrunkGone()
+        public void Leaf_SupportLoss_DetachesWholeCrownWithoutKilling()
         {
             ParticleWorld world = BuildTreeWorld(TreeSpecies.Poplar, out int x, out int yBase);
             Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
             int top = TopTrunk(world, x, yBase);
+            int leaves = CountType(world, LeafId);
+            Assert.Greater(leaves, 0, "前置：树应已长出树冠");
 
             for (int y = yBase; y <= top; y++)
             {
                 world.Clear(x, y); // 直接清光树干（绕开级联，专测树叶支撑判定）。
             }
 
+            // 只随机刻**一片**叶：它失活，并立刻把八邻一圈里同样无支撑的叶带成失活、一圈圈扩散；
+            // 但一片都不死（死亡要等各自的下一次随机刻）。
+            int seedLeafY = top + 1; // 杨冠 (0,1)。
+            RandomTick(world, LeafId, x, seedLeafY);
+
+            Assert.IsTrue(IsLeafDetached(world, x, seedLeafY), "失去支撑的叶应记录失活");
+            Assert.IsTrue(IsLeafDetached(world, x, top + 2), "正上方那格叶应被周围一圈的检测带成失活");
+            Assert.IsTrue(IsLeafDetached(world, x + 1, seedLeafY), "侧邻叶应被周围一圈的检测带成失活");
+
+            int detached = 0;
             for (int ly = 0; ly < world.Height; ly++)
             {
                 for (int lx = 0; lx < world.Width; lx++)
                 {
-                    if (world.GetCell(lx, ly).typeId == LeafId)
+                    if (world.GetCell(lx, ly).typeId == LeafId && IsLeafDetached(world, lx, ly))
                     {
-                        RandomTick(world, LeafId, lx, ly);
+                        detached++;
                     }
                 }
             }
 
-            Assert.AreEqual(0, CountType(world, LeafId), "树干消失后树叶应在各自随机刻上枯落");
+            Assert.AreEqual(leaves, CountType(world, LeafId), "失活不致死：一次随机刻后叶数不变");
+            Assert.AreEqual(leaves, detached, "砍树后一次随机刻应让整冠集体失活（八邻一圈级联）");
+        }
+
+        [Test]
+        public void Leaf_DetachedDiesOnNextRandomTick()
+        {
+            ParticleWorld world = BuildTreeWorld(TreeSpecies.Poplar, out int x, out int yBase);
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
+            int top = TopTrunk(world, x, yBase);
+            for (int y = yBase; y <= top; y++)
+            {
+                world.Clear(x, y);
+            }
+
+            int leafY = top + 1;
+            RandomTick(world, LeafId, x, leafY);
+            Assert.IsTrue(IsLeafDetached(world, x, leafY), "第一次随机刻应记录失活");
+            Assert.AreEqual(LeafId, world.GetCell(x, leafY).typeId, "失活当帧不死");
+
+            RandomTick(world, LeafId, x, leafY);
+            Assert.AreNotEqual(LeafId, world.GetCell(x, leafY).typeId, "失活叶再被随机刻点到才死");
+        }
+
+        [Test]
+        public void Leaf_DetachedFallsStraightDown_AndRestsOnSolid()
+        {
+            ParticleWorld world = new ParticleWorld(9, 12, SeedValue);
+            for (int x = 0; x < world.Width; x++)
+            {
+                world.Set(x, 0, ParticleIds.Stone); // 底板。
+            }
+
+            world.Set(4, 6, LeafId);
+            TreeSpecies.Stamp(world, 4, 6, TreeSpecies.Pine, TreeSpecies.LeafColorsPerSpecies);
+            RandomTick(world, LeafId, 4, 6); // 无树干 → 失活 + 自由下落。
+
+            for (int i = 0; i < 40; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(LeafId, world.GetCell(4, 1).typeId, "失活叶应竖直落到固体面上（y=1）");
+            Assert.AreEqual(1, CountType(world, LeafId), "只是下落，不该分裂 / 消失");
+        }
+
+        [Test]
+        public void Leaf_DetachedDoesNotRoll_WhenBlockedBelow()
+        {
+            ParticleWorld world = new ParticleWorld(9, 8, SeedValue);
+            for (int x = 0; x < world.Width; x++)
+            {
+                world.Set(x, 0, ParticleIds.Stone); // 底板（台阶两侧都是空的斜坡）。
+            }
+
+            world.Set(4, 1, ParticleIds.Stone); // 正下方那一格的台阶。
+            world.Set(4, 2, LeafId);
+            TreeSpecies.Stamp(world, 4, 2, TreeSpecies.Oak, TreeSpecies.LeafColorsPerSpecies);
+            RandomTick(world, LeafId, 4, 2); // 无树干 → 失活。
+
+            for (int i = 0; i < 40; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(LeafId, world.GetCell(4, 2).typeId, "失活叶不参与滚落：正下被挡就停在原地");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(3, 1).typeId, "不得滚到左斜坡");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(5, 1).typeId, "不得滚到右斜坡");
+            Assert.AreEqual(1, CountType(world, LeafId));
+        }
+
+        [Test]
+        public void Leaf_DetachedFall_IsMotionSleepTransparent()
+        {
+            // 失活是随机刻里就地改 flags（扫描之外）——运动休眠必须靠 WakeMotion 唤醒，
+            // 否则叶子会挂在原地。与全网格旧路径逐帧逐位比对。
+            ParticleWorld sleepy = new ParticleWorld(9, 12, SeedValue);          // 默认休眠开。
+            ParticleWorld full = new ParticleWorld(9, 12, SeedValue);
+            full.MotionSleepEnabled = false;                                     // 全网格旧路径。
+
+            foreach (ParticleWorld world in new[] { sleepy, full })
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    world.Set(x, 0, ParticleIds.Stone);
+                }
+
+                world.Set(4, 6, LeafId);
+                TreeSpecies.Stamp(world, 4, 6, TreeSpecies.Pine, TreeSpecies.LeafColorsPerSpecies);
+                world.StepMotion();          // 先消费掉初建时的整张候选位图，之后只靠写入 / 唤醒。
+                RandomTick(world, LeafId, 4, 6); // 失活 + WakeMotion。
+            }
+
+            for (int frame = 0; frame < 30; frame++)
+            {
+                sleepy.StepMotion();
+                full.StepMotion();
+                for (int index = 0; index < sleepy.CellCount; index++)
+                {
+                    // 只比种类：bit0 是历史标记，休眠路径跳过格时本就允许与全扫不同（见 CellFlags）。
+                    Assert.AreEqual(full.Cells[index].typeId, sleepy.Cells[index].typeId,
+                        $"第 {frame} 帧格 {index} 的种类应与全网格路径一致");
+                }
+            }
+
+            Assert.AreEqual(LeafId, sleepy.GetCell(4, 1).typeId, "休眠路径同样落到底板上（y=1）");
+            Assert.AreEqual(LeafId, full.GetCell(4, 1).typeId, "全网格路径同样落到底板上（y=1）");
         }
 
         [Test]

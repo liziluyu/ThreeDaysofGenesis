@@ -102,9 +102,12 @@ namespace TapTap2026.Simulation
         /// **只能追加到清单末尾**。</summary>
         public static ushort TreeTrunk;
 
-        /// <summary>树叶。固体 + Organic，长在原地（OnMotion / OnLogic 空体）。**随机刻**里三种死法：
+        /// <summary>树叶。固体 + Organic，长在原地（OnMotion / OnLogic 空体）。**随机刻**里：已失活则 Clear（只在「再被随机刻点到」时才死法：
         /// 温度 &gt; 50、正上方被固体（非树叶）压、支撑半径内没有树干——整树倒下后树叶逐个枯落，
-        /// 三种死法都按世界 20% 有机衰变留腐殖质（落叶归根）。flags 私有位：bit3-5 = 物种。
+        /// 三种死**，而是记录失活（落叶归根）。flags 私有位：bit3-5 = 物种。
+        /// （无支撑者同样失活、继续扩散 → 整冠一瞬间集体失活），失活叶在 `OnMotion` 里**竖直自由下落**
+        /// （不滚落，正下方是固体就停），落稳后等自己的随机刻收尸。死亡走 Clear，按世界 20% 有机衰变
+        /// 留腐殖质（落叶归根）。flags 私有位：bit3-5 = 物种、bit6 = 失活标记。
         /// 不可在编辑器中选择。**只能追加到清单末尾**。</summary>
         public static ushort TreeLeaf;
 

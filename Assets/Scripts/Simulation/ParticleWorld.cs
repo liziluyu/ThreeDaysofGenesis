@@ -600,6 +600,8 @@ namespace TapTap2026.Simulation
         /// <remarks>
         /// 移动之后坐标即失效：任何改变自身位置的写操作之后，禁止继续使用旧的 (x, y) 或之前的 ref。
         /// 类型代码只能 OR 位：<c>At(x,y).flags |= CellFlags.Burning;</c>，整体赋值会破坏 bit0。
+        /// 就地改了会**影响自己 OnMotion 决策**的状态（如失活标记）之后，必须再调一次
+        /// <see cref="WakeMotion"/>，否则运动休眠会跳过这格（详见其 remarks）。
         /// </remarks>
         public ref Cell At(int x, int y)
         {
@@ -900,6 +902,29 @@ namespace TapTap2026.Simulation
         public bool Clear(int x, int y)
         {
             return Set(x, y, ParticleRegistry.AirTypeId);
+        }
+
+        /// <summary>
+        /// **就地改写本格状态之后的运动唤醒**：类型在 <c>OnRandomTick</c> / <c>OnLogic</c> 里直接经
+        /// <see cref="At"/> 改了本格 <c>flags</c>（不改 <c>typeId</c>、不走 <see cref="Set"/> /
+        /// <see cref="SetPhase"/> / <see cref="Swap"/>）之后，只要这次改动会影响自己**后面** <c>OnMotion</c>
+        /// 的决策，就必须调用它——否则运动休眠会把这格当成未变化而跳过，模拟结果与全网格旧路径发散。
+        /// </summary>
+        /// <remarks>
+        /// 语义 = 写入原语自带的候选唤醒那一半（<see cref="MarkCandidates"/> 唤醒下一帧 +
+        /// <see cref="MarkCandidatesThisScan"/> 补齐本帧正在扫描的位图），但**不改变格子内容**、不触发
+        /// <c>OnSpawn</c> / <c>OnKill</c>、不重抽 <c>shade</c>、不动动量与处理标记。休眠关闭时是空操作
+        /// （全网格本来每帧都会求值）。
+        /// </remarks>
+        public void WakeMotion(int x, int y)
+        {
+            if (!IsInBounds(x, y))
+            {
+                return;
+            }
+
+            MarkCandidates(x, y);
+            MarkCandidatesThisScan(x, y, x, y);
         }
 
         /// <summary>

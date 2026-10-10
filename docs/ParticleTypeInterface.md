@@ -81,12 +81,13 @@ public struct Cell
 | bit2 | `Forced` | 通用（类型无关） | 受外部作用力 / 被推动 |
 | bit3-7 | 类型私有 | 各类型自行定义 | 必须在**该类型文件头部注释**里登记占用位 |
 
-已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）、**草** bit3-5（`CellFlags.GrassAgeRemainderMask`，年龄的逻辑帧余数 0..4；年龄高位存在 `Cell.shade` 里，见 §4「草的寿命」）、**树木三件套（种子 / 树干 / 树叶）** bit3-5（`CellFlags.TreeSpeciesMask`，物种编号 0..4；三种树木类型共用）与 bit6-7（`CellFlags.TreeStageMask`＝树干生长阶段 0..2；`CellFlags.TreeSeedStrikeMask`＝树木种子的空转计数 0..3——同一组位按「一格一类型」互斥）；草与树不同时占一格，bit3-5 的两种用途互不冲突）。
+已登记的私有位：**大气** bit3-4（`CellFlags.DriftDirectionMask`，水平热压漂移的方向记忆）、**草种子 / 水生态种子** bit5-6（`CellFlags.SeedStrikeMask`，「无发芽条件的随机刻命中」计数 0..3；两种种子**共用**同一组位——一格同时只属于一个类型，互不冲突）、**草** bit3-5（`CellFlags.GrassAgeRemainderMask`，年龄的逻辑帧余数 0..4；年龄高位存在 `Cell.shade` 里，见 §4「草的寿命」）、**树木三件套（种子 / 树干 / 树叶）** bit3-5（`CellFlags.TreeSpeciesMask`，物种编号 0..4；三种树木类型共用）与 bit6-7（`CellFlags.TreeStageMask`＝树干生长阶段 0..2；`CellFlags.TreeSeedStrikeMask`＝树木种子的空转计数 0..3；`CellFlags.TreeLeafDetachedMask`＝树叶失活标记——同一组位按「一格一类型」互斥）；草与树不同时占一格，bit3-5 的两种用途互不冲突）。
 
 规则：
 
 - **世界内部用逐扫描清零的位图记录「本帧已处理」**（`ParticleWorld._processedBits`，O(N/64) 一次清零），不再依赖 bit0 的奇偶——休眠会跳过格，bit0 会残留成与当前帧同奇偶的旧值，用它判定会漏求值。bit0 仍由写操作按旧语义维护（`Set` / `SetPhase` / `Swap` 写成当前 parity），类型代码**永远不要**直接整体赋值 `flags`：用 `world.At(x,y).flags |= CellFlags.Burning;`（OR 保留 bit0）这类写法，整体赋值 `flags = ...` 会破坏 bit0，属于违规。
 - 类型私有位是安全的：一格在同一时刻只属于一个类型。
+- **就地改 flags 后若影响自己的 `OnMotion`，必须调 `world.WakeMotion(x,y)`**：`At()` 写 flags 不走 `Set` / `Swap`，运动休眠收不到「这格变了」的信号，会把它当静止跳过（`TreeLeafParticle` 的失活标记是首个用例）。详见 §6 世界 API。
 - 类型在 `OnMotion` / `OnLogic` 里**不需要**检查「本帧是否已处理」——模拟系统在派发前已经跳过本帧已处理的格。
 
 ### 关于 `vx` / `vy`（速度场，可选）
@@ -518,6 +519,8 @@ public sealed class ParticleWorld
     public bool Swap (int x0, int y0, int x1, int y1);
     public bool Set  (int x, int y, ushort typeId);
     public bool Clear(int x, int y);            // 等价于 Set(x, y, 0)
+    public bool SetPhase(int x, int y, ushort typeId); // 相变：Q 与湿度原样带走（见下「写操作的钩子与副作用」）
+    public void WakeMotion(int x, int y);       // 就地改 flags 后的运动唤醒：唤醒下一帧的候选位图（休眠关闭时空操作），见下
 
     // —— 确定性随机（世界持有种子）——
     public uint NextUInt();
@@ -952,6 +955,15 @@ public void OnLogic(ParticleWorld world, int x, int y)
 
 `Set` / `Clear` / `Swap` 在两次帧之间被调用时（例如鼠标绘制、关卡加载），bit0 会被写成**「下一帧的奇偶取反」**，也就是「未处理」。因此外部新建的粒子必定会在下一帧被处理，不会因为标记而白等一帧。同样由世界负责，类型代码无需关心。
 
+### 就地改 `flags` 后的运动唤醒：`WakeMotion`
+
+写入原语（`Set` / `SetPhase` / `Swap`）改格时会顺带把「周围读得到这格的格」并入运动休眠的候选位图；但类型用 `world.At(x,y).flags |= ...` 就地改 flags（不改 `typeId`）时**不会**触发这个唤醒。若这次改动会影响自己后面 `OnMotion` 的决策（例如树叶的失活标记决定它是否下落），必须再调一次 `world.WakeMotion(x, y)`：它把该格（及其唤醒盒内的邻居）并入**下一运动帧**的候选位图，语义 = 写入原语自带的唤醒那一半。
+
+- **只需在「改动影响自己 `OnMotion`」时调**：只改与被覆盖后才读的状态（如树的生长阶段）不必调。
+- **`WakeMotion` 不改格子内容**：不写 `typeId`、不重抽 `shade`、不触发 `OnSpawn` / `OnKill`、不动动量与处理标记，只置候选位。
+- **休眠关闭（`MotionSleepEnabled = false`）时是空操作**——全网格旧路径本来每帧都会求值该格。
+- 首选用例：`TreeLeafParticle` 在随机刻里标记失活后调 `WakeMotion`，否则运动休眠会把这张安静的叶子当静止跳过、它永远不落。
+
 ### 随机刻（Minecraft 式）
 
 `world.RandomTicksPerStep` > 0 时，每个**逻辑帧**在**粒子扫描之后、热传导之前**（`StepLogic` 的 ①′ 相位）均匀**有放回**地抽这么多格，命中非空气、非静态的格就调用其类型的 `OnRandomTick`。它模拟 Minecraft 的 random tick：不做全网格扫描，而是每逻辑帧只让极少数格发生「慢过程」——生长、蔓延、渗流、腐化。
@@ -1265,7 +1277,7 @@ Assets/Scripts/
       FireParticle.cs                         火（气体，第一个粒子级热源；v2 角色模型——每逻辑帧按八邻重判**附着火 / 游离火**。附着火定在原地：接触点燃邻接的草 / 花（八邻固定序，1/20 每逻辑帧；有草且不贴淬熄物时不摇熄灭骰）、**本格火温 ≥ 60° 才**烤干邻接湿土并按湿土→干土热容差 **−1.2T** 结算潜热（水汽走湿度场守恒）、格温 < 400 注热 250（烤热贴着的沙/石）、正上方是气体且 T ≥ 200 时 1/10 抛射火舌；游离火不注热，在 OnLogic 末尾按 (x,y,Tick) 哈希上升/摇曳（50% 正上、25% 左上、25% 右上，被挡不下降；OnMotion 留空）。熄灭每帧恰一骰、档位互斥：正下方石头/沙/液体压顶立灭 > 贴液体 1/5 > 贴石头/沙/湿土 1/20（干土与腐殖类不参与淬熄）> 游离火 T<40 立灭 > 游离火 1/8 > 附着无燃料 1/120。shade 是温度分档派生量（≥300 亮黄…<40 暗红，+哈希 ±1，不消耗随机流）。投放资格 CanPlaceAt：不覆盖实体、需锚点不浮空（投放锚点含火链——圆刷贴地可铺满整团火；物理附着不含火）；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质。显式行为：火无法停留在石头/沙/水面上）
       TreeSeedParticle.cs                     树木种子（固体粉末，摩擦 / 粘性 0.5，运动 = StepSolid；flags bit3-5 = 物种、bit6-7 = 空转计数。**随机刻**命中且「正上方非固非液 + 正下方按物种基质档（松/柏耐旱＝任意三土；杨/橡喜湿＝三土且八邻有湿土；柳最喜水＝正下方必须湿土）」时按 **1/D 概率**发芽成树干（D=2..4，比草种子的命中即发慢）：先判后摇、掷骰未中不计打击原地等待；3 次无发芽条件霉烂成腐殖质、空转不消耗随机数。可单颗投放，Shift+滚轮切换物种）
       TreeTrunkParticle.cs                    树干（固体 + Organic，非 IsStatic、OnMotion 空；flags bit3-5 = 物种、bit6-7 = 生长阶段 0 爬升 / 1 造冠 / 2 成熟。**每逻辑帧**：① 温度 > 50 死（低温致死取 0，同水生植物——环境温可低到 0）；② 失去扎根（下格非三土 / 树干）→ 本格与上方整段连续树干级联 Clear；③ 顶格生长——阶段 0 按物种 H 向上爬升（先查后掷 1/N），阶段 1 按有序偏移表取「第一个未填充且当前可放」项 Set 成树叶（可放＝界内 + 非固液 + 八邻已有树格防浮空；被挡项跳过不卡死、腾空后补长；全表填满转成熟，此后零随机流消耗）。不可手刷）
-      TreeLeafParticle.cs                     树叶（固体 + Organic，非 IsStatic，OnMotion / OnLogic 空体；flags bit3-5 = 物种。**随机刻**三种死法：① 温度 > 50（低温致死取 0）；② 正上方是固体且非树叶（**液体不压**——树叶可泡水里，与草的有意不同）；③ 本物种支撑半径（Chebyshev 环由内向外扫描、命中即返回）内无树干——整树倒下后逐个枯落。三种死法都走 Clear，按世界 20% 有机衰变留腐殖质。不可手刷）
+      TreeLeafParticle.cs                     树叶（固体 + Organic，非 IsStatic，OnMotion / OnLogic 空体；flags bit3-5 = 物种、bit6 = 失活标记。**随机刻**：已失活 → Clear（**只在再被随机刻点到时才死法：① 温度 > 50（低温致死取 0）；② 正上方是固体且非树叶（**液体不压**——树叶可泡水里，与草的有意不同）；③ 本物种支撑半径（Chebyshev 环由内向外扫描、命中即返回）内无树干 → **不失活即死**：记录失活（flags bit6）并**立刻**让八邻一圈的树叶各自检测支撑（无支撑者同样失活、继续扩散 → 砍树后整冠一瞬间集体失活）。**OnMotion**：失活叶竖直**自由下后逐个枯落。三种死法都走 Clear，按世界 20% 有机衰变留腐殖质。不可手刷）
   Rendering/
     ParticleRenderer.cs                       Color32 缓冲 + Texture2D + quad（按 LightController.Daylight 取昼夜天空色、粒子与云按 1 → 夜晚亮度变暗；昼夜参数由 ParticleLightDriver 推送）
   Driver/
