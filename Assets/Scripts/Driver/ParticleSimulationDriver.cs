@@ -51,6 +51,7 @@ namespace TapTap2026.Game
 
         private ParticleSimulationSettings _fallbackSettings;
         private ParticleWorld _world;
+        private CreatureWorld _creatures;
         private SpeedController _speed;
         private HighSpeedSession _highSpeed;
         private readonly Stopwatch _frameStopwatch = new Stopwatch();
@@ -62,6 +63,20 @@ namespace TapTap2026.Game
         public ParticleWorld World
         {
             get { return _world; }
+        }
+
+        /// <summary>当前动物世界。与 <see cref="World"/> 同生共死（<see cref="CreateWorld"/> 里一起重建），
+        /// 因此 <see cref="World"/> 非 null 时它也非 null。渲染器每帧轮询它做对账。</summary>
+        public CreatureWorld Creatures
+        {
+            get { return _creatures; }
+        }
+
+        /// <summary>逻辑帧速率（Hz，来自设置资产）。渲染层据此把 <see cref="Creature.PrevX"/>/<see cref="Creature.PrevY"/>
+        /// 到当前位置的插值按「本逻辑帧已流逝的比例」推进。</summary>
+        public float LogicRate
+        {
+            get { return Settings.LogicRate; }
         }
 
         /// <summary>倍速控制器（本类只测量耗时并转发倍率）。输入与展示在 <see cref="ParticleEditor"/>，
@@ -215,6 +230,13 @@ namespace TapTap2026.Game
             ParticleSimulationSettings settings = Settings;
             _speed = new SpeedController(SpeedController.MinSpeed, settings.SpeedMax);
             CreateWorld();
+
+            // 免场景接线的过渡手段：动物渲染器必须与驱动在同一个 GameObject 上，当前场景还没手工挂它，
+            // 因此这里补挂一个。今后若在场景里手工配置（或换成别的渲染实现），这段自动补挂可直接删掉。
+            if (GetComponent<CreatureRenderer>() == null)
+            {
+                gameObject.AddComponent<CreatureRenderer>();
+            }
         }
 
         /// <summary>按 <see cref="RequestedWidth"/>/<see cref="RequestedHeight"/> 建世界并清空累加器，
@@ -250,6 +272,10 @@ namespace TapTap2026.Game
                     }
                 }
             }
+
+            // 动物世界与世界同步重建。种子与世界随机流**分离**（异或一个黄金比例常数派生）：
+            // 动物层不消耗世界的随机流，两者的确定性互不污染。
+            _creatures = new CreatureWorld(settings.Seed ^ 0x9E3779B9u);
         }
 
         private void Start()
@@ -326,6 +352,10 @@ namespace TapTap2026.Game
                     {
                         _motionTicks = 0;
                         _world.StepLogic();
+
+                        // 动物层与世界同节拍推进（物理对世界只读）。放在逻辑帧之后、高速会话转发之前：
+                        // 会话只统计粒子类型，且需要看到与本逻辑帧一致的动物状态。
+                        _creatures.Step(_world);
 
                         // 高速模式：每个逻辑帧给内核会话记一笔（产生/死亡计数 + 每 10 帧采样），
                         // 跑满时长就地暂停并跳出——世界恰好停在 DurationLogicTicks 这一刻，不越跑。

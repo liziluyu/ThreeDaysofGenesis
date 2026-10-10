@@ -22,6 +22,7 @@ namespace TapTap2026.Game
     /// 输入框拿着键盘时暂停 / 高速 / 平移热键让位给输入框，且**使用面板期间（输入框持有键盘焦点或指针在面板矩形内）
     /// 屏蔽左键投放/擦除**——点进输入框不会顺手在底下画一笔；高速模式与对话激活时面板变灰不可编辑；
     /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
+    /// **B** 在鼠标所在格生成一只兔子（动物实体层，调试用；与左键投放同样受光照面板 / 高速模式 / 对话屏蔽的约束）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（普通模式恒 <c>×1</c>）；
     /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
     /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
@@ -364,6 +365,20 @@ namespace TapTap2026.Game
                 if (!_driver.Simulate)
                 {
                     _driver.PresentNow();
+                }
+            }
+
+            // B：在鼠标所在格生成一只兔子（动物实体层，调试用）。与左键投放共用同一条守卫链——
+            // 光照面板使用中屏蔽、高速模式锁编辑时已被上面的统一拦截挡掉、暂停时也照样能放
+            // （动物的推进归 CreatureWorld.Step，与粒子何时上屏无关，所以这里不需要 PresentNow）。
+            if (!editingLightValue
+                && Input.GetKeyDown(KeyCode.B)
+                && TryGetCell(Input.mousePosition, world, out int spawnX, out int spawnY))
+            {
+                CreatureWorld creatures = _driver.Creatures;
+                if (creatures != null)
+                {
+                    creatures.Spawn(new RabbitCreature(), world, spawnX, spawnY);
                 }
             }
         }
