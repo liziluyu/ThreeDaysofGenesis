@@ -6,8 +6,9 @@ namespace TapTap2026.Tests
     /// <summary>
     /// 火粒子 v2 的行为契约（见 <c>docs/design-fire.md</c>）：每逻辑帧按本格温度回写 shade（颜色即温度）、
     /// **仅附着火**注入热量并概率点燃邻接的草、接触烤干邻接湿土（潜热按湿土→干土热容差 1.2T，
-    /// 水汽走湿度场、总水守恒）；熄灭按互斥档位（压顶立灭 / 贴液体 1/5 / 贴石头·沙·湿土 1/20 /
-    /// 游离火冷却即灭或 1/8 / 附着无燃料 1/120）；附着火上方是气体且本格 ≥200° 时 1/10 抛射火舌；
+    /// 水汽走湿度场、总水守恒）；熄灭按互斥档位（压顶立灭 / **被包围时窒息立灭** / 游离火冷却即灭或 1/8 /
+    /// **有燃料则不摇熄灭骰** / 贴液体 1/2 / 贴任何非可燃固体 1/5——附着火没有「烧尽骰」，
+    /// 无燃料必在数帧内熄灭）；附着火上方是气体且本格 ≥200° 时 1/10 抛射火舌；
     /// **游离火不再下沉**，改为 OnLogic 末尾按坐标哈希上升 + 摇曳（不消耗随机流）。投放资格（不覆盖实体、
     /// 不浮空、锚点含火链）与生产注册路径不变。
     /// </summary>
@@ -137,6 +138,45 @@ namespace TapTap2026.Tests
         private static uint[] ReadRngStream(uint seed, ushort aboveType)
         {
             ParticleWorld world = BuildTongueProbe(seed, aboveType);
+            var stream = new uint[4];
+            for (int i = 0; i < stream.Length; i++)
+            {
+                stream[i] = world.NextUInt();
+            }
+
+            return stream;
+        }
+
+        /// <summary>把 (4,4) 封死的密闭腔：5×5 树干块（2..6 × 2..6）中心换成火——八邻全是固 / 液、
+        /// 一格空气 / 气体通风口都没有（<paramref name="withGrass"/> 时左邻改成一格草，用于验证燃料豁免）。
+        /// 与 <see cref="ReadSealedCavityRngStream"/> 必须逐条同序构造，才能用随机流证明「窒息档不摇骰」。
+        /// 底格用树干而非石头 / 沙 / 水：否则会先命中「压顶立灭」档、测不到窒息档。
+        /// 直接调火的 <c>OnLogic</c>（不经世界扫描），树干因此不会自己执行死亡 / 生长逻辑。</summary>
+        private static ParticleWorld BuildSealedCavity(uint seed, bool withGrass)
+        {
+            var world = new ParticleWorld(9, 9, seed);
+            for (int y = 2; y <= 6; y++)
+            {
+                for (int x = 2; x <= 6; x++)
+                {
+                    world.Set(x, y, ParticleIds.TreeTrunk);
+                }
+            }
+
+            if (withGrass)
+            {
+                world.Set(3, 4, ParticleIds.Grass);
+            }
+
+            world.Set(4, 4, ParticleIds.Fire);
+            return world;
+        }
+
+        /// <summary>同序构造密闭腔（<c>withGrass: false</c>）后读出接下来 4 个随机数——
+        /// 供「窒息档一个随机数都不消耗」的断言比对。</summary>
+        private static uint[] ReadSealedCavityRngStream(uint seed)
+        {
+            ParticleWorld world = BuildSealedCavity(seed, withGrass: false);
             var stream = new uint[4];
             for (int i = 0; i < stream.Length; i++)
             {
@@ -348,8 +388,8 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 火贴着（侧邻）沙 / 石会被**热传导**烤热；同时火因贴着石头 / 沙（非草木实体）走
-        /// 1/<see cref="FireParticle.QuenchDenominator"/>（20）淬熄骰逐渐熄灭——「烤热」与「速灭」并存。
+        /// 火贴着（侧邻）沙 / 石会被**热传导**烤热；同时火因贴着沙 / 石（不可燃固体）走
+        /// 1/<see cref="FireParticle.QuenchDenominator"/>（5）淬熄骰逐渐熄灭——「烤热」与「速灭」并存。
         /// **正下方**是石头 / 沙 / 水时会当帧直接熄灭（见压顶 / FD1 用例），故沙石放在火的两侧、火托在土上。
         /// </summary>
         [Test]
@@ -379,7 +419,132 @@ namespace TapTap2026.Tests
                 steps++;
             }
 
-            Assert.AreEqual(0, CountType(world, ParticleIds.Fire), "贴着石头 / 沙（侧邻）的火应被 1/20 淬熄骰熄灭");
+            Assert.AreEqual(0, CountType(world, ParticleIds.Fire), "贴着石头 / 沙（侧邻）的火应被 1/5 淬熄骰熄灭");
+        }
+
+        /// <summary>
+        /// **任何非可燃固体**都淬熄（本档由 Solid 标签统一命中，草 / 花除外——它们是燃料）：干土 / 腐殖土 /
+        /// 腐殖质 / 树干 / 树叶这些旧实现里不在淬熄集合内的材料，现在同样走 1/QuenchDenominator（5）。
+        /// 直接调 <c>OnLogic</c>（不经世界扫描）以免材料的自身行为 / 落体干扰，40 帧窗口即可判定
+        /// （1/5 每帧，40 帧未命中的概率 1.3e-4；旧实现的 1/120 烧尽骰期望 120 帧 ≈ 6 秒）。
+        /// </summary>
+        [Test]
+        public void Fire_AnyNonFlammableSolid_QuenchesWithinWindow()
+        {
+            ushort[] supports =
+            {
+                ParticleIds.Soil,
+                ParticleIds.Humus,
+                ParticleIds.HumusSoil,
+                ParticleIds.TreeTrunk,
+                ParticleIds.TreeLeaf,
+                ParticleIds.Stone,
+                ParticleIds.Sand,
+                ParticleIds.WetSoil,
+            };
+
+            for (int i = 0; i < supports.Length; i++)
+            {
+                var world = new ParticleWorld(16, 16, 2026u);
+                world.Set(8, 0, supports[i]);
+                world.Set(8, 1, ParticleIds.Fire);
+
+                int frames = 0;
+                while (world.GetCell(8, 1).typeId == ParticleIds.Fire && frames < 40)
+                {
+                    ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 8, 1);
+                    frames++;
+                }
+
+                Assert.AreEqual(
+                    (int)ParticleIds.Air, (int)world.GetCell(8, 1).typeId,
+                    $"贴在 typeId={supports[i]} 上的火应在 40 逻辑帧内被淬熄（旧实现要赖 6 秒烧尽骰）");
+            }
+        }
+
+        /// <summary>
+        /// **被包围 → 当帧窒息**：八邻全是固 / 液（一格空气 / 气体通风口都没有）且无燃料时，
+        /// 火在一个逻辑帧内熄灭、且**不摇骰**（随机流消耗为 0 —— 用「后续随机数与未动过的对照世界相同」证明）；
+        /// 旧实现没有这一档，被物质埋死 / 封在密闭腔里的火会靠 1/120 烧尽骰拖着烧 6 秒。
+        /// 密封腔的**底**故意用土（不是石头 / 沙 / 水），否则会先命中「压顶立灭」档、测不到窒息档。
+        /// </summary>
+        [Test]
+        public void Fire_EnclosedByMatter_SuffocatesImmediatelyWithoutRoll()
+        {
+            const uint seed = 909u;
+            uint[] stream = ReadSealedCavityRngStream(seed);
+
+            ParticleWorld world = BuildSealedCavity(seed, withGrass: false);
+            ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+
+            Assert.AreEqual(
+                (int)ParticleIds.Air, (int)world.GetCell(4, 4).typeId,
+                "被固 / 液包死且没有燃料的火应在一个逻辑帧内窒息熄灭");
+            Assert.AreEqual(
+                stream[0], world.NextUInt(),
+                "窒息立灭不摇骰：随机流一个数都没消耗（旧路径会摇烧尽骰）");
+        }
+
+        /// <summary>
+        /// **燃料是窒息的豁免**：同样的密闭腔，只在八邻里放一格草 ⇒ 火留下来继续烧燃料
+        /// （一个逻辑帧后仍在本格）。这是「火线能一路烧进草块内部」的前提——草块里的火八邻常全是
+        /// 固 / 液（草），没有这层豁免就会被自己人闷灭。
+        /// </summary>
+        [Test]
+        public void Fire_EnclosedButFuelled_KeepsBurning()
+        {
+            ParticleWorld world = BuildSealedCavity(303u, withGrass: true);
+            ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+
+            Assert.AreEqual(
+                (int)ParticleIds.Fire, (int)world.GetCell(4, 4).typeId,
+                "八邻有草（燃料）时不算闷死：火应留在原地继续烧");
+        }
+
+        /// <summary>
+        /// 长在土上的草皮照样能烧光（生产形态回归）：19×6 的草块铺在**土**上，火从侧边点起——
+        /// 火线贴着土走，「有燃料就不摇熄灭骰」保证火不被脚下的土按灭（新实现把干土收进淬熄集合，
+        /// 这条豁免是「烧光草地」验收继续成立的前提）。断言与浮空草块的用例同口径：
+        /// 过程中火数曾大于 1、烧掉 ≥ 3/4、火最终全部熄灭，终态只余空气 / 腐殖质 / 残草。
+        /// </summary>
+        [Test]
+        public void Fire_BurnsGrassPlantedOnSoil_GroundFireLineSurvives()
+        {
+            var world = new ParticleWorld(32, 16, 2026u);
+            for (int x = 6; x <= 24; x++)
+            {
+                world.Set(x, 0, ParticleIds.Soil);
+                for (int y = 1; y <= 6; y++)
+                {
+                    world.Set(x, y, ParticleIds.Grass);
+                }
+            }
+
+            const int initialGrass = 19 * 6;
+            world.Set(5, 3, ParticleIds.Fire);
+
+            int maxFire = 0;
+            for (int i = 0; i < 8000; i++)
+            {
+                int fire = CountType(world, ParticleIds.Fire);
+                if (fire > maxFire)
+                {
+                    maxFire = fire;
+                }
+
+                if (fire == 0)
+                {
+                    break;
+                }
+
+                world.StepLogic();
+            }
+
+            Assert.Greater(maxFire, 1, "火应蔓延：过程中火数曾大于 1");
+            Assert.LessOrEqual(
+                CountType(world, ParticleIds.Grass), initialGrass / 4,
+                "贴着土的火线仍应烧掉 ≥ 3/4 草皮（有燃料就不该被脚下的土淬熄）");
+            Assert.AreEqual(0, CountType(world, ParticleIds.Fire), "火最终应全部熄灭");
         }
 
         /// <summary>
@@ -429,7 +594,7 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 遇到湿土：**先把它烤成干土**（水汽走湿度场的不可见播撒，水总量守恒），同时火被 1/20 淬熄骰熄灭。
+        /// 遇到湿土：**先把它烤成干土**（水汽走湿度场的不可见播撒，水总量守恒），同时火被 1/5 淬熄骰熄灭。
         /// 断言用窗口（不绑精确帧号）：至少一格湿土变干、湿土不会凭空消失、干土温度恒为正（FB1 的原始漏检点：
         /// 旧 5.5T 潜热会让土温变负）、水总量守恒。
         /// </summary>
@@ -504,9 +669,9 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 遇到水：火走**液体独立快熄档** 1/<see cref="FireParticle.WaterQuenchDenominator"/>（5），
-        /// 比贴石头 / 沙 / 湿土的 1/20 快得多（水是最强灭火剂）。火只熄灭自己、不写对方——第一帧后水原样保留。
-        /// 期望帧数 ≈ 5，断言用宽松窗口（不绑精确帧号）。
+        /// 遇到水：火走**液体独立快熄档** 1/<see cref="FireParticle.WaterQuenchDenominator"/>（2），
+        /// 比贴不可燃固体的 1/5 更快（水是最强灭火剂）。火只熄灭自己、不写对方——第一帧后水原样保留。
+        /// 期望帧数 ≈ 2，断言用宽松窗口（不绑精确帧号）。
         /// </summary>
         [Test]
         public void Fire_NextToWater_IsQuenchedQuickly()
@@ -530,7 +695,7 @@ namespace TapTap2026.Tests
             }
 
             Assert.Greater(steps, 0, "火至少活过一个逻辑帧");
-            Assert.LessOrEqual(steps, 60, "贴水的火走 1/5 快熄档：期望 5 帧，远快于贴石头的 1/20");
+            Assert.LessOrEqual(steps, 60, "贴水的火走 1/2 快熄档：期望 2 帧，快于贴不可燃固体的 1/5");
         }
 
         /// <summary>
