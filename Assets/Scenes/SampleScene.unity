@@ -508,6 +508,7 @@ MonoBehaviour:
   - WetSoilParticle
   - HumusParticle
   - HumusSoilParticle
+  - WetHumusSoilParticle
   - AquaticPlantParticle
   - TreeTrunkParticle
   - TreeLeafParticle
