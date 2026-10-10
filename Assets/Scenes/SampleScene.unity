@@ -504,6 +504,7 @@ MonoBehaviour:
   _panSpeed: 30
   _unplaceableTypes:
   - GrassParticle
+  - FlowerParticle
   - WetSoilParticle
   - HumusParticle
   - HumusSoilParticle

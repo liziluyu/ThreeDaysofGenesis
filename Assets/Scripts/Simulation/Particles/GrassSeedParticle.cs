@@ -12,6 +12,7 @@ namespace TapTap2026.Simulation
     //               运动则为 StepSolid 的「正下、左下/右下、斜滑反侧同一行」
     // 交互的 ParticleIds：WetSoil —— 八邻里只要有它就生长；
     //                     Grass —— 自己与上方 1-3 格被替换成它；
+    //                     Flower —— 发芽后有 10% 概率把**株顶那格**草换成它（花开在草株顶端）；
     //                     Humus —— 连续 3 次被随机刻命中都无发芽条件时直接变成它
     //
     // 行为：
@@ -22,6 +23,10 @@ namespace TapTap2026.Simulation
     //       自己走 SetPhase（同一份物质换形态，保留热量），上方各格走 Set（空气/气体 → 新物质）。
     //       上方遇到固 / 液（ParticleRules.BlocksLight 判据）就停下——草只在空气 / 气体里抽出，
     //       不会凭空吃掉石头、水或别的粒子；顶到网格上边界同理停下。
+    //   开花（同一次随机刻，生长之后）：再摇一次骰，1/FlowerChanceDenominator（10%）命中就把**株顶那格**
+    //       草 SetPhase 成花（FlowerParticle；株顶 = 最后一次成功写入草的那格，上方全被挡住时就是自己那格）。
+    //       花继承草的全部性质，只有颜色更鲜艳、每朵随机，见 FlowerParticle 的文件头。
+    //       摇骰**只发生在真的发了芽之后**（按事件消耗随机数，不随场上种子数漂移）。
     //
     //   生长要先判断、后摇骰：没有湿土邻居时一步也不走、不消耗随机数（随机流不随场上种子数漂移）。
     //   霉烂：没有发芽条件时累计一次「空转」命中（计数存在本格 flags 的 bit5-6）；连续
@@ -36,6 +41,12 @@ namespace TapTap2026.Simulation
 
         /// <summary>生长高度上限：种子**上方**最多长出这么多格草。</summary>
         public const int MaxGrowthHeight = 3;
+
+        /// <summary>
+        /// 开花概率的分母：发芽后 <c>NextUInt() % 本值 == 0</c> 就把**株顶那格**草换成
+        /// <see cref="ParticleIds.Flower"/>，即 1/10 = 10%（见 <see cref="OnRandomTick"/>）。
+        /// </summary>
+        public const uint FlowerChanceDenominator = 10u;
 
         /// <summary>
         /// 连续多少次「被随机刻命中但没有发芽条件」后，种子直接变成腐殖质。
@@ -102,6 +113,8 @@ namespace TapTap2026.Simulation
             world.SetPhase(x, y, ParticleIds.Grass);
 
             // 上方 1..height 格：长进空气 / 气体；遇到固 / 液立即停下（不覆盖已有物质），顶到边界同理。
+            // 同步记下**株顶**——最后一次成功写入草的那格；上方全被挡住时株顶就是自己那格（整株只有一格草）。
+            int topY = y;
             for (int step = 1; step <= height; step++)
             {
                 int targetY = y + step;
@@ -111,6 +124,14 @@ namespace TapTap2026.Simulation
                 }
 
                 world.Set(x, targetY, ParticleIds.Grass);
+                topY = targetY;
+            }
+
+            // 开花（10%）：把株顶那格草换成花——同一株的物质换形态（SetPhase 保留本格热量），
+            // 花因此继承了草的性质、只有花色不同（见 FlowerParticle）。
+            if (world.NextUInt() % FlowerChanceDenominator == 0u)
+            {
+                world.SetPhase(x, topY, ParticleIds.Flower);
             }
         }
 

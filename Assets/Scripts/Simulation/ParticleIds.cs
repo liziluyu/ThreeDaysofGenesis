@@ -107,5 +107,14 @@ namespace TapTap2026.Simulation
         /// 三种死法都按世界 20% 有机衰变留腐殖质（落叶归根）。flags 私有位：bit3-5 = 物种。
         /// 不可在编辑器中选择。**只能追加到清单末尾**。</summary>
         public static ushort TreeLeaf;
+
+        /// <summary>花。**草株顶端的显色格**：由草种子发芽时以 10% 概率把株顶那格草换来的（见
+        /// <c>GrassSeedParticle.OnRandomTick</c>）。继承草的全部性质（Solid + Organic、长在原地、
+        /// 热学与光照同值、随机刻三条死法：被压 / 失去扎根 / 温度 &gt; 50 或 &lt; 3，死亡各按 20% 留腐殖质），
+        /// 差别只有颜色与两项刻意去掉的行为：**不衰老**（shade 是花色而不是年龄档，没有寿命；OnLogic 是严格空体）、
+        /// **不撒种 / 不固沙**。花色 = 调色板随机下标（更鲜艳、每朵随机、终生不变），不占用 flags 私有位。
+        /// 与草互为「同一株」：互不算压、互为扎根、级联死亡一起清。不可在编辑器中选择。
+        /// **只能追加到清单末尾**。</summary>
+        public static ushort Flower;
     }
 }

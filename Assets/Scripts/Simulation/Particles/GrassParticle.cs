@@ -10,7 +10,8 @@ namespace TapTap2026.Simulation
     //              且不引入新的 per-cell 字段（Cell 仍 4 字节）。
     // 邻居查询范围：随机刻时以自身为中心、半径 2 格（GrassParticle.SandConversionRadius /
     //               SeedSpawnRadius）的圆盘，以及候选空地下方 1 格（判固体支撑）
-    // 交互的 ParticleIds：Sand → Soil（把沙变成土）；GrassSeed（撒下新草种子）
+    // 交互的 ParticleIds：Sand → Soil（把沙变成土）；GrassSeed（撒下新草种子）；
+    //                     Flower（同一株：花是草株顶端的显色格——互不算压、互为扎根、级联死亡一起清）
     //
     // 行为：
     //   运动帧（OnMotion）**空**：草长在原地，不落、不流。它不是 IsStatic：
@@ -23,11 +24,11 @@ namespace TapTap2026.Simulation
     //       走 Clear，因而按 20% 概率就地留下腐殖质。衰老只用 shade 与 flags bit3-5（无新 per-cell 字段）、
     //       不消耗世界随机流、不读邻居、不移动。压死 / 失去扎根 / 温度致死仍在随机刻里（见下）。
     //   随机刻（OnRandomTick）每次命中按固定顺序执行，死亡一旦触发就清掉整段并 return（本帧不再撒种/固沙）：
-    //       ① **被压住就死**：正上方是**固体或液体、且不是草**（沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、
-    //          草种子与**水**都算压）时，草被压死，死亡沿**竖直方向向下**传播，把下面整段连续的草一并清掉；
-    //          同株草摞在草上不算压。
-    //       ② **没扎根就死**：正下方不是土 / 湿土 / 腐殖土（也不是同株草的下段）时，这一格草失去支撑而死，
-    //          死亡沿**竖直方向向上**传播，把上面整段连续的草一并清掉（根在下面，土没了整株一起死）。
+    //       ① **被压住就死**：正上方是**固体或液体、且不是同一株**（沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、
+    //          草种子与**水**都算压）时，草被压死，死亡沿**竖直方向向下**传播，把下面整段连续的草（含花）
+    //          一并清掉；同一株的草 / 花摞在草上不算压。
+    //       ② **没扎根就死**：正下方不是土 / 湿土 / 腐殖土（也不是同一株的下段）时，这一格草失去支撑而死，
+    //          死亡沿**竖直方向向上**传播，把上面整段连续的草（含花）一并清掉（根在下面，土没了整株一起死）。
     //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）时
     //          这一格草死亡（只死这一格；相邻草格各有自己的温度，级联随时间涌现）。
     //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质。
@@ -154,7 +155,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 死亡判定（①②③）与撒种 / 固沙（④⑤）都在随机刻里按固定顺序执行。死亡一旦触发就清掉整段草并返回，
+        /// 死亡判定（①②③）与撒种 / 固沙（④⑤）都在随机刻里按固定顺序执行。死亡一旦触发就清掉整段同株（草 / 花）并返回，
         /// 本帧不再撒种 / 固沙。
         /// </summary>
         private void RunRandomTick(ParticleWorld world, int x, int y)
@@ -198,13 +199,13 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 从 (x,y) 起沿 <paramref name="step"/>（−1 = 向下、+1 = 向上）清掉整段连续的草，遇非草即停。
+        /// 从 (x,y) 起沿 <paramref name="step"/>（−1 = 向下、+1 = 向上）清掉整段**同一株**（草 / 花），遇非同一株即停。
         /// 每一格都走 <see cref="ParticleWorld.Clear"/>，因而各自按有机衰变规则留下腐殖质。
         /// </summary>
         private static void ClearCascade(ParticleWorld world, int x, int y, int step)
         {
             int columnY = y;
-            while (world.GetCell(x, columnY).typeId == ParticleIds.Grass)
+            while (IsStalkMember(world.GetCell(x, columnY).typeId))
             {
                 world.Clear(x, columnY);
                 columnY += step;
@@ -212,9 +213,19 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
+        /// (x,y) 上的粒子是否属于**同一株草**——草或它顶端的花（<see cref="FlowerParticle"/>）。
+        /// 草种子发芽时有 10% 概率把株顶那格草换成花，因此一株草的顶端可能是花：两者互不算压、
+        /// 互为扎根、级联死亡时一起清。
+        /// </summary>
+        private static bool IsStalkMember(ushort typeId)
+        {
+            return typeId == ParticleIds.Grass || typeId == ParticleIds.Flower;
+        }
+
+        /// <summary>
         /// (x,y) 是否扎根：正下方是土 / 湿土 / 腐殖土（<see cref="ParticleIds.Soil"/> /
-        /// <see cref="ParticleIds.WetSoil"/> / <see cref="ParticleIds.HumusSoil"/>），或是**同株草的下段**
-        /// （只有整株最底下那格需要土壤，上面的草段靠下段支撑）。空气 / 石头 / 沙 / 水等一律视为没扎根。
+        /// <see cref="ParticleIds.WetSoil"/> / <see cref="ParticleIds.HumusSoil"/>），或是**同一株的下段**
+        /// （草 / 花——只有整株最底下那格需要土壤，上面的草段靠下段支撑）。空气 / 石头 / 沙 / 水等一律视为没扎根。
         /// </summary>
         private static bool IsRooted(ParticleWorld world, int x, int y)
         {
@@ -222,19 +233,19 @@ namespace TapTap2026.Simulation
             return belowId == ParticleIds.Soil
                 || belowId == ParticleIds.WetSoil
                 || belowId == ParticleIds.HumusSoil
-                || belowId == ParticleIds.Grass;
+                || IsStalkMember(belowId);
         }
 
         /// <summary>
-        /// (x,y) 是否被压住：正上方是**固体或液体**且**不是草**。
+        /// (x,y) 是否被压住：正上方是**固体或液体**且**不是同一株**（草 / 花）。
         /// 于是沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、**草种子**（固体）与**水**（液体）都算压；
-        /// 同株草摞在草上不算压，空气与气体（大气）也不算。
+        /// 同一株的草 / 花不算压（否则花会当场压死自己脚下那格草），空气与气体（大气）也不算。
         /// </summary>
         private static bool IsPressed(ParticleWorld world, int x, int y)
         {
-            // 同株草与空气明确不算压（草靠这一条避免自己压死自己；空气不是物质）。
+            // 同一株（草 / 花）与空气明确不算压（草靠这一条避免自己压死自己；花靠这一条不压死自己那株草）。
             ushort aboveId = world.GetCell(x, y + 1).typeId;
-            if (aboveId == ParticleRegistry.AirTypeId || aboveId == ParticleIds.Grass)
+            if (aboveId == ParticleRegistry.AirTypeId || IsStalkMember(aboveId))
             {
                 return false;
             }
@@ -293,21 +304,21 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// (x,y) 能不能托住一颗草种子：是固体（<see cref="ParticleRules.IsSolid"/>）且**不是草**
-        /// （<see cref="ParticleIds.Grass"/>）。排除草是为了**阻止草往别的草头上撒种**——否则落点会在
-        /// 已有草的顶上，种子悬在草尖上、掉落时又不会穿过同为 Solid 的草，观感与逻辑都不合理。
-        /// 石头 / 沙 / 土 / 湿土 / 腐殖土等无机（及腐殖土）固体照常可托住。
+        /// (x,y) 能不能托住一颗草种子：是固体（<see cref="ParticleRules.IsSolid"/>）且**不是同一株**
+        /// （草 <see cref="ParticleIds.Grass"/> / 花 <see cref="ParticleIds.Flower"/>）。排除同一株是为了
+        /// **阻止草往别的草 / 花头上撒种**——否则落点会在草尖或花头上，种子悬在那里、掉落时又不会穿过同为
+        /// Solid 的草。石头 / 沙 / 土 / 湿土 / 腐殖土等固体照常可托住。
         /// </summary>
         private static bool IsSeedSupport(ParticleWorld world, int x, int y)
         {
-            return ParticleRules.IsSolid(world, x, y) && world.GetCell(x, y).typeId != ParticleIds.Grass;
+            return ParticleRules.IsSolid(world, x, y) && !IsStalkMember(world.GetCell(x, y).typeId);
         }
 
         /// <summary>
         /// 在半径 <see cref="SeedSpawnRadius"/> 格的**圆盘**内找第一个「下方 1 格是**可托住种子的固体**的空地」，
         /// 在那里生成一颗新草种子（<see cref="ParticleWorld.Set"/>，新物质）。
         /// 「空地」= 空气或气体（<see cref="ParticleRules.IsGasOrEmpty"/>）；「可托住」见
-        /// <see cref="IsSeedSupport"/>（固体且非草，因此不会撒到别的草头上）。找到即返回 true（至多落一颗）。
+        /// <see cref="IsSeedSupport"/>（固体且非同一株，因此不会撒到别的草尖 / 花头上）。找到即返回 true（至多落一颗）。
         /// </summary>
         private static bool TrySpawnSeed(ParticleWorld world, int x, int y)
         {
