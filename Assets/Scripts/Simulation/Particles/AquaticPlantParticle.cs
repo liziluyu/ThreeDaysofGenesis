@@ -2,9 +2,13 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // AquaticPlantParticle —— 水生植物（沉水、扎根水底；随机刻逐格生长 + 四种死法；每格植物 ⇔ 一格水）
+    // AquaticPlantParticle —— 水生植物（沉水、扎根水底；逻辑帧衰老 + 随机刻逐格生长 + 四种死法；每格植物 ⇔ 一格水）
     //
-    // flags 私有位：无（bit3-7 全部空闲）
+    // flags 私有位：bit3-5（CellFlags.GrassAgeRemainderMask，与草**共用**同一组位）—— 年龄的**逻辑帧余数**
+    //              0..TicksPerShadeStep-1。年龄 = Cell.shade × TicksPerShadeStep + 余数：shade 存高位
+    //              （它同时就是**颜色档**，越老越接近黄绿），余数存低位。能共用的依据与
+    //              CellFlags.SeedStrikeMask 相同：同一时刻一格只属于一个类型，Set / SetPhase 换类型时
+    //              **整字节覆写** flags，旧类型残留读不到。
     // 邻居查询范围：随机刻时以自身为中心、半径 2 格（SeedSpawnRadius）的圆盘；生长读正上方 2 格；
     //               死亡判定用正上方一格（①被压）、正下方一格（②扎根）、八邻（③脱水）
     // 交互的 ParticleIds：Water —— 生长消耗 / 死亡归还（1:1 对称，水守恒由构造保证）；
@@ -13,7 +17,10 @@ namespace TapTap2026.Simulation
     //
     // 行为：
     //   它不是 IsStatic（静态类型收不到随机刻），靠**空的 OnMotion**（而不是静态标记）保持长在原地：草同款。
-    //   OnLogic / OnMotion / OnSpawn 全空；全部行为写在随机刻（OnRandomTick），按固定顺序：
+    //   **OnLogic 只做衰老**（与草同一模式）：每逻辑帧年龄 +1，每攒满 TicksPerShadeStep（5）帧把 Cell.shade
+    //   推进一档（颜色由深绿渐变到黄绿），年龄到 LifespanTicks（1200 ≈ 60 秒 @20 Hz）即**寿终**——走 SetPhase
+    //   还成水（每格植物 ⇔ 一格水；植物不带 Organic，所以**不**是 Clear / 腐殖质）。衰老只用 shade 与 flags
+    //   bit3-5、不消耗世界随机流、不读邻居、不移动。其余全部行为写在随机刻（OnRandomTick），按固定顺序：
     //       ① **被压死**：正上方是**固体且非同类** → 死亡沿竖直向下传播，把下面整段连续的植物**还成水**。
     //          **液体（水）上方是"沉水"常态，不算压**（与草相反——草把液体算压）。
     //       ② **失去扎根**：正下方不是软底 {Soil, WetSoil, HumusSoil, Sand}（也不是同株下段）→ 死亡沿竖直
@@ -60,13 +67,48 @@ namespace TapTap2026.Simulation
         /// <summary>光照吸收率：水下收不到光（光停在水面），取值无实际影响，仅与草保持一致的量级。</summary>
         public const float LightAbsorptionFactor = 0.8f;
 
-        private static readonly Color32[] Palette =
+        /// <summary>
+        /// 寿命（逻辑帧）：年龄到此即寿终（1200 逻辑帧 ≈ 60 秒 @20 Hz，与草同档）。「暂时设定」——改这里即可，
+        /// 只需保证能被 <see cref="TicksPerShadeStep"/> 整除、且 <see cref="ShadeCount"/> ≤ 256。
+        /// </summary>
+        public const int LifespanTicks = 1200;
+
+        /// <summary>
+        /// 每推进一档 <see cref="Cell.shade"/>（颜色档）所需的逻辑帧数：年龄的量化粒度。
+        /// 不足一档的余数存在 <see cref="CellFlags.GrassAgeRemainderMask"/>（3 位，故本值必须 ≤ 8）。
+        /// </summary>
+        public const int TicksPerShadeStep = 5;
+
+        /// <summary>
+        /// 颜色档数量 = 调色板长度：年龄 <c>[0, LifespanTicks)</c> 量化成这么多档
+        /// （下标 0 = 最年轻、末档 = 最老）。受 <see cref="Cell.shade"/> 是 <c>byte</c>、且调色板 ≤ 256 限制。
+        /// </summary>
+        public const int ShadeCount = LifespanTicks / TicksPerShadeStep;
+
+        /// <summary>最年轻水草色（深绿）。</summary>
+        private static readonly Color32 YoungColor = new Color32(30, 84, 58, 255);
+
+        /// <summary>最老水草色（黄绿：红 / 绿升高、蓝压低，整株发黄凋敝）。</summary>
+        private static readonly Color32 OldColor = new Color32(140, 152, 84, 255);
+
+        /// <summary>
+        /// 年龄 → 颜色的**渐变**调色板：下标 = <see cref="Cell.shade"/>（= 年龄档），
+        /// <c>Palette[0]</c> 最年轻、<c>Palette[ShadeCount-1]</c> 最老。植物的 <c>shade</c> 因此是**派生量**
+        /// （由 <see cref="OnLogic"/> 的衰老推进，而非 Set 的随机抽样——抽样值在 <see cref="OnSpawn"/> 被覆盖），
+        /// 与草同一模式；渲染只读 shade 查表，故「越老越接近黄绿色」直接在画面上成立。
+        /// </summary>
+        private static readonly Color32[] Palette = BuildPalette();
+
+        private static Color32[] BuildPalette()
         {
-            new Color32(30, 84, 58, 255),
-            new Color32(42, 106, 72, 255),
-            new Color32(56, 128, 88, 255),
-            new Color32(72, 150, 106, 255),
-        };
+            var palette = new Color32[ShadeCount];
+            for (int i = 0; i < ShadeCount; i++)
+            {
+                palette[i] = Color32.Lerp(YoungColor, OldColor, (float)i / (ShadeCount - 1));
+            }
+
+            return palette;
+        }
 
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,
@@ -81,8 +123,7 @@ namespace TapTap2026.Simulation
             stickiness: 0f,
             palette: Palette,
             debugName: nameof(AquaticPlantParticle),
-            lightAbsorption: LightAbsorptionFactor,
-            hasLogic: false); // OnLogic 严格空体：只靠 OnMotion（空）与随机刻驱动
+            lightAbsorption: LightAbsorptionFactor); // HasLogic 取默认 true：OnLogic 现做衰老
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
@@ -91,7 +132,29 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // 死亡判定、生长与撒种都在随机刻里，逻辑帧为空。
+            // 衰老：年龄 = Cell.shade × TicksPerShadeStep + flags bit3-5 的余数。每逻辑帧年龄 +1：
+            // 未满一档只推进余数；攒满一档把 shade +1（颜色向黄绿推进一档）；shade 到顶即年龄到 LifespanTicks。
+            ref Cell cell = ref world.At(x, y);
+            int remainder = ((cell.flags & CellFlags.GrassAgeRemainderMask) >> CellFlags.GrassAgeRemainderShift) + 1;
+
+            if (remainder < TicksPerShadeStep)
+            {
+                cell.flags = (byte)((cell.flags & CellFlags.GrassAgeRemainderClearMask)
+                    | (remainder << CellFlags.GrassAgeRemainderShift));
+                return;
+            }
+
+            int shade = cell.shade + 1;
+            if (shade >= ShadeCount)
+            {
+                // 寿终：还成水（每格植物 ⇔ 一格水，1:1 守恒）。走 SetPhase 而非 Clear——植物不带 Organic，
+                // 它的物质归水、不留腐殖质；SetPhase 保留本格热量。
+                world.SetPhase(x, y, ParticleIds.Water);
+                return;
+            }
+
+            cell.shade = (byte)shade;
+            cell.flags = (byte)(cell.flags & CellFlags.GrassAgeRemainderClearMask); // 余数归零
         }
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
@@ -143,7 +206,10 @@ namespace TapTap2026.Simulation
 
         public void OnSpawn(ParticleWorld world, int x, int y)
         {
-            // shade 已由 ParticleWorld.Set/SetPhase 按本类型调色板抽样，无需额外初始化。
+            // 新生植物从**最年轻**的一档开始：ParticleWorld.Set / SetPhase 的随机 shade 抽样被这里覆盖
+            // （生长新长出的每一格也走这里，因此每格茎各有自己的年龄）。年龄余数位（flags bit3-5）由写入
+            // 原语清零（flags = 当前标记），无需处理。
+            world.At(x, y).shade = 0;
         }
 
         public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)

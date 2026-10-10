@@ -133,20 +133,25 @@ namespace TapTap2026.Simulation
         /// </summary>
         public const byte TreeLeafDetachedMask = 0x40;
 
-        /// bit3-5：**草私有**（<see cref="GrassParticle"/>）——年龄的**逻辑帧余数**（0..<c>TicksPerShadeStep − 1</c>）。
-        /// 草的年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + 本余数：`shade` 存高档
-        /// （它同时就是**颜色档**——渲染只读 `shade` 查表，所以「越老越黄绿」天然成立），余数存低档。
+        /// <summary>
+        /// bit3-5：**草 / 水生植物私有**（<see cref="GrassParticle"/> / <see cref="AquaticPlantParticle"/>）
+        /// ——年龄的**逻辑帧余数**（0..<c>TicksPerShadeStep − 1</c>）。
+        /// 年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + 本余数：`shade` 存高档
+        /// （它同时就是**颜色档**——渲染只读 `shade` 查表，所以「越老越黄」天然成立），余数存低档。
         /// 两段拼起来才够数到 <c>LifespanTicks</c>（1200 &gt; 255），且不引入新的 per-cell 字段（`Cell` 仍 4 字节）。
+        /// 两种类型的 `OnLogic` 走同一套衰老算术，区别只在寿终动作：草 <c>Clear</c>（走 20% 有机衰变）、
+        /// 水草 <c>SetPhase</c> 还成水。两者**共用**同一组位——依据与下面 bit5 的重叠同源：
+        /// 一格同一时刻只属于一个类型，换类型时整字节覆写 <c>flags</c>。
         /// 与 <see cref="DriftDirectionMask"/> / <see cref="SeedStrikeMask"/> 同一写法：读取用本掩码、
         /// 清除用 <see cref="GrassAgeRemainderClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值 <c>flags</c>（保留 bit0）。
-        /// <see cref="GrassParticle"/> 在文件头部登记了该占用。
+        /// <see cref="GrassParticle"/> / <see cref="AquaticPlantParticle"/> 各自在文件头部登记了该占用。
         /// <para><b>与 <see cref="SeedStrikeMask"/> 在 bit5 重叠</b>（<c>0x38 &amp; 0x60 = 0x20</c>）。
-        /// 两位掩码语义互斥（草的年龄余数 vs 种子的连续计数），能共用 bit5 的**唯一**依据是
+        /// 两位掩码语义互斥（年龄余数 vs 种子的连续计数），能共用 bit5 的**唯一**依据是
         /// 「一格的私有位只被当前类型解释」：同一时刻一格只属于一个类型，而 <see cref="ParticleWorld.Set"/> /
         /// <see cref="ParticleWorld.SetPhase"/> 换类型时**整字节覆写** <c>flags</c>（<c>cell.flags = _stamp</c>），
-        /// 旧类型的私有位随之清零、新类型读不到旧类型残留。因此草格的 bit5 永远是年龄余数的高位、
+        /// 旧类型的私有位随之清零、新类型读不到旧类型残留。因此草 / 水草格的 bit5 永远是年龄余数的高位、
         /// 种子格的 bit5 永远是连续计数的高位，二者不会同时有意义。任何**绕过 Set/SetPhase 直接改
-        /// <c>typeId</c> 而不整字节覆写 <c>flags</c> 的新路径**都会打破这条前提——届时必须给两者
+        /// <c>typeId</c> 而不整字节覆写 <c>flags</c> 的新路径**都会打破这条前提——届时必须给它们
         /// 分派互不重叠的位。</para>
         /// </summary>
         public const byte GrassAgeRemainderMask = 0x38;

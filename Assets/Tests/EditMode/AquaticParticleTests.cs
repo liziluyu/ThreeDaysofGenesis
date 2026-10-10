@@ -1,11 +1,12 @@
 using NUnit.Framework;
 using TapTap2026.Simulation;
+using UnityEngine;
 
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 水生植物 / 水生态种子：吸水发芽（1:1 消耗水）、随机刻逐格生长（留保命水）、四种死法还水、
-    /// 被覆盖走水汽、撒种顶水不啃基质。
+    /// 水生植物 / 水生态种子：吸水发芽（1:1 消耗水）、随机刻逐格生长（留保命水）、寿命（逻辑帧衰老、寿终还水）、
+    /// 四种死法还水、被覆盖走水汽、撒种顶水不啃基质。
     /// 跨类型相变依赖 <see cref="ParticleIds"/> 回填，因此走生产注册路径（<see cref="ParticleRegistration.RegisterAll"/>）。
     /// 随机刻用 <see cref="ParticleType.OnRandomTick"/> 直接调用，保证确定、不依赖世界随机抽格。
     /// </summary>
@@ -433,6 +434,135 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(0, CountType(world, PlantId), "整株死光");
             Assert.AreEqual(initial, TotalWater(world), 1e-3f, "死亡还水后回到初始总量");
+        }
+
+        // ============================== 植物：衰老（寿命，OnLogic） ==============================
+
+        /// <summary>8×8 世界里在 (1,1) 种一格植物（悬空——随机刻默认 0，扎根与否与本主题无关）。</summary>
+        private static ParticleWorld BuildSinglePlant()
+        {
+            var world = new ParticleWorld(8, 8, SeedValue);
+            world.Set(1, 1, PlantId);
+            Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId);
+            return world;
+        }
+
+        [Test]
+        public void Plant_StartsAtTheYoungestShade()
+        {
+            ParticleWorld world = BuildSinglePlant();
+            Assert.AreEqual(0, world.GetCell(1, 1).shade, "新生植物应从最年轻的一档（shade = 0）开始");
+        }
+
+        [Test]
+        public void Plant_ShadeAdvancesOneStepPerTicksPerShadeStep()
+        {
+            ParticleWorld world = BuildSinglePlant();
+
+            for (int i = 0; i < AquaticPlantParticle.TicksPerShadeStep - 1; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(0, world.GetCell(1, 1).shade, "不满一档时颜色档不动");
+
+            world.StepLogic();
+            Assert.AreEqual(1, world.GetCell(1, 1).shade, "满一档时颜色档 +1");
+        }
+
+        [Test]
+        public void Plant_GrownSegment_StartsAtTheYoungestShade()
+        {
+            // 生长走 SetPhase（水 → 植物，触发 OnSpawn）：新茎格与发芽的种子格一样从最年轻档开始，
+            // 因此「每格茎各有自己的年龄」而不是跟着母株一起变老。
+            ParticleWorld world = new ParticleWorld(3, 8, SeedValue);
+            world.Set(1, 0, SandId);
+            world.Set(1, 1, PlantId);
+            for (int y = 2; y <= 4; y++)
+            {
+                world.Set(1, y, WaterId);
+            }
+
+            RandomTick(world, PlantId, 1, 1);
+
+            Assert.AreEqual(PlantId, world.GetCell(1, 2).typeId, "头顶水格应变成新茎");
+            Assert.AreEqual(0, world.GetCell(1, 2).shade, "新长出的茎格应从最年轻档开始");
+        }
+
+        [Test]
+        public void Plant_DiesOfOldAge_ReturningWater()
+        {
+            ParticleWorld world = BuildSinglePlant();
+            float before = TotalWater(world);
+
+            for (int i = 0; i < AquaticPlantParticle.LifespanTicks - 1; i++)
+            {
+                world.StepLogic();
+            }
+
+            Cell last = world.GetCell(1, 1);
+            Assert.AreEqual(PlantId, last.typeId, "第 1199 逻辑帧仍在寿命内");
+            Assert.AreEqual(AquaticPlantParticle.ShadeCount - 1, last.shade, "寿终前一帧应已到最老颜色档");
+
+            world.StepLogic();
+
+            Assert.AreEqual(WaterId, world.GetCell(1, 1).typeId, "第 1200 逻辑帧应寿终还成水（不是腐殖质）");
+            Assert.AreEqual(before, TotalWater(world), 1e-3f, "寿终还水：每格植物 ⇔ 一格水，水账不丢");
+        }
+
+        [Test]
+        public void Plant_AgingDoesNotConsumeTheRandomStream()
+        {
+            ParticleWorld aged = BuildSinglePlant();
+            ParticleWorld reference = BuildSinglePlant(); // 同布局、同种子，但不推进。
+            for (int i = 0; i < 600; i++)
+            {
+                aged.StepLogic();
+            }
+
+            Assert.AreEqual(
+                reference.NextUInt(), aged.NextUInt(),
+                "衰老（及其所在逻辑帧的场 pass）不得消耗世界随机流");
+        }
+
+        [Test]
+        public void Plant_RendersOlderAsYellowGreen()
+        {
+            Color32[] palette = ParticleRegistry.Types[PlantId].Info.Palette;
+            Assert.AreEqual(AquaticPlantParticle.ShadeCount, palette.Length, "颜色档数应等于调色板长度");
+
+            for (int i = 1; i < palette.Length; i++)
+            {
+                Assert.GreaterOrEqual(palette[i].r, palette[i - 1].r, $"调色板红分量应随年龄非递减（档 {i}）");
+            }
+
+            Assert.Greater(
+                palette[palette.Length - 1].r - palette[palette.Length - 1].g,
+                palette[0].r - palette[0].g,
+                "最老档应比最年轻档更偏黄（红相对绿更高）");
+
+            ParticleWorld young = BuildSinglePlant();
+            ParticleWorld old = BuildSinglePlant();
+            for (int i = 0; i < 600; i++)
+            {
+                old.StepLogic();
+            }
+
+            Color32 youngPixel = Render(young, 1, 1);
+            Color32 oldPixel = Render(old, 1, 1);
+            Assert.AreEqual(palette[young.GetCell(1, 1).shade], youngPixel, "渲染应按 shade 查调色板");
+            Assert.AreEqual(palette[old.GetCell(1, 1).shade], oldPixel);
+            Assert.Greater(
+                oldPixel.r - oldPixel.g, youngPixel.r - youngPixel.g,
+                "老水草的像素应更偏黄绿（红相对绿更高）");
+        }
+
+        /// <summary>把世界映射成像素缓冲并读回 (x,y) 的单格颜色（纯 CPU，不需要 GPU）。</summary>
+        private static Color32 Render(ParticleWorld world, int x, int y)
+        {
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, default(Color32));
+            return pixels[world.Index(x, y)];
         }
     }
 }
