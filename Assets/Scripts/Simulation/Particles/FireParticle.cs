@@ -9,16 +9,16 @@ namespace TapTap2026.Simulation
     // flags 私有位：无（bit3-4 大气风向记忆、bit5-6 种子计数占用中；bit7 空闲但本类型不使用）
     //   （也不使用 CellFlags.Burning——该位当前没有任何消费者。）
     // 邻居查询范围：**八邻**（固定顺序：左 → 右 → 下 → 上 → 左下 → 右下 → 左上 → 右上），每逻辑帧读一遍做：
-    //   附着物判定（固 / 液的一格）、燃料判定（第一格草 / 花）、干化目标（第一格湿土）、**通风判定**
+    //   附着物判定（固 / 液的一格）、燃料判定（第一格草 / 花）、干化目标（第一格湿土 / 湿润腐殖土）、**通风判定**
     //   （八邻里是否有空气 / 气体）、淬熄判定（第一格液体、第一格非可燃固体）。**火焰不算附着物**
     //   （火是气体，天然不被 Solid/Liquid 判据命中）——火柱不会互相支撑；火柱内部互相算通风口。
     //   **投放**资格的锚点判定不同源：除固 / 液外**火链也算锚点**——同笔刷 / 已有的火可以互相锚定，
     //   圆刷贴地时能连锁铺满整团火；完全悬空时一格都放不下。物理燃烧的附着物始终不含火。
     // 交互的 ParticleIds：Grass / Flower → Fire（接触点燃，Set 成火——花继承草的可燃性）；
-    //   WetSoil → Soil（接触烘干——先确认水汽
+    //   WetSoil → Soil / WetHumusSoil → HumusSoil（接触烘干——先确认水汽
     //   摊得出去（走湿度场的不可见播撒，与湿土受热蒸发的口径完全一致），水不凭空消失；摊不出去则保留）。
-    //   石头 / 沙 / 水 / 湿土以及**任何非可燃固体**（干土 / 腐殖土 / 腐殖质 / 树干 / 树叶 / 各类种子 /
-    //   水生植物……由 Solid 标签统一命中）只作为**淬熄触发**（见下），不改动对方；液体按标签判
+    //   石头 / 沙 / 水 / 湿土 / 湿润腐殖土以及**任何非可燃固体**（干土 / 腐殖土 / 腐殖质 / 树干 / 树叶 /
+    //   各类种子 / 水生植物……由 Solid 标签统一命中）只作为**淬熄触发**（见下），不改动对方；液体按标签判
     //   （当前所有液体视为水）。
     //   注意：草带 Organic 标签，世界的 MaybeLeaveHumus 规则会在 Set 之后按 20% 概率把那格改判成腐殖质——
     //   **烧过的草地可能留下腐殖质残迹**，这是世界通用规则、不是火的行为。
@@ -247,7 +247,7 @@ namespace TapTap2026.Simulation
                     fuelX = nx;
                     fuelY = ny;
                 }
-                else if (!hasWetSoil && id == ParticleIds.WetSoil)
+                else if (!hasWetSoil && (id == ParticleIds.WetSoil || id == ParticleIds.WetHumusSoil))
                 {
                     hasWetSoil = true;
                     wetX = nx;
@@ -418,14 +418,15 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 把 (wx,wy) 的湿土烤成干土：复用湿土自身「受热蒸发」的既有配方——**先确认水汽摊得出去**
+        /// 把 (wx,wy) 的湿土 / 湿润腐殖土烤成对应的干形态：复用湿土自身「受热蒸发」的既有配方——**先确认水汽摊得出去**
         /// （空气没饱和、且不可见播撒返回 &gt; 0），摊不出去就原样保留（水不能凭空消失，守恒优先）；
-        /// 成功则 SetPhase 成干土，并按相变双方的热容差结算潜热。
+        /// 成功则 SetPhase 成干形态，并按相变双方的热容差结算潜热。
         /// </summary>
         /// <remarks>
-        /// 潜热系数取**湿土→干土的热容差** <c>WetSoilCapacity − SoilCapacity = 1.2</c>（随温度线性），
+        /// 潜热系数取**湿 → 干的热容差**（<c>WetSoil − Soil = 2.0 − 0.8 = 1.2</c>；
+        /// <c>WetHumusSoil − HumusSoil = 2.2 − 1.0 = 1.2</c>，两者同值，随温度线性），
         /// **不是** <see cref="HumidityField.LatentHeat"/>（5.5T，水↔大气的口径）：干燥的相变双方是
-        /// 湿土与干土，温度连续、只需补热容差这一份。错取 5.5T 会过冷、土温为负。
+        /// 湿 / 干同族材料，温度连续、只需补热容差这一份。错取 5.5T 会过冷、土温为负。
         /// </remarks>
         private static void TryDryWetSoil(ParticleWorld world, int wx, int wy)
         {
@@ -437,8 +438,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
+            // 湿润腐殖土 → 干腐殖土；湿土 → 干土。两者的潜热系数都是 1.2（见上）。
+            ushort targetId = world.GetCell(wx, wy).typeId == ParticleIds.WetHumusSoil
+                ? ParticleIds.HumusSoil
+                : ParticleIds.Soil;
             float temperature = world.Heat.GetTemperature(wx, wy);
-            world.SetPhase(wx, wy, ParticleIds.Soil);
+            world.SetPhase(wx, wy, targetId);
             world.Heat.AddHeat(wx, wy, -(WetSoilCapacity - SoilCapacity) * temperature);
         }
 

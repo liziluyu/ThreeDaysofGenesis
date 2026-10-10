@@ -328,7 +328,8 @@ namespace TapTap2026.Simulation
                     ushort targetId = world.GetCell(x + dx, y + dy).typeId;
                     if (targetId != ParticleIds.Soil
                         && targetId != ParticleIds.WetSoil
-                        && targetId != ParticleIds.HumusSoil)
+                        && targetId != ParticleIds.HumusSoil
+                        && targetId != ParticleIds.WetHumusSoil)
                     {
                         continue;
                     }

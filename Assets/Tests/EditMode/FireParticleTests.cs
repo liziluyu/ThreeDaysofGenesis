@@ -436,6 +436,7 @@ namespace TapTap2026.Tests
                 ParticleIds.Soil,
                 ParticleIds.Humus,
                 ParticleIds.HumusSoil,
+                ParticleIds.WetHumusSoil,
                 ParticleIds.TreeTrunk,
                 ParticleIds.TreeLeaf,
                 ParticleIds.Stone,
