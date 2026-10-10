@@ -863,9 +863,19 @@ namespace TapTap2026.Simulation
         /// 变成腐殖质」真正落到这一格，只能在写完新格之后改判——与 <see cref="StepRain"/> 直接引用
         /// <see cref="ParticleIds.Water"/> 同理，是世界的**通用过程**（判据只看标签，产物是固定的腐殖质）。
         /// 摇骰只对「有机物被非有机物替换」发生，因此普通死亡路径的随机流不受影响、依旧可复现。
+        /// **例外**：<paramref name="newId"/> 本身就是腐殖质时不摇骰——显式霉烂（草种子 / 水生态种子 /
+        /// 树木种子的 <c>SetPhase → Humus</c>）已经是完成态的衰变，通用骰不可能再改变结果
+        /// （命中后 <c>SetPhase(Humus)</c> 被 <c>previousId == typeId</c> early-return 吞掉），只会白耗一个随机数。
+        /// 该豁免让霉烂路径之后的世界随机流比旧行为前移一格（确定性不受影响：同种子同命令序列仍逐位可复现）。
         /// </remarks>
         private void MaybeLeaveHumus(ushort previousId, ushort newId, int x, int y)
         {
+            // 新格已是腐殖质（显式霉烂的产物）＝ 衰变已经发生，不再叠加通用衰变骰。
+            if (newId == ParticleIds.Humus)
+            {
+                return;
+            }
+
             if (!IsOrganic(previousId) || IsOrganic(newId))
             {
                 return;
