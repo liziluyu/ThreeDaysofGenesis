@@ -5,10 +5,15 @@ using UnityEngine;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 树木系统（种子 / 树干 / 树叶 + 五物种静态表）：分级发芽（松/柏耐旱、杨/橡喜湿、柳须湿土）、
-    /// 概率化发芽（比草种子慢）、爬升到 H、按有序偏移表造冠（被挡项跳过、腾空补长、全填满转成熟且
-    /// 成熟后零随机流消耗）、无根级联倒下、树叶的失活扩散（八邻一圈立刻检测）+ 竖直自由下落 +
-    /// 随机刻收尸（温度 / 被压两种即时死法保留）、整树静止与确定性重放。
+    /// 树木系统（种子 / 树干 / 树叶 + 五物种静态表）：分级发芽（松/柏耐旱、杨/橡喜湿、柳须湿土，
+    /// 腐殖土家族算够湿）、
+    /// 概率化发芽（比草种子慢；条件满足时把「连续空转」计数清零）、爬升到 H（可顶开正上方的树叶穿冠）、
+    /// 触顶封顶（低顶世界里上方越界转造冠、界外冠项视为已填充，仍能成熟）、按有序偏移表造冠（被挡项跳过、
+    /// 腾空补长、全填满转成熟且成熟后 OnLogic 零随机流消耗）、无根级联倒下（清完整段后逐格通知树叶，
+    /// 随机刻关闭时整冠也在同一逻辑帧内失活并竖直下落）、扎根白名单含沙（对照：石头 / 空气级联倒下）、
+    /// 成熟顶格随机刻 1/4 概率在半径 5 内撒同物种种子（非顶格 / 未成熟格零随机流消耗）、
+    /// 树叶的失活扩散（八邻一圈立刻检测）+ 竖直自由下落 + 随机刻收尸（温度 / 被压两种即时死法保留）、
+    /// 整树静止与确定性重放。
     /// </summary>
     /// <remarks>
     /// 跨类型相变依赖 <see cref="ParticleIds"/> 回填，因此全部走生产注册路径
@@ -168,6 +173,46 @@ namespace TapTap2026.Tests
             }
 
             Assert.AreEqual(TrunkId, world.GetCell(x, y).typeId, "种子应在有限次随机刻内发芽");
+        }
+
+        /// <summary>读树木种子的「连续空转」计数（flags bit6-7，<see cref="CellFlags.TreeSeedStrikeMask"/>）。</summary>
+        private static int ReadSeedStrikes(ParticleWorld world, int x, int y)
+        {
+            return (world.GetCell(x, y).flags & CellFlags.TreeSeedStrikeMask) >> CellFlags.TreeSeedStrikeShift;
+        }
+
+        /// <summary>全网格里 y 最小的树叶所在行（没有树叶返回 -1）——失活叶下落的观测点。</summary>
+        private static int LowestLeafY(ParticleWorld world)
+        {
+            for (int y = 0; y < world.Height; y++)
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    if (world.GetCell(x, y).typeId == LeafId)
+                    {
+                        return y;
+                    }
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>带整条石头地板的宽世界：种一棵树在 (x,1)。柏（H=5）成熟后树顶的撒种圆盘内仍有
+        /// 可托住种子的石头地面——<see cref="BuildTreeWorld"/> 只有一格土，撒种必然找不到落点。</summary>
+        private static ParticleWorld BuildGroundedTreeWorld(int species, out int x, out int yBase)
+        {
+            x = 12;
+            yBase = 1;
+            ParticleWorld world = new ParticleWorld(32, 32, SeedValue);
+            for (int gx = 0; gx < world.Width; gx++)
+            {
+                world.Set(gx, 0, ParticleIds.Stone);
+            }
+
+            PlantSeed(world, x, yBase, species);
+            Germinate(world, x, yBase);
+            return world;
         }
 
         /// <summary>[0,1) 的 FNV-1a 状态哈希（整帧重放的逐周期比对用）。</summary>
@@ -381,12 +426,40 @@ namespace TapTap2026.Tests
                 Germinate(world, 2, 4);
             }
 
-            // 最喜水（柳）：正下方必须恰为湿土。
+            // 最喜水（柳）：正下方必须是湿土或腐殖土。
             ParticleWorld willow = new ParticleWorld(5, 8, SeedValue);
             willow.Set(2, 3, ParticleIds.WetSoil);
             willow.Set(2, 4, SeedId);
             TreeSpecies.Stamp(world: willow, x: 2, y: 4, species: TreeSpecies.Willow, colorsPerSpecies: TreeSpecies.SeedColorsPerSpecies);
             Germinate(willow, 2, 4);
+        }
+
+        [Test]
+        public void Seed_Willow_GerminatesOnDryHumusSoil()
+        {
+            // 腐殖土家族优待（湿档）：正下方是干腐殖土（HumusSoil）也算够湿 —— 此前只允许湿土。
+            ParticleWorld world = new ParticleWorld(5, 8, SeedValue);
+            world.Set(2, 3, ParticleIds.HumusSoil);
+            world.Set(2, 4, SeedId);
+            TreeSpecies.Stamp(world, 2, 4, TreeSpecies.Willow, TreeSpecies.SeedColorsPerSpecies);
+            Germinate(world, 2, 4);
+        }
+
+        [Test]
+        public void Seed_MoistSpecies_GerminatesWithHumusSoilNeighbour()
+        {
+            // 腐殖土家族优待（喜湿档）：八邻的湿土位置换成干腐殖土（HumusSoil）也满足
+            //「八邻有湿土或腐殖土」的加湿判据。
+            int[] moistSpecies = { TreeSpecies.Poplar, TreeSpecies.Oak };
+            foreach (int species in moistSpecies)
+            {
+                ParticleWorld world = new ParticleWorld(5, 8, SeedValue);
+                world.Set(2, 3, ParticleIds.Soil);
+                world.Set(3, 3, ParticleIds.HumusSoil); // 八邻之一：干腐殖土替代湿土。
+                world.Set(2, 4, SeedId);
+                TreeSpecies.Stamp(world, 2, 4, species, TreeSpecies.SeedColorsPerSpecies);
+                Germinate(world, 2, 4);
+            }
         }
 
         [Test]
@@ -518,6 +591,40 @@ namespace TapTap2026.Tests
                 "树干 shade 应落在本物种的色片内");
         }
 
+        [Test]
+        public void Seed_StrikeCounterResetsWhenConditionsBecomeMet()
+        {
+            // 「连续」语义：无发芽条件处命中两次（strikes=2），随后条件变满足再命中一次，
+            // 无论掷骰中否都必须把之前累计的空转清零。
+            // 取 20 个平行世界：至少有一个在条件满足后掷骰未中、仍是种子——只有它读到的位能证明
+            // 「清零」（已发芽的世界位段是树干阶段 0，恒为 0，证明不了清零）。
+            int stillSeedWithZeroStrikes = 0;
+            for (uint i = 0; i < 20; i++)
+            {
+                ParticleWorld world = new ParticleWorld(5, 8, SeedValue + i);
+                world.Set(2, 3, ParticleIds.Stone); // 基质是石头 → 不满足、也不可发芽。
+                world.Set(2, 4, SeedId);
+                TreeSpecies.Stamp(world, 2, 4, TreeSpecies.Pine, TreeSpecies.SeedColorsPerSpecies);
+
+                RandomTick(world, SeedId, 2, 4);
+                RandomTick(world, SeedId, 2, 4);
+                Assert.AreEqual(2, ReadSeedStrikes(world, 2, 4), "两次无发芽条件命中应累计 2");
+
+                world.Set(2, 3, ParticleIds.Soil); // 条件变满足（耐旱档：三土任一即可）。
+                RandomTick(world, SeedId, 2, 4);
+
+                Assert.AreEqual(0, ReadSeedStrikes(world, 2, 4),
+                    "条件满足后无论掷骰中否，空转计数都必须清零");
+                if (world.GetCell(2, 4).typeId == SeedId)
+                {
+                    stillSeedWithZeroStrikes++;
+                }
+            }
+
+            Assert.GreaterOrEqual(stillSeedWithZeroStrikes, 1,
+                "至少有一个世界在条件满足后掷骰未中：它仍是种子且空转已清零（留 2 才是回归）");
+        }
+
         // ============================== 树干：生长 ==============================
 
         /// <summary>48×48 世界种一棵树（含基质档），返回世界与种植点。
@@ -613,6 +720,54 @@ namespace TapTap2026.Tests
             }
         }
 
+        [Test]
+        public void Trunk_TopOutAtCeiling_StillReachesMature()
+        {
+            // 低顶世界（高 10，松 H=14）：树干爬到顶行后正上方越界 → 转造冠；冠项越界的视为已填充，
+            // 因此触顶树仍能转成熟，而不是永远停在爬升阶段。
+            ParticleWorld world = new ParticleWorld(24, 10, SeedValue);
+            int x = 12;
+            int yBase = 1;
+            PlantSeed(world, x, yBase, TreeSpecies.Pine);
+            Germinate(world, x, yBase);
+
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0, "触顶树也应在上限内成熟");
+            int top = TopTrunk(world, x, yBase);
+            Assert.AreEqual(world.Height - 1, top, "树干应一直爬到网格顶行（越界即封顶）");
+            Assert.AreEqual(TreeTrunkParticle.StageMature, ReadStage(world, x, top),
+                "触顶树必须转成熟（阶段 2），不得永远停在爬升阶段");
+            Assert.Greater(CountType(world, LeafId), 0, "封顶后仍应长出界内的冠项");
+        }
+
+        [Test]
+        public void Trunk_GrowsThroughLeafAbove()
+        {
+            // 生长期顶格正上方手动放一片树叶：树干应把它顶开继续爬升到 H（穿冠）。
+            // 树干与树叶都带 Organic → world 对「有机 → 有机」不触发 20% 衰变，无额外摇骰、不留腐殖质。
+            ParticleWorld world = new ParticleWorld(24, 48, SeedValue);
+            int x = 12;
+            int yBase = 1;
+            PlantSeed(world, x, yBase, TreeSpecies.Poplar);
+            Germinate(world, x, yBase);
+
+            int frames = 0;
+            while (TopTrunk(world, x, yBase) - yBase + 1 < 5 && frames++ < 2000)
+            {
+                StepTrunkColumn(world, x, yBase);
+            }
+
+            int beforeTop = TopTrunk(world, x, yBase);
+            Assert.GreaterOrEqual(beforeTop, yBase, "前置：树干已长出若干格");
+            world.Set(x, beforeTop + 1, LeafId);
+            TreeSpecies.Stamp(world, x, beforeTop + 1, TreeSpecies.Poplar, TreeSpecies.LeafColorsPerSpecies);
+            Assert.AreEqual(LeafId, world.GetCell(x, beforeTop + 1).typeId, "前置：顶格正上方是树叶");
+
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0, "正上方有叶不应卡住生长");
+            Assert.AreEqual(TreeSpecies.Info(TreeSpecies.Poplar).TrunkHeight, TopTrunk(world, x, yBase) - yBase + 1,
+                "树干应穿过那片叶长到 H");
+            Assert.AreEqual(TrunkId, world.GetCell(x, beforeTop + 1).typeId, "被顶开的那格应变成树干");
+        }
+
         // ============================== 树干：死亡 ==============================
 
         [Test]
@@ -626,6 +781,94 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(0, CountType(world, TrunkId), "失去扎根应清掉整根树干");
             Assert.Greater(CountType(world, LeafId), 0, "树叶不当场消失（等自己的随机刻枯落）");
+        }
+
+        [Test]
+        public void Trunk_Uprooted_DetachesWholeCrown_WithoutRandomTicks()
+        {
+            // RandomTicksPerStep = 0：整冠失活不能依赖随机刻——树干级联必须先清完整段、再逐格调
+            // TreeLeafParticle.NotifyTrunkRemoved，让支撑检查在本次逻辑帧内自己扩散到整冠。
+            ParticleWorld world = BuildTreeWorld(TreeSpecies.Pine, out int x, out int yBase);
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
+            int leaves = CountType(world, LeafId);
+            Assert.Greater(leaves, 0, "前置：树应已长出树冠");
+            Assert.AreEqual(0, world.RandomTicksPerStep, "前置：随机刻关闭（默认 0）");
+
+            world.Clear(x, yBase - 1); // 挖掉根下的土。
+            world.StepLogic();         // 一个逻辑帧：整段级联倒下 + 逐格通知树叶。
+
+            Assert.AreEqual(0, CountType(world, TrunkId), "失去扎根应在一个逻辑帧内清掉整根树干");
+            Assert.AreEqual(leaves, CountType(world, LeafId), "树叶不当场消失（等自己的随机刻收尸）");
+
+            int detached = 0;
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                if (world.Cells[i].typeId != LeafId)
+                {
+                    continue;
+                }
+
+                int ly = i / world.Width;
+                if (IsLeafDetached(world, i - ly * world.Width, ly))
+                {
+                    detached++;
+                }
+            }
+
+            Assert.AreEqual(leaves, detached, "砍树当帧整冠的失活位必须全部置位（随机刻关闭也生效）");
+
+            for (int i = 0; i < 60; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(leaves, CountType(world, LeafId), "失活叶只是下落，不应消失 / 分裂");
+            Assert.AreEqual(0, LowestLeafY(world), "失活叶应竖直落到网格底行（树干已清空、途中无阻挡）");
+        }
+
+        [Test]
+        public void Trunk_RootedOnSand_StaysStanding()
+        {
+            // 扎根白名单 = 三土 + 沙 + 树干：土被水冲成沙后，已扎根的树不该整树级联倒下。
+            ParticleWorld world = BuildTreeWorld(TreeSpecies.Pine, out int x, out int yBase);
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
+            int trunkCount = CountType(world, TrunkId);
+            int top = TopTrunk(world, x, yBase);
+
+            world.Set(x, yBase - 1, ParticleIds.Sand);
+            for (int i = 0; i < 20; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(trunkCount, CountType(world, TrunkId), "扎根于沙的树不得级联倒下");
+            Assert.AreEqual(TrunkId, world.GetCell(x, top).typeId, "顶部树干应仍在原位");
+            Assert.AreEqual(ParticleIds.Sand, world.GetCell(x, yBase - 1).typeId, "沙基质应留在原位");
+        }
+
+        [Test]
+        public void Trunk_RootedOnNonWhitelist_Cascades()
+        {
+            // 对照：正下方换成石头 / 空气都不算扎根 → 整树级联倒下。
+            ushort[] blocked = { ParticleIds.Stone, ParticleRegistry.AirTypeId };
+            foreach (ushort below in blocked)
+            {
+                ParticleWorld world = BuildTreeWorld(TreeSpecies.Pine, out int x, out int yBase);
+                Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
+                Assert.Greater(CountType(world, TrunkId), 0, "前置：树应已长成");
+
+                if (below == ParticleRegistry.AirTypeId)
+                {
+                    world.Clear(x, yBase - 1);
+                }
+                else
+                {
+                    world.Set(x, yBase - 1, below);
+                }
+
+                world.StepLogic();
+                Assert.AreEqual(0, CountType(world, TrunkId), $"正下方不是扎根物（{below}）时应整树级联倒下");
+            }
         }
 
         [Test]
@@ -1018,6 +1261,77 @@ namespace TapTap2026.Tests
             Assert.AreNotEqual(LeafId, world.GetCell(x, leafY).typeId, "过热（T=52）应致树叶死亡");
         }
 
+        // ============================== 繁殖 ==============================
+
+        [Test]
+        public void Trunk_MatureTopScattersSameSpeciesSeed_WithinRadiusFive()
+        {
+            // 成熟顶格每次随机刻命中摇 1 骰（1/4），摇中就在半径 5 圆盘内按固定序找第一个落点撒同物种种子。
+            ParticleWorld world = BuildGroundedTreeWorld(TreeSpecies.Cypress, out int x, out int yBase);
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
+            int top = TopTrunk(world, x, yBase);
+            int species = ReadSpecies(world, x, top);
+
+            for (int i = 0; i < 500 && CountType(world, SeedId) == 0; i++)
+            {
+                RandomTick(world, TrunkId, x, top);
+            }
+
+            Assert.AreEqual(1, CountType(world, SeedId), "成熟顶格在有限次随机刻内应撒下一颗种子");
+
+            int seedX = -1;
+            int seedY = -1;
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                if (world.Cells[i].typeId != SeedId)
+                {
+                    continue;
+                }
+
+                seedY = i / world.Width;
+                seedX = i - seedY * world.Width;
+                break;
+            }
+
+            Assert.AreEqual(species, ReadSpecies(world, seedX, seedY), "撒下的种子应带母树物种位");
+            int dx = seedX - x;
+            int dy = seedY - top;
+            Assert.LessOrEqual(dx * dx + dy * dy,
+                TreeTrunkParticle.SeedScatterRadius * TreeTrunkParticle.SeedScatterRadius,
+                "落点必须在半径 5 的圆盘内");
+            Assert.AreNotEqual(0, dx * dx + dy * dy, "落点不得是顶格自身");
+            Assert.IsTrue(ParticleRules.IsSolid(world, seedX, seedY - 1), "落点正下方必须是可托住种子的固体");
+            Assert.AreNotEqual(TrunkId, world.GetCell(seedX, seedY - 1).typeId, "不得撒到树干头上");
+            Assert.AreNotEqual(LeafId, world.GetCell(seedX, seedY - 1).typeId, "不得撒到树叶头上");
+            Assert.AreNotEqual(SeedId, world.GetCell(seedX, seedY - 1).typeId, "不得撒到已有种子头上");
+        }
+
+        [Test]
+        public void Trunk_RandomTick_NonTopOrImmature_ConsumesNoRandomStream()
+        {
+            // 非顶格（基部）与未成熟顶格都不是繁殖格：命中世界随机流不得前进（与对照世界逐位比较）。
+            // 未成熟世界：H=14 的松只驱动 12 帧 ⇒ 树高 ≤ 13 < 14，顶格必定仍在爬升阶段。
+            ParticleWorld immatureA = BuildTreeWorld(TreeSpecies.Pine, out int iaX, out int iaBase);
+            ParticleWorld immatureB = BuildTreeWorld(TreeSpecies.Pine, out int ibX, out int ibBase);
+            GrowFrames(immatureA, iaX, iaBase, 12);
+            GrowFrames(immatureB, ibX, ibBase, 12);
+
+            int immatureTop = TopTrunk(immatureA, iaX, iaBase);
+            Assert.AreEqual(TreeTrunkParticle.StageGrowing, ReadStage(immatureA, iaX, immatureTop),
+                "前置：顶格仍未成熟（爬升阶段）");
+            RandomTick(immatureA, TrunkId, iaX, immatureTop);
+            Assert.AreEqual(immatureB.NextUInt(), immatureA.NextUInt(), "未成熟顶格命中不得推进随机流");
+
+            // 成熟树的非顶格（基部格）：同样零消耗。
+            ParticleWorld matureA = BuildTreeWorld(TreeSpecies.Pine, out int maX, out int maBase);
+            ParticleWorld matureB = BuildTreeWorld(TreeSpecies.Pine, out int mbX, out int mbBase);
+            Assert.GreaterOrEqual(GrowToMaturity(matureA, maX, maBase), 0);
+            Assert.GreaterOrEqual(GrowToMaturity(matureB, mbX, mbBase), 0);
+
+            RandomTick(matureA, TrunkId, maX, maBase);
+            Assert.AreEqual(matureB.NextUInt(), matureA.NextUInt(), "非顶格命中不得推进随机流");
+        }
+
         // ============================== 整体 ==============================
 
         [Test]
@@ -1098,6 +1412,50 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(14, CountType(a, TrunkId), "重放世界里的松树应已长满树干");
             Assert.AreEqual(40, CountType(a, LeafId), "重放世界里的松树应已长满树冠");
+        }
+
+        // ============================== 种子发芽的腐殖土消耗（A2） ==============================
+
+        /// <summary>
+        /// 柳（Wet 档）在**干腐殖土**上发芽：腐殖土家族是决定性墒情（正下方不是真湿土），发芽成功后按
+        /// 「最深优先」把脚下连续土层里最深的一格腐殖土退化成普通土；正下方那格基质保持腐殖土不动。
+        /// </summary>
+        [Test]
+        public void Seed_Willow_OnHumusSoil_ConsumesDeepestHumusSoil()
+        {
+            ParticleWorld world = new ParticleWorld(5, 8, SeedValue);
+            world.Set(2, 3, ParticleIds.HumusSoil); // 正下方 = 干腐殖土（柳的 Wet 档满足）
+            world.Set(2, 2, ParticleIds.Soil);      // 连续土层的中段
+            world.Set(2, 1, ParticleIds.HumusSoil); // 连续土层里最深的腐殖土 → 应被消耗
+            world.Set(2, 4, SeedId);
+            TreeSpecies.Stamp(world, 2, 4, TreeSpecies.Willow, TreeSpecies.SeedColorsPerSpecies);
+
+            Germinate(world, 2, 4);
+
+            Assert.AreEqual(ParticleIds.Soil, world.GetCell(2, 1).typeId,
+                "柳在干腐殖土上发芽后，脚下连续土层里最深的腐殖土应退化成普通土");
+            Assert.AreEqual(ParticleIds.HumusSoil, world.GetCell(2, 3).typeId,
+                "正下方那格腐殖土基质不应被消耗（只退最深的一格）");
+        }
+
+        /// <summary>
+        /// 松（Drought 档）在腐殖土上发芽**不消耗**：耐旱档从不依赖墒情，腐殖土不是决定性因素。
+        /// </summary>
+        [Test]
+        public void Seed_Pine_OnHumusSoil_DoesNotConsumeHumusSoil()
+        {
+            ParticleWorld world = new ParticleWorld(5, 8, SeedValue);
+            world.Set(2, 3, ParticleIds.HumusSoil); // 正下方基质
+            world.Set(2, 2, ParticleIds.HumusSoil); // 连续土层里的腐殖土
+            world.Set(2, 4, SeedId);
+            TreeSpecies.Stamp(world, 2, 4, TreeSpecies.Pine, TreeSpecies.SeedColorsPerSpecies);
+
+            Germinate(world, 2, 4);
+
+            Assert.AreEqual(ParticleIds.HumusSoil, world.GetCell(2, 3).typeId,
+                "耐旱档不消耗：正下方腐殖土保持不动");
+            Assert.AreEqual(ParticleIds.HumusSoil, world.GetCell(2, 2).typeId,
+                "耐旱档不消耗：深处腐殖土也保持不动");
         }
 
         private static ParticleWorld BuildReplayWorld()

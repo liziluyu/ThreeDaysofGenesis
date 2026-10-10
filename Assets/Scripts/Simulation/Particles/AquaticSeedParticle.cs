@@ -116,6 +116,7 @@ namespace TapTap2026.Simulation
             return belowId == ParticleIds.Soil
                 || belowId == ParticleIds.WetSoil
                 || belowId == ParticleIds.HumusSoil
+                || belowId == ParticleIds.WetHumusSoil
                 || belowId == ParticleIds.Sand;
         }
 

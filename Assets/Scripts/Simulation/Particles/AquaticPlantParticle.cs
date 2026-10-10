@@ -282,6 +282,7 @@ namespace TapTap2026.Simulation
             return belowId == ParticleIds.Soil
                 || belowId == ParticleIds.WetSoil
                 || belowId == ParticleIds.HumusSoil
+                || belowId == ParticleIds.WetHumusSoil
                 || belowId == ParticleIds.Sand
                 || belowId == ParticleIds.AquaticPlant;
         }
@@ -332,6 +333,7 @@ namespace TapTap2026.Simulation
             return id == ParticleIds.Soil
                 || id == ParticleIds.WetSoil
                 || id == ParticleIds.HumusSoil
+                || id == ParticleIds.WetHumusSoil
                 || id == ParticleIds.Sand;
         }
 

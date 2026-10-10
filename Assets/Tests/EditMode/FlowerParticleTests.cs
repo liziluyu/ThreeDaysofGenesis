@@ -6,10 +6,12 @@ using UnityEngine;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 花（<see cref="FlowerParticle"/>）：草种子发芽时以 1/10 概率把**株顶那格**草换成花。
+    /// 花（<see cref="FlowerParticle"/>）：草种子发芽时以 30%（3/10）概率把**株顶那格**草换成花。
     /// 花继承草的全部性质（Solid + Organic、长在原地、热学 / 光照同值、随机刻三条死法：被压 / 失去扎根 /
-    /// 温度 &gt; 50 或 &lt; 3，死亡各按 20% 留腐殖质、可燃），差别只有颜色（更鲜艳、每朵随机、终生不变）
-    /// 与两项刻意去掉的行为（不衰老、不撒种 / 不固沙）。
+    /// 温度 &gt; 50 或 &lt; 3（脚下是腐殖土家族时放宽到 &gt; 55 或 &lt; 0），死亡各按 20% 留腐殖质、可燃），
+    /// 差别只有颜色（更鲜艳、每朵随机、终生不变）
+    /// 与两项刻意去掉的行为（不衰老、不撒种 / 不固沙）。腐殖土窗口把花**救活**时，会消耗脚下那一格腐殖土
+    /// （退化为普通土）——优待是消耗型资源。
     /// </summary>
     /// <remarks>
     /// 走生产注册路径（跨类型的株内判据与腐殖质残留都依赖 <see cref="ParticleIds"/> 回填）。
@@ -80,11 +82,12 @@ namespace TapTap2026.Tests
 
         /// <summary>
         /// 发芽开花：在每个独立世界里让**一颗**种子被随机刻命中一次（直接调钩子 ⇒ 命中即发芽），
-        /// 统计 200 次独立发芽里「株顶是花」的比例，并用窗口断言（≈10%，容差放宽到 4%..19%）。
+        /// 统计 200 次独立发芽里「株顶是花」的比例，并用窗口断言（≈30%，容差放宽到 22%..39%——
+        /// 200 次伯努利(p=0.3)的 σ ≈ 3.2%，窗口 ≈ ±2.8σ）。
         /// 同时守几何不变量：一次发芽至多开一朵花，花**只**出现在株顶。
         /// </summary>
         [Test]
-        public void Flower_BlossomsOnTheStalksTopCellAtAboutTenPercent()
+        public void Flower_BlossomsOnTheStalksTopCellAtAboutThirtyPercent()
         {
             const int trials = 200;
             int blooms = 0;
@@ -123,10 +126,10 @@ namespace TapTap2026.Tests
             }
 
             Assert.Greater(blooms, 0, $"{trials} 次发芽里应至少开一次花");
-            Assert.GreaterOrEqual(blooms, trials * 4 / 100,
-                $"开花应是约 10% 的概率事件（下限 4%），实际 {blooms}/{trials}");
-            Assert.LessOrEqual(blooms, trials * 19 / 100,
-                $"开花应是约 10% 的概率事件（上限 19%），实际 {blooms}/{trials}");
+            Assert.GreaterOrEqual(blooms, trials * 22 / 100,
+                $"开花应是约 30% 的概率事件（下限 22%），实际 {blooms}/{trials}");
+            Assert.LessOrEqual(blooms, trials * 39 / 100,
+                $"开花应是约 30% 的概率事件（上限 39%），实际 {blooms}/{trials}");
         }
 
         /// <summary>
@@ -216,6 +219,57 @@ namespace TapTap2026.Tests
                 "过冷（< 3°）的花应死亡（与草同一条低温线）");
         }
 
+        /// <summary>
+        /// 腐殖土家族放宽花的温度窗口（与草同构）：脚下是腐殖土 / 湿腐殖土时用 55 / 0，普通土下仍是 50 / 3。
+        /// 三种温度逐一钉住边界：2°（低于普通土低温线 3°）与 52°（高于普通土高温线 50°）在腐殖土上存活，
+        /// 越过放宽后的 55° 仍致死（放宽窗口而非取消判据）。
+        /// </summary>
+        [Test]
+        public void Flower_ToleratesWiderTemperatureWindowOnHumusSoilFamily()
+        {
+            Assert.AreEqual(ParticleIds.Flower, TickFlowerOn(ParticleIds.HumusSoil, 2f),
+                "脚下是腐殖土时低温线放宽到 0°：T = 2°（普通土下会致死）应存活");
+            Assert.AreEqual(ParticleIds.Flower, TickFlowerOn(ParticleIds.HumusSoil, 52f),
+                "脚下是腐殖土时高温线放宽到 55°：T = 52°（普通土下会致死）应存活");
+            Assert.AreNotEqual(ParticleIds.Flower, TickFlowerOn(ParticleIds.HumusSoil, 56f),
+                "越过放宽后的 55° 仍应致死（窗口是放宽而不是取消）");
+            Assert.AreEqual(ParticleIds.Flower, TickFlowerOn(ParticleIds.WetHumusSoil, 52f),
+                "湿腐殖土同属腐殖土家族，享受同一放宽窗口");
+        }
+
+        /// <summary>
+        /// 对照：普通土脚下**不**享受放宽窗口——同一批温度下 T = 2°（&lt; 3）与 T = 52°（&gt; 50）都应致死。
+        /// 若 ③ 把放宽窗口错误地套用到所有基质，本测试即失败。
+        /// </summary>
+        [Test]
+        public void Flower_KeepsNaturalTemperatureWindowOnPlainSoil()
+        {
+            Assert.AreNotEqual(ParticleIds.Flower, TickFlowerOn(ParticleIds.Soil, 2f),
+                "普通土脚下不享受放宽：T = 2° < 3° 应致死");
+            Assert.AreNotEqual(ParticleIds.Flower, TickFlowerOn(ParticleIds.Soil, 52f),
+                "普通土脚下不享受放宽：T = 52° > 50° 应致死");
+        }
+
+        /// <summary>
+        /// 消耗型优待：花脚下是腐殖土、T = 2°（普通窗口下会冷死，腐殖土窗口下存活）⇒ 存活，
+        /// 且消耗脚下那一格腐殖土（退化为普通土）。
+        /// </summary>
+        [Test]
+        public void Flower_OnHumusSoil_SurvivingColdConsumesItIntoSoil()
+        {
+            var world = new ParticleWorld(8, 8, SeedValue);
+            world.Set(4, 3, ParticleIds.HumusSoil);
+            world.SetPhase(4, 4, ParticleIds.Flower);
+            world.Heat.SetHeat(4, 4, 2f * ParticleRegistry.Types[ParticleIds.Flower].Info.HeatCapacity);
+
+            ParticleRegistry.Types[ParticleIds.Flower].OnRandomTick(world, 4, 4);
+
+            Assert.AreEqual(ParticleIds.Flower, world.GetCell(4, 4).typeId,
+                "脚下是腐殖土：T = 2° 应被救活（放宽窗口 < 0°）");
+            Assert.AreEqual(ParticleIds.Soil, world.GetCell(4, 3).typeId,
+                "救活一格消耗脚下那一格腐殖土（退化为普通土）");
+        }
+
         [Test]
         public void Flower_LeavesHumusOnDeath()
         {
@@ -297,6 +351,23 @@ namespace TapTap2026.Tests
             Assert.AreEqual(ParticleIds.Flower, cell.typeId,
                 $"花没有寿命（草在第 {GrassParticle.LifespanTicks} 帧已寿终），且不落体");
             Assert.AreEqual(shade, cell.shade, "花色一旦抽定就终生不变（shade 不是年龄档）");
+        }
+
+        /// <summary>
+        /// 在 (4,3) 放 <paramref name="substrateId"/>、其上 (4,4) 放花，把花注热到 T = <paramref name="temperature"/>
+        /// （Q = T × 花热容），跑一次随机刻并返回该格结算后的 typeId。
+        /// 场景无压（(4,5) 空）、有扎根 ⇒ 三条死法里只有 ③ 温度会触发。
+        /// </summary>
+        private static ushort TickFlowerOn(ushort substrateId, float temperature)
+        {
+            var world = new ParticleWorld(8, 8, SeedValue);
+            world.Set(4, 3, substrateId);
+            world.SetPhase(4, 4, ParticleIds.Flower);
+            float heatCapacity = ParticleRegistry.Types[ParticleIds.Flower].Info.HeatCapacity;
+            world.Heat.SetHeat(4, 4, temperature * heatCapacity);
+
+            ParticleRegistry.Types[ParticleIds.Flower].OnRandomTick(world, 4, 4);
+            return world.GetCell(4, 4).typeId;
         }
 
         /// <summary>8×8 世界里在 (4,2) 种一颗草种子，正下方是湿土（同时满足八邻有湿土）。</summary>

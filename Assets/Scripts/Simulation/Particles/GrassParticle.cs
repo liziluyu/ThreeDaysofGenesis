@@ -29,8 +29,12 @@ namespace TapTap2026.Simulation
     //          一并清掉；同一株的草 / 花摞在草上不算压。
     //       ② **没扎根就死**：正下方不是土 / 湿土 / 腐殖土（也不是同一株的下段）时，这一格草失去支撑而死，
     //          死亡沿**竖直方向向上**传播，把上面整段连续的草（含花）一并清掉（根在下面，土没了整株一起死）。
-    //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）时
-    //          这一格草死亡（只死这一格；相邻草格各有自己的温度，级联随时间涌现）。
+    //       ③ **温度致死**：脚下是腐殖土家族（腐殖土 / 湿润腐殖土）时用**放宽**的窗口——本格温度
+    //          > HumusLethalHeatTemperature（55）或 < HumusLethalColdTemperature（0）才死；否则用普通基质
+    //          窗口——> LethalHeatTemperature（50）或 < LethalColdTemperature（3）时这一格草死亡。
+    //          腐殖土窗口把这一格**救活**（普通窗口下必死、腐殖土窗口下存活）时，消耗脚下连续土层里**最深**
+    //          的一格腐殖土（退化为普通土）——腐殖土的优待是消耗型资源。
+    //          （只死这一格；相邻草格各有自己的温度，级联随时间涌现。）
     //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质。
     //       ④ **撒种（10% 概率）**：先摇一次骰（NextUInt() % SeedSpawnChanceDenominator == 0，每次都摇、
     //          消耗 1 个随机数，保证确定性），命中才在半径 2 格圆盘内找**第一个「下方 1 格是可托住种子的
@@ -57,6 +61,15 @@ namespace TapTap2026.Simulation
 
         /// <summary>致死低温（温度严格**低于**它即死）。</summary>
         public const float LethalColdTemperature = 3f;
+
+        /// <summary>
+        /// 脚下是腐殖土家族（腐殖土 / 湿润腐殖土）时的致死高温：腐殖土保温保水，宿主草的耐受窗口更宽，
+        /// 温度严格**高于**它才死。
+        /// </summary>
+        public const float HumusLethalHeatTemperature = 55f;
+
+        /// <summary>脚下是腐殖土家族时的致死低温：温度严格**低于**它才死（普通基质下为 3）。</summary>
+        public const float HumusLethalColdTemperature = 0f;
 
         /// <summary>
         /// 光照吸收率（<see cref="ParticleTypeInfo.LightAbsorption"/>）：草的浅色表面反光，受阳光升温**略慢**
@@ -178,14 +191,28 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // ③ 温度致死：过冷（< LethalColdTemperature）或过热（> LethalHeatTemperature）时这一格草死亡
-            //    （Clear；同样按 20% 概率留下腐殖质）。只判这一格——相邻草格各有自己的温度，会随热传导
-            //    各自判定，级联是随时间涌现的，不需要显式传播。
+            // ③ 温度致死：过冷或过热时这一格草死亡（Clear；同样按 20% 概率留下腐殖质）。判据读**脚下**一格：
+            //    脚下是腐殖土家族（腐殖土 / 湿润腐殖土）时用放宽的窗口（> 55 / < 0，腐殖土保温保水）；
+            //    否则用普通基质窗口（> LethalHeatTemperature=50 / < LethalColdTemperature=3）；
+            //    脚下是同株下段（草 / 花）时按普通窗口。
+            //    只判这一格——相邻草格各有自己的温度，会随热传导各自判定，级联是随时间涌现的，不需要显式传播。
+            //    腐殖土窗口**救活**这一格（普通窗口下必死、腐殖土窗口下存活）时，消耗脚下连续土层里最深的
+            //    一格腐殖土（退化为普通土）——优待是消耗型资源，用完即退化。
+            ushort belowId = world.GetCell(x, y - 1).typeId;
+            bool onHumusSoil = belowId == ParticleIds.HumusSoil || belowId == ParticleIds.WetHumusSoil;
+            float lethalHeat = onHumusSoil ? HumusLethalHeatTemperature : LethalHeatTemperature;
+            float lethalCold = onHumusSoil ? HumusLethalColdTemperature : LethalColdTemperature;
             float temperature = world.Heat.GetTemperature(x, y);
-            if (temperature > LethalHeatTemperature || temperature < LethalColdTemperature)
+            if (temperature > lethalHeat || temperature < lethalCold)
             {
                 world.Clear(x, y);
                 return;
+            }
+
+            if (onHumusSoil
+                && (temperature > LethalHeatTemperature || temperature < LethalColdTemperature))
+            {
+                HumusSoilParticle.ConsumeFarthestBelow(world, x, y);
             }
 
             // ④ 撒种（10% 概率）：先摇骰（每次都消耗 1 个随机数，保证确定性），命中才搜索落点。
@@ -214,7 +241,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// (x,y) 上的粒子是否属于**同一株草**——草或它顶端的花（<see cref="FlowerParticle"/>）。
-        /// 草种子发芽时有 10% 概率把株顶那格草换成花，因此一株草的顶端可能是花：两者互不算压、
+        /// 草种子发芽时有 30%（3/10）概率把株顶那格草换成花，因此一株草的顶端可能是花：两者互不算压、
         /// 互为扎根、级联死亡时一起清。
         /// </summary>
         private static bool IsStalkMember(ushort typeId)
@@ -233,6 +260,7 @@ namespace TapTap2026.Simulation
             return belowId == ParticleIds.Soil
                 || belowId == ParticleIds.WetSoil
                 || belowId == ParticleIds.HumusSoil
+                || belowId == ParticleIds.WetHumusSoil
                 || IsStalkMember(belowId);
         }
 

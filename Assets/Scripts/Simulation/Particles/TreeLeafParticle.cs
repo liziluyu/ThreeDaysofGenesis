@@ -10,6 +10,9 @@ namespace TapTap2026.Simulation
     // 邻居查询范围：正上 1 格（被压判定）、以本格为中心半径 SupportRadius 的 Chebyshev 环（找树干）、
     //               八邻一圈（失活扩散）。OnMotion 只读正下 1 格 —— 默认运动阅读盒 (1,1,1) 覆盖。
     // 交互的 ParticleIds：TreeTrunk（支撑判据——整树倒下后树叶失活）、TreeLeaf（叠叶不算压 / 失活扩散）。
+    // 对外入口：TreeTrunkParticle 的「失去扎根」级联在清完整段树干后逐格调 NotifyTrunkRemoved——
+    //           即使随机刻关闭（RandomTicksPerStep = 0），砍树 / 挖根后整冠也会在同一次逻辑帧里
+    //           集体失活（随后靠运动帧落叶），不会永久悬空。
     //
     // 行为：
     //   ① OnRandomTick（随机刻；OnLogic 空体 → hasLogic: false）：
@@ -23,6 +26,8 @@ namespace TapTap2026.Simulation
     //        环内没有树干 → **不再立即死**，而是记录失活（flags bit6）并**立刻**让八邻一圈的树叶各自
     //        检测支撑——无支撑者同样失活、继续向外扩散：砍掉树干后整冠在一瞬间集体失活（不是逐片等
     //        随机刻），随后一起落叶。
+    //      - 同一条支撑判据也由**树干级联倒下**主动触发（静态入口 NotifyTrunkRemoved，见上「对外入口」），
+    //        因此整冠失活不依赖随机刻是否开启。
     //   ② OnMotion（运动帧 60 Hz）：失活的树叶竖直**自由下落**一格——**不参与滚落**（不做斜滑 / 横流），
     //      正下方是固体就停（空气 / 气体 / 液体都照落）。每帧至多移动一格。
     //   ③ 死亡：只发生在随机刻。失活叶落稳后（或下落途中）被随机刻命中才 Clear → 世界按 20% 有机衰变
@@ -142,6 +147,39 @@ namespace TapTap2026.Simulation
         public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
         {
             // 树叶被覆盖时无残留效果。
+        }
+
+        /// <summary>
+        /// 树干被移除后主动通知 (x,y) 八邻一圈的树叶检查支撑（<see cref="TreeTrunkParticle"/> 的
+        /// 失去扎根级联在**清完整段树干之后**逐格调用）：对每个「树叶且未失活」的格读物种、跑支撑检查，
+        /// 无支撑则调 <see cref="DetachAndSpread"/>——递归会沿树冠自支撑链扩散到整冠，无需扩大半径。
+        /// 无分配、不消耗随机流、不读温度；越界读空气，天然跳过。
+        /// </summary>
+        public static void NotifyTrunkRemoved(ParticleWorld world, int x, int y)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (world.GetCell(nx, ny).typeId != ParticleIds.TreeLeaf || IsDetached(world, nx, ny))
+                    {
+                        continue;
+                    }
+
+                    int species = TreeSpecies.Read(world, nx, ny);
+                    if (!HasTrunkWithin(world, nx, ny, TreeSpecies.Info(species).SupportRadius))
+                    {
+                        DetachAndSpread(world, nx, ny);
+                    }
+                }
+            }
         }
 
         /// <summary>本格是否已失活（flags bit6）。越界读空气格 → false。</summary>

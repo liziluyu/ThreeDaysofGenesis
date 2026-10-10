@@ -19,13 +19,16 @@ namespace TapTap2026.Simulation
     //   * **不繁殖 / 不改造**：撒种与固沙是草株的行为（GrassParticle.OnRandomTick ④⑤），花只是顶端显色格。
     // 其余一切照抄草：
     //   来源（随机刻，由草种子驱动）：草种子发芽见 GrassSeedParticle.OnRandomTick——发芽后以
-    //       1/GrassSeedParticle.FlowerChanceDenominator（10%）把**株顶那格**草 SetPhase 成花。
+    //       GrassSeedParticle.FlowerChanceNumerator / FlowerChanceDenominator（3/10 = 30%）把**株顶那格**草 SetPhase 成花。
     //   运动帧（OnMotion）**空**：花长在原地，不落、不流。它不是 IsStatic——静态类型收不到随机刻
     //       （ParticleWorld.RunRandomTicks 会跳过它），而花的死法全在随机刻里，因此必须是普通类型。
     //   随机刻（OnRandomTick）：与草同款三条死法、同判据同顺序（死亡一旦触发就清掉整段同株并 return）：
     //       ① **被压死**：正上方是**固体或液体、且不是同一株**（草 / 花）→ 沿 −y 清掉本格起的整段同株；
     //       ② **失去扎根**：正下方不是土 / 湿土 / 腐殖土、也不是同一株 → 沿 +y 清掉整段同株；
-    //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）→ 只死这一格。
+    //       ③ **温度致死**：本格温度 > LethalHeatTemperature（50）或 < LethalColdTemperature（3）→ 只死这一格；
+    //          但脚下是腐殖土家族（HumusSoil / WetHumusSoil）时窗口放宽到 55 / 0（腐殖土保温保水，宿主更耐温）。
+    //          腐殖土窗口把这一格**救活**（普通窗口下必死、腐殖土窗口下存活）时，消耗脚下连续土层里**最深**
+    //          的一格腐殖土（退化为普通土）——腐殖土的优待是消耗型资源。
     //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质（花带 Organic 标签）。
     //   热学与光学：热容 / 导热率 / 辐射率 / 光照吸收率全部与草同值——鲜艳的花色不是「更吸热」，
     //       正午稳态温度仍低于 50° 致死线（与草共享同一条热学红线，见 LightAbsorptionFactor）。
@@ -41,6 +44,12 @@ namespace TapTap2026.Simulation
 
         /// <summary>致死低温，与草同线（温度严格**低于**它即死）。</summary>
         public const float LethalColdTemperature = 3f;
+
+        /// <summary>脚下是腐殖土家族（腐殖土 / 湿腐殖土）时的致死高温：腐殖土保温保水，宿主植物的耐受窗口更宽。</summary>
+        public const float HumusLethalHeatTemperature = 55f;
+
+        /// <summary>脚下是腐殖土家族时的致死低温：比普通土的 3° 更低（更耐冷）。</summary>
+        public const float HumusLethalColdTemperature = 0f;
 
         /// <summary>
         /// 光照吸收率：与草同取 0.8（直接引用草上的常量，避免两处漂移）——花受阳光升温的速度与草一致，
@@ -113,6 +122,8 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 三条死法（① 被压 / ② 失去扎根 / ③ 温度），顺序与判据与草一致。死亡一旦触发就清掉整段同株并返回。
+        /// ③ 的温度窗口按脚下是否腐殖土家族（腐殖土 / 湿腐殖土）在 50 / 3 与 55 / 0 之间选择；
+        /// 腐殖土窗口**救活**这一格时，亦消耗脚下连续土层里最深的一格腐殖土（退化为普通土）。
         /// 花没有撒种 / 固沙两步（那是草株的行为）。
         /// </summary>
         private static void RunRandomTick(ParticleWorld world, int x, int y)
@@ -135,10 +146,22 @@ namespace TapTap2026.Simulation
             }
 
             // ③ 温度致死：过冷 / 过热只死这一格（相邻格各有自己的温度，级联随时间涌现）。
+            //    脚下是腐殖土家族时用更宽的窗口（55 / 0，腐殖土保温保水），否则用普通土的 50 / 3。
+            //    腐殖土窗口**救活**这一格（普通窗口下必死、腐殖土窗口下存活）时，消耗脚下连续土层里最深的
+            //    一格腐殖土（退化为普通土）——优待是消耗型资源，用完即退化。
+            ushort belowId = world.GetCell(x, y - 1).typeId;
+            bool onHumusSoil = belowId == ParticleIds.HumusSoil || belowId == ParticleIds.WetHumusSoil;
+            float lethalHeat = onHumusSoil ? HumusLethalHeatTemperature : LethalHeatTemperature;
+            float lethalCold = onHumusSoil ? HumusLethalColdTemperature : LethalColdTemperature;
             float temperature = world.Heat.GetTemperature(x, y);
-            if (temperature > LethalHeatTemperature || temperature < LethalColdTemperature)
+            if (temperature > lethalHeat || temperature < lethalCold)
             {
                 world.Clear(x, y);
+            }
+            else if (onHumusSoil
+                && (temperature > LethalHeatTemperature || temperature < LethalColdTemperature))
+            {
+                HumusSoilParticle.ConsumeFarthestBelow(world, x, y);
             }
         }
 
@@ -166,6 +189,7 @@ namespace TapTap2026.Simulation
             return belowId == ParticleIds.Soil
                 || belowId == ParticleIds.WetSoil
                 || belowId == ParticleIds.HumusSoil
+                || belowId == ParticleIds.WetHumusSoil
                 || IsStalkMember(belowId);
         }
 

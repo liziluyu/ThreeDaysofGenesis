@@ -2,33 +2,39 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // GrassSeedParticle —— 草种子（固体标签的粉末；随机刻命中且八邻有湿土时抽成草）
+    // GrassSeedParticle —— 草种子（固体标签的粉末；随机刻命中且八邻有湿土 / 腐殖土时抽成草）
     //
     // flags 私有位：bit5-6 = 「被随机刻命中但无发芽条件」的连续计数（CellFlags.SeedStrikeMask /
     //        SeedStrikeShift，已在 CellFlags.cs 登记为「草种子私有」）。读用 SeedStrikeMask、
     //        清用 SeedStrikeClearMask、写用 | 组合，绝不整体赋值 flags（会破坏 bit0 处理标记）。
     //        计数随 Cell 一起移动（Swap 搬整格），因此种子下落途中也会累积。
-    // 邻居查询范围：八邻 3×3（随机刻生长时找湿土）；
+    // 邻居查询范围：八邻 3×3（随机刻生长时找湿土 / 腐殖土）；
     //               运动则为 StepSolid 的「正下、左下/右下、斜滑反侧同一行」
-    // 交互的 ParticleIds：WetSoil —— 八邻里只要有它就生长；
+    // 交互的 ParticleIds：WetSoil / HumusSoil —— 八邻里只要有湿土或腐殖土就生长；
     //                     Grass —— 自己与上方 1-3 格被替换成它；
-    //                     Flower —— 发芽后有 10% 概率把**株顶那格**草换成它（花开在草株顶端）；
+    //                     Flower —— 发芽后有 30%（3/10）概率把**株顶那格**草换成它（花开在草株顶端）；
     //                     Humus —— 连续 3 次被随机刻命中都无发芽条件时直接变成它
     //
     // 行为：
     //   运动（OnMotion，运动帧 60 Hz）：受重力的固体粉末，走 ParticleRules.StepSolid（摩擦/粘性 0.5，堆形与土一致）。
     //       落到地面 / 湿土上之后就安分不动，等随机刻。
-    //   生长（OnRandomTick，随机刻）：被随机刻抽中时先查**八邻**（含斜向与正下方）有没有湿土。
+    //   生长（OnRandomTick，随机刻）：被随机刻抽中时先查**八邻**（含斜向与正下方）有没有湿土 / 腐殖土。
     //       有则以 1..MaxGrowthHeight 的随机高度，把自己与**上方**那 1-3 格一并换成草：
     //       自己走 SetPhase（同一份物质换形态，保留热量），上方各格走 Set（空气/气体 → 新物质）。
     //       上方遇到固 / 液（ParticleRules.BlocksLight 判据）就停下——草只在空气 / 气体里抽出，
     //       不会凭空吃掉石头、水或别的粒子；顶到网格上边界同理停下。
-    //   开花（同一次随机刻，生长之后）：再摇一次骰，1/FlowerChanceDenominator（10%）命中就把**株顶那格**
+    //   开花（同一次随机刻，生长之后）：再摇一次骰，3/FlowerChanceDenominator（= 30%）命中就把**株顶那格**
     //       草 SetPhase 成花（FlowerParticle；株顶 = 最后一次成功写入草的那格，上方全被挡住时就是自己那格）。
     //       花继承草的全部性质，只有颜色更鲜艳、每朵随机，见 FlowerParticle 的文件头。
     //       摇骰**只发生在真的发了芽之后**（按事件消耗随机数，不随场上种子数漂移）。
     //
-    //   生长要先判断、后摇骰：没有湿土邻居时一步也不走、不消耗随机数（随机流不随场上种子数漂移）。
+    //   腐殖土消耗（优待的代价）：发芽成功且八邻没有**真湿土**（WetSoil / WetHumusSoil）时，本次发芽的
+    //       墒情全靠腐殖土家族（HumusSoil，见 HasWetSoilNeighbour 里的那一项）——调用
+    //       HumusSoilParticle.ConsumeFarthestBelow 把脚下连续土层里**最深**的一格腐殖土退化成普通土
+    //       （HumusSoil → Soil、WetHumusSoil → WetSoil，SetPhase 保水保热）。八邻有真湿土时不消耗
+    //       （腐殖土不是决定性因素）。
+    //
+    //   生长要先判断、后摇骰：没有湿土 / 腐殖土邻居时一步也不走、不消耗随机数（随机流不随场上种子数漂移）。
     //   霉烂：没有发芽条件时累计一次「空转」命中（计数存在本格 flags 的 bit5-6）；连续
     //   MaxStrikesBeforeHumus（3）次都无发芽条件就直接 SetPhase 成腐殖质——落错地方的种子不会永远赖着。
     //
@@ -43,10 +49,13 @@ namespace TapTap2026.Simulation
         public const int MaxGrowthHeight = 3;
 
         /// <summary>
-        /// 开花概率的分母：发芽后 <c>NextUInt() % 本值 == 0</c> 就把**株顶那格**草换成
-        /// <see cref="ParticleIds.Flower"/>，即 1/10 = 10%（见 <see cref="OnRandomTick"/>）。
+        /// 开花概率的分母：发芽后 <c>NextUInt() % 本值 &lt; <see cref="FlowerChanceNumerator"/></c> 就把
+        /// **株顶那格**草换成 <see cref="ParticleIds.Flower"/>，即 3/10 = **30%**（见 <see cref="OnRandomTick"/>）。
         /// </summary>
         public const uint FlowerChanceDenominator = 10u;
+
+        /// <summary>开花概率的分子：与 <see cref="FlowerChanceDenominator"/> 一起构成 3/10 = 30%。</summary>
+        public const uint FlowerChanceNumerator = 3u;
 
         /// <summary>
         /// 连续多少次「被随机刻命中但没有发芽条件」后，种子直接变成腐殖质。
@@ -91,7 +100,7 @@ namespace TapTap2026.Simulation
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 先判断：八邻没有湿土 = 没有发芽条件。累计一次「空转」命中——数到 MaxStrikesBeforeHumus
+            // 先判断：八邻没有湿土 / 腐殖土 = 没有发芽条件。累计一次「空转」命中——数到 MaxStrikesBeforeHumus
             // （3）次就霉烂、直接变成腐殖质；否则只把计数写回、原地等待（不消耗随机数）。
             if (!HasWetSoilNeighbour(world, x, y))
             {
@@ -127,11 +136,19 @@ namespace TapTap2026.Simulation
                 topY = targetY;
             }
 
-            // 开花（10%）：把株顶那格草换成花——同一株的物质换形态（SetPhase 保留本格热量），
-            // 花因此继承了草的性质、只有花色不同（见 FlowerParticle）。
-            if (world.NextUInt() % FlowerChanceDenominator == 0u)
+            // 开花（30% = 3/10）：把株顶那格草换成花——同一株的物质换形态（SetPhase 保留本格热量），
+            // 花因此继承了草的性质、只有花色不同（见 FlowerParticle）。每次发芽恰摇一次（消耗 1 个随机数）。
+            if (world.NextUInt() % FlowerChanceDenominator < FlowerChanceNumerator)
             {
                 world.SetPhase(x, topY, ParticleIds.Flower);
+            }
+
+            // 腐殖土消耗（优待的代价）：八邻没有真湿土（WetSoil / WetHumusSoil）时，本次发芽的墒情全靠
+            // 腐殖土家族——把脚下连续土层里最深的一格腐殖土退化成普通土。此刻 (x,y) 已是草（或开花的株顶），
+            // helper 从 (x, y-1) 起竖直向下扫土层，正确。有真湿土时不消耗（腐殖土不是决定性因素）。
+            if (!HasTrueWetSoilNeighbour(world, x, y))
+            {
+                HumusSoilParticle.ConsumeFarthestBelow(world, x, y);
             }
         }
 
@@ -159,7 +176,10 @@ namespace TapTap2026.Simulation
             world.At(x, y).flags = flags;
         }
 
-        /// <summary>(x,y) 的**八邻**（3×3 去掉自身）里是否有湿土。越界由 <see cref="ParticleWorld.GetCell"/> 返回空气，天然不算。</summary>
+        /// <summary>
+        /// (x,y) 的**八邻**（3×3 去掉自身）里是否有湿土 / 腐殖土（腐殖土保水，视作自带墒情）。
+        /// 越界由 <see cref="ParticleWorld.GetCell"/> 返回空气，天然不算。
+        /// </summary>
         private static bool HasWetSoilNeighbour(ParticleWorld world, int x, int y)
         {
             for (int dy = -1; dy <= 1; dy++)
@@ -171,7 +191,35 @@ namespace TapTap2026.Simulation
                         continue;
                     }
 
-                    if (world.GetCell(x + dx, y + dy).typeId == ParticleIds.WetSoil)
+                    ushort id = world.GetCell(x + dx, y + dy).typeId;
+                    if (id == ParticleIds.WetSoil || id == ParticleIds.WetHumusSoil || id == ParticleIds.HumusSoil)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// (x,y) 的**八邻**（3×3 去掉自身）里是否有**真湿土**（WetSoil / WetHumusSoil，不含干腐殖土）。
+        /// 越界由 <see cref="ParticleWorld.GetCell"/> 返回空气，天然不算。用于判断腐殖土家族是否是本次发芽
+        /// 的决定性墒情——有真湿土时不消耗脚下腐殖土（见 <see cref="OnRandomTick"/>）。
+        /// </summary>
+        private static bool HasTrueWetSoilNeighbour(ParticleWorld world, int x, int y)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    ushort id = world.GetCell(x + dx, y + dy).typeId;
+                    if (id == ParticleIds.WetSoil || id == ParticleIds.WetHumusSoil)
                     {
                         return true;
                     }
