@@ -7,7 +7,7 @@ namespace TapTap2026.Rendering
 {
     /// <summary>
     /// 动物实体层渲染：每只 <see cref="Creature"/> 一个子 GameObject + <see cref="SpriteRenderer"/>。
-    /// 已接线的物种（兔子经 <see cref="_rabbitIdleFrames"/>）播真 sprite 帧序列；未接线的退回运行时生成的 1×1 白色占位块（染占位色、拉成碰撞盒）。
+    /// 已接线的物种（兔子 / 鱼，见 <see cref="ResolveIdleFrames"/>）播真 sprite 帧序列；未接线的退回运行时生成的 1×1 白色占位块（染占位色、拉成碰撞盒）。
     /// </summary>
     /// <remarks>
     /// <para>与 <see cref="ParticleRenderer"/>「整张网格一个 quad」不同：实体数量少、位置是连续浮点，
@@ -44,6 +44,9 @@ namespace TapTap2026.Rendering
 
         /// <summary>兔子 idle 动画帧（Sprite Editor 切片，pivot 底部中心）。为空或未接线时兔子退回占位块。</summary>
         [SerializeField] private Sprite[] _rabbitIdleFrames;
+
+        /// <summary>鱼 idle 动画帧（同上规格）。为空或未接线时鱼退回占位块。</summary>
+        [SerializeField] private Sprite[] _fishIdleFrames;
 
         /// <summary>idle 动画帧率（帧/秒）：2 = 每帧 500ms。表现层播放，不进模拟、不影响确定性。</summary>
         [SerializeField] private float _idleFps = 2f;
@@ -195,15 +198,14 @@ namespace TapTap2026.Rendering
 
             var renderer = child.AddComponent<SpriteRenderer>();
 
-            if (creature is RabbitCreature
-                && _rabbitIdleFrames != null
-                && _rabbitIdleFrames.Length > 0
-                && _rabbitIdleFrames[0] != null)
+            Sprite[] frames = ResolveIdleFrames(creature);
+            if (frames != null)
             {
-                // 真 sprite：切片带底部中心 pivot，按 _spriteScale 放大（16 倍时 1 源像素 = 1 格），不染色。
+                // 真 sprite：切片 pivot 已对齐脚底（见 Assets/Images/Animals/*/1/*.png 的导入设置），
+                // 按 _spriteScale 放大（16 倍时 1 源像素 = 1 格，与兔子的像素大小一致），不染色。
                 child.transform.localScale = new Vector3(_spriteScale, _spriteScale, 1f);
-                renderer.sprite = _rabbitIdleFrames[0];
-                return new View { Renderer = renderer, Frames = _rabbitIdleFrames, BaseColor = Color.white };
+                renderer.sprite = frames[0];
+                return new View { Renderer = renderer, Frames = frames, BaseColor = Color.white };
             }
 
             child.transform.localScale = new Vector3(creature.Width, creature.Height, 1f);
@@ -211,6 +213,33 @@ namespace TapTap2026.Rendering
             renderer.color = creature.PlaceholderColor;
 
             return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f, BaseColor = creature.PlaceholderColor };
+        }
+
+        /// <summary>
+        /// 物种 → idle 帧序列：按物种类型取序列化字段，**未接线的物种返回 null**（调用方退回占位块）。
+        /// </summary>
+        /// <remarks>
+        /// 用类型判断而不是字符串匹配：物种全集是闭集（兔 / 鸟 / 鱼，见 AGENTS.md），
+        /// 新增物种时编译器会逼着这里补一行，而不是在运行期静默匹配失败。
+        /// 帧序列为空或首帧缺失也视为未接线（手改 YAML 留下的半接线状态不该让渲染炸掉）。
+        /// </remarks>
+        private Sprite[] ResolveIdleFrames(Creature creature)
+        {
+            Sprite[] frames;
+            if (creature is RabbitCreature)
+            {
+                frames = _rabbitIdleFrames;
+            }
+            else if (creature is FishCreature)
+            {
+                frames = _fishIdleFrames;
+            }
+            else
+            {
+                return null;
+            }
+
+            return frames != null && frames.Length > 0 && frames[0] != null ? frames : null;
         }
 
         /// <summary>懒建共享的占位 sprite：1×1 白纹理 + pivot 居中 + pixelsPerUnit = 1，因此 localScale 即世界尺寸（格）。</summary>

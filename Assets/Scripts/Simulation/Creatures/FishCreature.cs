@@ -8,9 +8,9 @@ namespace TapTap2026.Simulation
     /// </summary>
     /// <remarks>
     /// <para><b>为什么能「浮」而兔子会沉：</b><see cref="Creature.StepPhysics"/> 在水里先乘阻力再叠加
-    /// <see cref="Buoyancy"/>、随后减重力——鱼的浮力（+0.09）**大于**重力（0.08），净加速度向上 +0.01 格/帧²，
+    /// <see cref="Buoyancy"/>、随后减重力——鱼的浮力（+0.25）**大于**重力（0.24），净加速度向上 +0.01 格/帧²，
     /// 于是缓慢上浮；一出水面中心格就不在水里，浮力消失、只剩重力把它拉回，于是停在水面上下小幅摆动。
-    /// 兔子相反（浮力 −0.01），入水后缓慢下沉。两者都不是特判，是同一条物理公式配不同常数。</para>
+    /// 兔子相反（浮力 0.15 < 重力 0.24），入水后缓慢下沉。两者都不是特判，是同一条物理公式配不同常数。</para>
     /// <para>本阶段**纯物理、零行为**：三个钩子（<see cref="Creature.OnSpawn"/> /
     /// <see cref="Creature.OnLogic"/> / <see cref="Creature.OnDeath"/>）全用基类空体，
     /// 游动 / 觅食 / 繁殖留给后续阶段——接口已经预留好。</para>
@@ -23,22 +23,24 @@ namespace TapTap2026.Simulation
         {
         }
 
-        /// <summary>重力 0.08 格 / 逻辑帧²（与兔子同值：离水时的下坠感一致）。</summary>
+        /// <summary>重力 0.24 格 / 逻辑帧²（与兔子同值：离水时的下坠感一致；比初版 0.08 快 3 倍）。</summary>
         protected override float Gravity
         {
-            get { return 0.08f; }
+            get { return 0.24f; }
         }
 
-        /// <summary>最大下落速率 0.4 格 / 逻辑帧——比兔子更轻更慢的终端速度。</summary>
+        /// <summary>最大下落速率 1.2 格 / 逻辑帧——与重力同倍率（比值仍 0.2），比兔子更轻更慢的终端速度。</summary>
         protected override float MaxFallSpeed
         {
-            get { return 0.4f; }
+            get { return 1.2f; }
         }
 
-        /// <summary>水中每帧净浮力 +0.09：**大于** <see cref="Gravity"/>（0.08），净加速度向上，缓慢浮向水面。</summary>
+        /// <summary>水中每帧净浮力 +0.25：**大于** <see cref="Gravity"/>（0.24），净加速度向上、缓慢浮向水面。
+        /// 重力提高 3 倍后本值同步重算，使水中上浮速率（<c>(Buoyancy − Gravity) / WaterDrag</c> ≈ 0.017 格/帧）
+        /// 与初版逐位一致——「鱼浮兔沉」的物种分工不受陆上重力调整影响。</summary>
         protected override float Buoyancy
         {
-            get { return 0.09f; }
+            get { return 0.25f; }
         }
 
         /// <summary>水中速度保持系数折损 0.6（比兔子更黏）：游动迟滞、摆动收敛得快。</summary>

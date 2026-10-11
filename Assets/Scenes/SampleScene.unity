@@ -564,6 +564,11 @@ MonoBehaviour:
   - {fileID: -1522176540, guid: 47129b3a0a2ddfe4ea292b4b90591ccb, type: 3}
   - {fileID: 1287972565, guid: 47129b3a0a2ddfe4ea292b4b90591ccb, type: 3}
   - {fileID: -254396113, guid: 47129b3a0a2ddfe4ea292b4b90591ccb, type: 3}
+  _fishIdleFrames:
+  - {fileID: -894115587, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
+  - {fileID: 1729916783, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
+  - {fileID: -983619320, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
+  - {fileID: 2125832360, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
   _idleFps: 2
   _spriteScale: 16
 --- !u!1 &2010000000
