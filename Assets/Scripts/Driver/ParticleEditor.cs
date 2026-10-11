@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using TapTap2026.Rendering;
@@ -8,8 +9,9 @@ namespace TapTap2026.Game
 {
     /// <summary>
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
-    /// **按住左键**用当前粒子填满鼠标处半径 <see cref="BrushRadius"/> 的圆；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
-    /// **右键**在可投放类型间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
+    /// **按住左键**用当前选中项填满鼠标处半径 <see cref="BrushRadius"/> 的圆（选中动物物种时改为**在鼠标格放置一只实体**）；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
+    /// **右键**在可投放项间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷；
+    /// **末尾接动物物种**兔子 / 鱼，见 <see cref="CreatureFactories"/>）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
     /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
@@ -21,8 +23,7 @@ namespace TapTap2026.Game
     /// （驱动器是这三个值的唯一配置面、每帧写回 <c>world.Light</c>，写世界会被下一帧覆盖），改完即时生效；
     /// 输入框拿着键盘时暂停 / 高速 / 平移热键让位给输入框，且**使用面板期间（输入框持有键盘焦点或指针在面板矩形内）
     /// 屏蔽左键投放/擦除**——点进输入框不会顺手在底下画一笔；高速模式与对话激活时面板变灰不可编辑；
-    /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放类型）；
-    /// **B** 在鼠标所在格生成一只兔子（动物实体层，调试用；与左键投放同样受光照面板 / 高速模式 / 对话屏蔽的约束）；
+    /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放项）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（普通模式恒 <c>×1</c>）；
     /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
     /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
@@ -102,6 +103,31 @@ namespace TapTap2026.Game
                  "（蒸汽 / 云 / 大气是水循环的中间态，只能由相变产生），火是当前唯一可手刷的例外。")]
         [SerializeField] private string[] _placeableGasTypes = { "FireParticle" };
 
+        /// <summary>
+        /// 可投放的动物物种：右键循环里**排在所有粒子类型之后**（见 <see cref="SelectionCount"/>），
+        /// 选中后左键放置产出**实体**而不是格（见 <see cref="SpawnCreature"/>）。
+        /// </summary>
+        /// <remarks>
+        /// 只列工厂——HUD 的名字与色块取自原型实例（<see cref="Creature.DebugName"/> /
+        /// <see cref="Creature.PlaceholderColor"/>），物种元数据的唯一真源留在 <see cref="Creature"/> 派生类里，
+        /// 这里不再抄一份。兔子与鱼是**预定全集**里的两个（鸟待补）。
+        /// 动物投放不看粒子白名单与阶段投放名单（<see cref="SetPlacementFilter"/> 只管粒子）。
+        /// </remarks>
+        private static readonly Func<Creature>[] CreatureFactories =
+        {
+            () => new RabbitCreature(),
+            () => new FishCreature(),
+        };
+
+        /// <summary>各动物物种的显示名（<see cref="Awake"/> 里从原型实例取）。</summary>
+        private string[] _creatureNames;
+
+        /// <summary>各动物物种的占位色（<see cref="Awake"/> 里从原型实例取）。</summary>
+        private Color[] _creatureColors;
+
+        /// <summary>当前选中的动物物种下标；−1 = 当前选中的是粒子类型（见 <see cref="Select"/>）。</summary>
+        private int _creatureIndex = -1;
+
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
         private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();
         private readonly HashSet<ushort> _placeableGas = new HashSet<ushort>();
@@ -179,10 +205,22 @@ namespace TapTap2026.Game
             get { return Mathf.Clamp(_brushRadius, MinBrushRadius, MaxBrushRadius); }
         }
 
-        /// <summary>当前正在投放的 typeId。</summary>
+        /// <summary>当前正在投放的粒子 typeId（选中动物物种时保持上一次的粒子选择——投放走 <see cref="SpawnCreature"/>，不读本值）。</summary>
         public ushort CurrentTypeId
         {
             get { return _typeId; }
+        }
+
+        /// <summary>右键循环的总项数：可投放粒子类型 + 动物物种（动物排在后面）。</summary>
+        private int SelectionCount
+        {
+            get { return _placeable.Length + CreatureFactories.Length; }
+        }
+
+        /// <summary>当前选中的是不是动物物种（true 时左键放置实体，见 <see cref="SpawnCreature"/>）。</summary>
+        public bool CreatureSelected
+        {
+            get { return _creatureIndex >= 0; }
         }
 
         private void Awake()
@@ -242,6 +280,16 @@ namespace TapTap2026.Game
                 Debug.LogError(
                     "[ParticleEditor] 没有任何已注册的粒子类型，编辑器不生效。请确认 ParticleRegistration.RegisterAll() 已执行。");
                 return;
+            }
+
+            // 动物物种的显示名 / 占位色取自原型实例：物种差异的唯一真源在 Creature 派生类里。
+            _creatureNames = new string[CreatureFactories.Length];
+            _creatureColors = new Color[CreatureFactories.Length];
+            for (int i = 0; i < CreatureFactories.Length; i++)
+            {
+                Creature prototype = CreatureFactories[i]();
+                _creatureNames[i] = prototype.DebugName;
+                _creatureColors[i] = prototype.PlaceholderColor;
             }
 
             Select(0);
@@ -351,10 +399,15 @@ namespace TapTap2026.Game
                 && Input.GetMouseButton(0)
                 && TryGetCell(Input.mousePosition, world, out int x, out int y))
             {
-                // E 是擦除修饰键：与左键同按时改走擦除（按住的整段时间都擦），不改当前投放类型。
+                // E 是擦除修饰键：与左键同按时改走擦除（按住的整段时间都擦），不改当前投放项。
                 if (Input.GetKey(KeyCode.E))
                 {
                     Erase(world, x, y);
+                }
+                else if (_creatureIndex >= 0)
+                {
+                    // 选中动物物种：放置产出实体、不写格（因此暂停时也无所谓上屏）。
+                    SpawnCreature(world, x, y);
                 }
                 else
                 {
@@ -365,20 +418,6 @@ namespace TapTap2026.Game
                 if (!_driver.Simulate)
                 {
                     _driver.PresentNow();
-                }
-            }
-
-            // B：在鼠标所在格生成一只兔子（动物实体层，调试用）。与左键投放共用同一条守卫链——
-            // 光照面板使用中屏蔽、高速模式锁编辑时已被上面的统一拦截挡掉、暂停时也照样能放
-            // （动物的推进归 CreatureWorld.Step，与粒子何时上屏无关，所以这里不需要 PresentNow）。
-            if (!editingLightValue
-                && Input.GetKeyDown(KeyCode.B)
-                && TryGetCell(Input.mousePosition, world, out int spawnX, out int spawnY))
-            {
-                CreatureWorld creatures = _driver.Creatures;
-                if (creatures != null)
-                {
-                    creatures.Spawn(new RabbitCreature(), world, spawnX, spawnY);
                 }
             }
         }
@@ -708,7 +747,7 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>切到下一个可投放类型（到末尾回到开头）。</summary>
+        /// <summary>切到下一个可投放项（粒子类型之后接动物物种，到末尾回到开头）。</summary>
         public void CycleType()
         {
             if (_placeable.Length == 0)
@@ -716,7 +755,7 @@ namespace TapTap2026.Game
                 return;
             }
 
-            Select((_cursor + 1) % _placeable.Length);
+            Select((_cursor + 1) % SelectionCount);
         }
 
         /// <summary>
@@ -851,9 +890,16 @@ namespace TapTap2026.Game
         /// 固 / 液的一格，**或另一格火**（投放层允许火链互相锚定，圆刷贴地时能连锁铺满整团火；
         /// 物理燃烧的附着物**不含火**）。不合格的格被跳过（圆内部分投放，其余类型不受影响）。
         /// </summary>
-        /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0。</returns>
+        /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0；
+        /// 当前选中的是动物物种时恒返回 0（没有粒子可投，放置走 <see cref="SpawnCreature"/>）。</returns>
         public int Paint(ParticleWorld world, int cx, int cy)
         {
+            if (_creatureIndex >= 0)
+            {
+                // 当前选中的是动物物种：没有「当前粒子」可投，放置走 SpawnCreature（见 Update 的分支）。
+                return 0;
+            }
+
             if (_singlePlacement.Contains(_typeId))
             {
                 return PaintSingle(world, cx, cy);
@@ -885,6 +931,41 @@ namespace TapTap2026.Game
             }
 
             return written;
+        }
+
+        /// <summary>
+        /// 放置当前选中的动物物种（右键循环里排在粒子之后的那几项）：在 (cx, cy) 格生成一只**实体**、不写格。
+        /// 与「单颗投放」共用 <see cref="SinglePlacementCooldownSeconds"/> 冷却，因此按住左键不会每帧刷出一只动物。
+        /// 脚底中心落在格中心 <c>(cx + 0.5, cy)</c>；越界由 <see cref="CreatureWorld.Spawn"/> 夹回世界内。
+        /// </summary>
+        /// <remarks>
+        /// **不做地形校验**：点在石头里也会生成——物理层不解决 AABB 与地形的重叠，动物会原地卡住
+        /// （已知限制，与纯物理阶段的取舍一致；将来若要「不许生成在实体内」，在这里加判据即可）。
+        /// 本方法不消耗世界随机流（动物层有自己的随机流），也不受粒子白名单 / 阶段投放名单约束。
+        /// </remarks>
+        /// <returns>真的生成了返回 true；当前选中的不是动物、没有动物世界或冷却未到返回 false。</returns>
+        public bool SpawnCreature(ParticleWorld world, int cx, int cy)
+        {
+            if (_creatureIndex < 0 || world == null)
+            {
+                return false;
+            }
+
+            CreatureWorld creatures = _driver != null ? _driver.Creatures : null;
+            if (creatures == null)
+            {
+                return false;
+            }
+
+            // unscaledTime：冷却按真实时间流逝，暂停（Simulate = false）时也照常计时（同 PaintSingle）。
+            if (Time.unscaledTime - _lastSinglePlacementTime < SinglePlacementCooldownSeconds)
+            {
+                return false;
+            }
+
+            _lastSinglePlacementTime = Time.unscaledTime;
+            creatures.Spawn(CreatureFactories[_creatureIndex](), world, cx + 0.5f, cy);
+            return true;
         }
 
         /// <summary>
@@ -1110,24 +1191,41 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>选中第 <paramref name="index"/> 个可投放类型，并重建 HUD 文本。</summary>
+        /// <summary>选中第 <paramref name="index"/> 项（先粒子类型、后动物物种），并重建 HUD 文本。</summary>
         private void Select(int index)
         {
             _cursor = index;
-            _typeId = _placeable[index];
+
+            if (index < _placeable.Length)
+            {
+                _creatureIndex = -1;
+                _typeId = _placeable[index];
+            }
+            else
+            {
+                _creatureIndex = index - _placeable.Length;
+            }
+
             RefreshHud();
         }
 
-        /// <summary>按当前类型与半径重建 HUD 文本与色块颜色。</summary>
+        /// <summary>按当前选中项与半径重建 HUD 文本与色块颜色（动物项显示物种名与「单只」）。</summary>
         private void RefreshHud()
         {
+            if (_creatureIndex >= 0)
+            {
+                _hudColor = _creatureColors[_creatureIndex];
+                _hudText = $"{_creatureNames[_creatureIndex]}  {_cursor + 1}/{SelectionCount}  单只";
+                return;
+            }
+
             ParticleType type = ParticleRegistry.Types[_typeId];
             ParticleTypeInfo info = type.Info;
 
             _hudColor = info.Palette[0];
             string brush = _singlePlacement.Contains(_typeId) ? "单颗" : $"r={BrushRadius}";
             string species = _typeId == ParticleIds.TreeSeed ? "  " + TreeSpecies.NameOf(_treeSpecies) : string.Empty;
-            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{_placeable.Length}{species}  {brush}";
+            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{SelectionCount}{species}  {brush}";
         }
 
         /// <summary>类型的显示名：优先 <see cref="ParticleTypeInfo.DebugName"/>，没填则回退类名。</summary>

@@ -7,7 +7,7 @@ namespace TapTap2026.Tests
     /// 动物实体层（<see cref="CreatureWorld"/> / <see cref="RabbitCreature"/>）的物理骨架测试：
     /// 重力下落与落地吸附、静置的逐位稳定、淹没判定与水中缓沉、碰撞白名单（草不挡动物 / 石头挡）、
     /// 水平碰撞与边界夹取、动物层对世界随机流的零消耗、同种子确定性重放、越界生成的边界安全、
-    /// 死亡清扫与事件契约、生成事件与坐标夹取。
+    /// 死亡清扫与事件契约、生成事件与坐标夹取，以及鱼的物种差异（浮力 > 重力 ⇒ 水中上浮到水面、离水照落）。
     /// </summary>
     /// <remarks>
     /// 碰撞白名单按 <see cref="ParticleIds"/> 常量比对（沙 / 石头 / 土 / 湿土 / 腐殖土 / 湿润腐殖土 / 水），
@@ -484,6 +484,62 @@ namespace TapTap2026.Tests
             Assert.AreEqual(rabbit.Y, rabbit.PrevY, "生成时 Prev 应与 Cur 一致");
             Assert.IsTrue(rabbit.Alive, "生成的实体应存活");
             Assert.AreEqual(1, creatures.Count, "生成的实体应已入列");
+        }
+
+        // ============================== 鱼（水生物种） ==============================
+
+        /// <summary>
+        /// 水中的鱼**上浮**：水柱第 0..15 行，鱼从 Y = 2 出发，若干帧后应升到水面附近并停在那里——
+        /// 净浮力（+0.09）大于重力（0.08），这是「浮力 > 重力」这条设计不变量的可观察后果。
+        /// 同时断言它不会冲出水柱：身体中心一离开水格，浮力消失，只剩重力把它拉回。
+        /// </summary>
+        [Test]
+        public void Buoyancy_FishRisesThroughWaterAndStopsAtSurface()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 2f);
+
+            float startY = fish.Y;
+            float peakY = startY;
+            for (int i = 0; i < 1200; i++)
+            {
+                StepFrame(world, creatures);
+                if (fish.Y > peakY)
+                {
+                    peakY = fish.Y;
+                }
+            }
+
+            // 水格是第 0..15 行，水面 = 第 15 行顶面（y = 16）。身体中心在水里的条件是 floor(Y + 0.25) <= 15。
+            Assert.Greater(fish.Y, startY + 10f, "鱼应自水中持续上浮（浮力大于重力），而不是原地不动或下沉");
+            Assert.GreaterOrEqual(fish.Y, 14.5f, "鱼应到达水面附近");
+            Assert.LessOrEqual(peakY, 16.5f, "鱼不应冲出水柱太远——离开水格后没有浮力");
+            Assert.AreEqual(1, creatures.Count, "上浮过程中鱼不应被清扫掉");
+        }
+
+        /// <summary>
+        /// 离水的鱼像普通重物一样落下，落到沙面顶（第 3 行之上 → Y = 4）并判为着地、竖直速度归零——
+        /// 鱼的水性行为来自「水里才有浮力」这一条，而不是无条件悬停。
+        /// </summary>
+        [Test]
+        public void OutOfWater_FishFallsAndRestsOnSandTop()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 3, Sand);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 12f);
+
+            for (int i = 0; i < 200; i++)
+            {
+                StepFrame(world, creatures);
+            }
+
+            Assert.AreEqual(4f, fish.Y, Tol, "鱼应落在沙面顶（第 3 行之上）");
+            Assert.AreEqual(0f, fish.VelocityY, Tol, "落地后竖直速度应归零");
+            Assert.IsTrue(fish.IsGrounded, "落地后应判为着地");
+            Assert.IsFalse(fish.IsSubmerged, "空气里不该判为淹没");
         }
     }
 }
