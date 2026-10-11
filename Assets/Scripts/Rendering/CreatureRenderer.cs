@@ -6,8 +6,8 @@ using UnityEngine;
 namespace TapTap2026.Rendering
 {
     /// <summary>
-    /// 动物实体层渲染：每只 <see cref="Creature"/> 一个子 GameObject + <see cref="SpriteRenderer"/>，
-    /// sprite 是运行时生成的 1×1 白色纹理（拉成碰撞盒大小）——真美术接入前先把实体看得见。
+    /// 动物实体层渲染：每只 <see cref="Creature"/> 一个子 GameObject + <see cref="SpriteRenderer"/>。
+    /// 已接线的物种（兔子经 <see cref="_rabbitIdleFrames"/>）播真 sprite 帧序列；未接线的退回运行时生成的 1×1 白色占位块（染占位色、拉成碰撞盒）。
     /// </summary>
     /// <remarks>
     /// <para>与 <see cref="ParticleRenderer"/>「整张网格一个 quad」不同：实体数量少、位置是连续浮点，
@@ -34,7 +34,20 @@ namespace TapTap2026.Rendering
         {
             public SpriteRenderer Renderer;
             public int SeenFrame;
+            /// <summary>真 sprite 动画帧（null = 占位模式：白块染占位色、拉成碰撞盒）。</summary>
+            public Sprite[] Frames;
+            /// <summary>脚底（X, Y）到 sprite 锚点的竖直偏移：占位 sprite pivot 居中 = 半高；切片 pivot 在底边 = 0。</summary>
+            public float PivotLift;
         }
+
+        /// <summary>兔子 idle 动画帧（Sprite Editor 切片，pivot 底部中心）。为空或未接线时兔子退回占位块。</summary>
+        [SerializeField] private Sprite[] _rabbitIdleFrames;
+
+        /// <summary>idle 动画帧率（帧/秒）：2 = 每帧 500ms。表现层播放，不进模拟、不影响确定性。</summary>
+        [SerializeField] private float _idleFps = 2f;
+
+        /// <summary>真 sprite 的放大倍数：16 = 1 源像素恰好渲染成 1 格（与世界纹理的 texel 网格对齐，Point 过滤下不糊）。</summary>
+        [SerializeField] private float _spriteScale = 16f;
 
         private ParticleSimulationDriver _driver;
         private CreatureWorld _trackedWorld;
@@ -48,6 +61,8 @@ namespace TapTap2026.Rendering
         private int _frame;
         private int _trackedLogicTicks = -1;
         private float _stepTime;
+
+        private float _animTime;
 
         private void Awake()
         {
@@ -73,6 +88,7 @@ namespace TapTap2026.Rendering
                 DestroyAllViews();
                 _trackedWorld = world;
                 _trackedLogicTicks = -1;
+                _animTime = 0f;
             }
 
             // 逻辑帧计数变化即一个新逻辑帧落定，重置插值计时。暂停时不变化，alpha 因此饱和到 1。
@@ -81,6 +97,12 @@ namespace TapTap2026.Rendering
             {
                 _trackedLogicTicks = logicTicks;
                 _stepTime = Time.time;
+            }
+
+            // 动画时钟只随未暂停的真实时间走：暂停时帧索引冻结，与插值饱和同一语义。
+            if (!_driver.Paused)
+            {
+                _animTime += Time.deltaTime;
             }
 
             float alpha = Mathf.Clamp01((Time.time - _stepTime) * _driver.LogicRate);
@@ -99,11 +121,18 @@ namespace TapTap2026.Rendering
 
                 view.SeenFrame = _frame;
 
-                // 位置 = 碰撞盒底边中点（X, Y）先插值，再上抬半高换算到 sprite 中心。
-                view.Renderer.transform.position = new Vector3(
+                // 位置 = 碰撞盒底边中点（X, Y）先插值，再上抬到 sprite 锚点（占位 pivot 居中抬半高、切片 pivot 在底边不抬）。
+                Transform childTransform = view.Renderer.transform;
+                childTransform.position = new Vector3(
                     Mathf.Lerp(creature.PrevX, creature.X, alpha),
-                    Mathf.Lerp(creature.PrevY, creature.Y, alpha) + creature.Height * 0.5f,
+                    Mathf.Lerp(creature.PrevY, creature.Y, alpha) + view.PivotLift,
                     CreatureZ);
+
+                if (view.Frames != null)
+                {
+                    view.Renderer.sprite = view.Frames[(int)(_animTime * _idleFps) % view.Frames.Length];
+                    view.Renderer.flipX = creature.Facing < 0;
+                }
             }
 
             // 销视图：本帧没扫到（已被 CreatureWorld 清扫移除）或已死亡的实体。先收集再删，避免边遍历边改字典。
@@ -140,20 +169,33 @@ namespace TapTap2026.Rendering
             }
         }
 
-        /// <summary>新建一只实体的视图：DontSave 的子物体 + SpriteRenderer，尺寸取碰撞盒，颜色取占位色。</summary>
+        /// <summary>新建一只实体的视图：DontSave 的子物体 + SpriteRenderer。
+        /// 兔子且 idle 帧已接线时用真 sprite（原生像素尺寸、pivot 底边）；否则退回占位白块（染占位色、拉成碰撞盒）。</summary>
         private View CreateView(Creature creature)
         {
             // 子物体整条渲染链都是运行期生成的、不被任何序列化字段引用：必须 DontSave，
             // 否则保存场景会把这个空壳烘进 .unity 文件（同 ParticleRenderer.CreateQuad）。
             var child = new GameObject("Creature") { hideFlags = HideFlags.DontSave };
             child.transform.SetParent(transform, false);
-            child.transform.localScale = new Vector3(creature.Width, creature.Height, 1f);
 
             var renderer = child.AddComponent<SpriteRenderer>();
+
+            if (creature is RabbitCreature
+                && _rabbitIdleFrames != null
+                && _rabbitIdleFrames.Length > 0
+                && _rabbitIdleFrames[0] != null)
+            {
+                // 真 sprite：切片带底部中心 pivot，按 _spriteScale 放大（16 倍时 1 源像素 = 1 格），不染色。
+                child.transform.localScale = new Vector3(_spriteScale, _spriteScale, 1f);
+                renderer.sprite = _rabbitIdleFrames[0];
+                return new View { Renderer = renderer, Frames = _rabbitIdleFrames };
+            }
+
+            child.transform.localScale = new Vector3(creature.Width, creature.Height, 1f);
             renderer.sprite = EnsurePlaceholderSprite();
             renderer.color = creature.PlaceholderColor;
 
-            return new View { Renderer = renderer };
+            return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f };
         }
 
         /// <summary>懒建共享的占位 sprite：1×1 白纹理 + pivot 居中 + pixelsPerUnit = 1，因此 localScale 即世界尺寸（格）。</summary>
