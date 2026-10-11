@@ -38,6 +38,8 @@ namespace TapTap2026.Rendering
             public Sprite[] Frames;
             /// <summary>脚底（X, Y）到 sprite 锚点的竖直偏移：占位 sprite pivot 居中 = 半高；切片 pivot 在底边 = 0。</summary>
             public float PivotLift;
+            /// <summary>未调光的基准色（占位 = 占位色；真 sprite = 白）。每帧乘昼夜亮度后写入 SpriteRenderer。</summary>
+            public Color BaseColor;
         }
 
         /// <summary>兔子 idle 动画帧（Sprite Editor 切片，pivot 底部中心）。为空或未接线时兔子退回占位块。</summary>
@@ -48,6 +50,8 @@ namespace TapTap2026.Rendering
 
         /// <summary>真 sprite 的放大倍数：16 = 1 源像素恰好渲染成 1 格（与世界纹理的 texel 网格对齐，Point 过滤下不糊）。</summary>
         [SerializeField] private float _spriteScale = 16f;
+
+        private ParticleRenderer _particles;
 
         private ParticleSimulationDriver _driver;
         private CreatureWorld _trackedWorld;
@@ -67,6 +71,7 @@ namespace TapTap2026.Rendering
         private void Awake()
         {
             _driver = GetComponent<ParticleSimulationDriver>();
+            _particles = GetComponent<ParticleRenderer>();
         }
 
         private void Update()
@@ -107,6 +112,13 @@ namespace TapTap2026.Rendering
 
             float alpha = Mathf.Clamp01((Time.time - _stepTime) * _driver.LogicRate);
 
+            // 昼夜调光：与 ParticleRenderer 同一公式同一配置面（NightBrightness 由 ParticleLightDriver 推到 ParticleRenderer，
+            // 这里直接读它的当前值），实体与粒子/云一起按 Lerp(夜晚亮度, 1, Daylight) 变暗。粒子世界缺失时按全亮。
+            ParticleWorld particleWorld = _driver.World;
+            float brightness = particleWorld != null && _particles != null
+                ? Mathf.Lerp(_particles.NightBrightness, 1f, particleWorld.Light.Daylight)
+                : 1f;
+
             _frame++;
             IReadOnlyList<Creature> creatures = world.Creatures;
             int count = creatures.Count;
@@ -133,6 +145,9 @@ namespace TapTap2026.Rendering
                     view.Renderer.sprite = view.Frames[(int)(_animTime * _idleFps) % view.Frames.Length];
                     view.Renderer.flipX = creature.Facing < 0;
                 }
+
+                Color baseColor = view.BaseColor;
+                view.Renderer.color = new Color(baseColor.r * brightness, baseColor.g * brightness, baseColor.b * brightness, baseColor.a);
             }
 
             // 销视图：本帧没扫到（已被 CreatureWorld 清扫移除）或已死亡的实体。先收集再删，避免边遍历边改字典。
@@ -188,14 +203,14 @@ namespace TapTap2026.Rendering
                 // 真 sprite：切片带底部中心 pivot，按 _spriteScale 放大（16 倍时 1 源像素 = 1 格），不染色。
                 child.transform.localScale = new Vector3(_spriteScale, _spriteScale, 1f);
                 renderer.sprite = _rabbitIdleFrames[0];
-                return new View { Renderer = renderer, Frames = _rabbitIdleFrames };
+                return new View { Renderer = renderer, Frames = _rabbitIdleFrames, BaseColor = Color.white };
             }
 
             child.transform.localScale = new Vector3(creature.Width, creature.Height, 1f);
             renderer.sprite = EnsurePlaceholderSprite();
             renderer.color = creature.PlaceholderColor;
 
-            return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f };
+            return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f, BaseColor = creature.PlaceholderColor };
         }
 
         /// <summary>懒建共享的占位 sprite：1×1 白纹理 + pivot 居中 + pixelsPerUnit = 1，因此 localScale 即世界尺寸（格）。</summary>
