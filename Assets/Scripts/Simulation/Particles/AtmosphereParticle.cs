@@ -9,7 +9,8 @@ namespace TapTap2026.Simulation
     //        bit5-7 空闲。读写记忆位用 CellFlags 的掩码常量：读取 DriftDirectionMask、清除
     //        DriftDirectionClearMask、写入 |，绝不整体赋值 flags（会破坏 bit0 处理标记）。
     // 邻居查询范围：四邻（浮力比温）、上下/斜向各 1 格、同行左右各 1 格；热压流的「连片」判据读同行左右各 2 格
-    // 交互的 ParticleIds：无 —— 只比温度，不特判类型
+    // 交互的 ParticleIds：**Lightning**（随机刻起爆：见 OnRandomTick 与 LightningParticle）——
+    //   除此之外只比温度、不特判类型
     //
     // 行为：浮力（比四邻热 → 升，冷 → 沉）→ 水平热压流（流向暖侧）。
     //       热由物质携带：空气 Swap 时热量跟着走，这就是对流；低空冷空气流向暖的陆地 = 海风。
@@ -111,7 +112,12 @@ namespace TapTap2026.Simulation
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 大气暂无随机刻行为：混合由湿度场扩散与温度定向平流负责，不要往这里塞随机换位（那会注入云层抖动）。
+            // 雷电起爆点：放电发生在空气里，而随机刻只会命中非空气、非静态的格——被粒子化的「空气」
+            // 正是大气，因此雷电的起爆门挂在这里（实现见 LightningParticle.TryStrike：2% 门 +
+            // 半径 3 圆盘总湿度资格 + 铺雷电主干与落点一团火）。
+            // 除雷电之外，大气**没有**随机刻行为：混合由湿度场扩散与温度定向平流负责，
+            // 不要往这里塞随机换位（那会注入云层抖动）。
+            LightningParticle.TryStrike(world, x, y);
         }
 
         public void OnSpawn(ParticleWorld world, int x, int y)

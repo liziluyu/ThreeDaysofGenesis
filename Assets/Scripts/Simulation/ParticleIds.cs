@@ -134,5 +134,15 @@ namespace TapTap2026.Simulation
         /// 被挡随机序试左右）、孤立永久持水；水迁移时带 T(源)×1.2 的热一起走、两侧温度不跳。
         /// 不可在编辑器中选择。**只能追加到清单末尾**。</summary>
         public static ushort WetHumusSoil;
+
+        /// <summary>雷电。气体（密度 1.0 —— 最重的气体，环境大气推不动它），**不可手刷**：
+        /// 只能由「随机刻命中空气粒子」起爆——<see cref="LightningParticle.TryStrike"/> 先摇 2% 门、
+        /// 再要求半径 3 圆盘（29 格）总湿度 ≥ 3.0（厚雨云），然后把自本格向下的一整条主干铺成雷电
+        /// （逐行按坐标哈希 ±1 抖动、遇固 / 液即止 = 落点），并在落点上方那排创建一团火
+        /// （<see cref="ParticleIds.Fire"/>）。`Cell.shade` 即闪光档（0 = 最亮），每逻辑帧推进一档、
+        /// 末档（<see cref="LightningParticle.LifetimeTicks"/> = 4 ≈ 0.2 秒）即 Clear——**不占用任何 flags 私有位**。
+        /// 热学参数与大气同值（不注热 / 不挡光），放电的热效应由落点那团火负责。
+        /// **只能追加到清单末尾**。</summary>
+        public static ushort Lightning;
     }
 }
