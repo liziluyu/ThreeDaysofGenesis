@@ -123,6 +123,14 @@ namespace TapTap2026.Simulation
         /// </summary>
         public readonly bool HasLogic;
 
+        /// <summary>
+        /// 是否在渲染时给本类型的连片区域描边（默认 <c>false</c>）。纯表现层标志：
+        /// 只被 <c>ParticlePixelBuffer.Fill</c> 读取——本格四邻中有「显示为背景」的格
+        /// （空气 / 未注册 / 透明调色板类型，越界视同空气）时，本格颜色按描边系数调暗。
+        /// 不参与模拟、不影响确定性，描边色 = 基底色 × 固定系数，无逐类型配置。
+        /// </summary>
+        public readonly bool HasOutline;
+
         public ParticleTypeInfo(
             ParticleTags tags,
             float density,
@@ -138,7 +146,8 @@ namespace TapTap2026.Simulation
             string debugName,
             float lightAbsorption = 1f,
             MotionReadBox motionReadReach = default,
-            bool hasLogic = true)
+            bool hasLogic = true,
+            bool hasOutline = false)
         {
             Tags = tags;
             Density = density;
@@ -155,6 +164,7 @@ namespace TapTap2026.Simulation
             LightAbsorption = lightAbsorption;
             MotionReadReach = motionReadReach.IsUnspecified ? MotionReadBox.Default : motionReadReach;
             HasLogic = hasLogic;
+            HasOutline = hasOutline;
         }
     }
 }

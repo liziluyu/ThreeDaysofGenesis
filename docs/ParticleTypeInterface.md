@@ -1226,6 +1226,11 @@ if (_simulate)   // Pause()/Resume() 翻转它
   `ParticlePixelBuffer.Fill(world, _pixels, background, brightness)`。**亮度只作用于粒子与云**，
   天空走配置的颜色（默认 `#2A223A` / `#CCE5FF`）。纯映射、可脱离 GPU 断言；
   `NightBrightness = 1` 且昼夜色相同即等价于「不做昼夜表现」。
+- **描边（可选表现层标志）**：`ParticleTypeInfo.HasOutline`（构造参数 `hasOutline`，默认 `false`）为 `true` 的类型，
+  在 `Fill` 里做四邻判定——任一邻居「显示为背景」（空气 / 未注册 / `null` 槽位 / 调色板 alpha==0 的透明类型；
+  **越界视同空气**，网格边缘的暴露面也描边）时，本格基底色乘以 `ParticlePixelBuffer.OutlineFactor`（0.55）调暗。
+  只作用于基底色：云 / 热力叠加 / 昼夜变暗照常在其上进行（描边格仍算 `painted`）。纯 CPU 映射、零 GPU 增量，
+  不参与模拟、不影响确定性。当前启用：**石头 / 沙 / 土**。
 - 目标对象：**1 个 quad**。运行时用代码建一个 4 顶点 mesh（不是 `GameObject.CreatePrimitive`，避免附带 Collider），挂在子物体上，顶点范围就是 `(0,0)`–`(Width, Height)` 世界单位，1 cell = 1 unit。
 - 材质：优先 `Universal Render Pipeline/2D/Sprite-Unlit-Default`，回退 `Sprites/Default`；都找不到时报错并**停止上屏**（不再每帧刷日志）。可在 Inspector 覆盖。**发布包要注意 shader 剥离**，届时把该 shader 加入 Always Included Shaders 或直接指定材质资产。
   - Inspector 指定的 `_material` 是共享资产：运行期一律 `new Material(_material)` 取副本，**绝不改写资产本身**；销毁/重建纹理前先把 `mainTexture` 置 null，避免材质持有 Missing 引用。

@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using TapTap2026.Simulation;
+using UnityEngine;
 
 namespace TapTap2026.Tests
 {
@@ -163,6 +164,130 @@ namespace TapTap2026.Tests
 
             Assert.GreaterOrEqual(rows, 2, "沙堆应不止一行高");
             Assert.Less(previous, baseRow, "堆顶必须严格窄于堆底：否则沙子只是平摊，没有形成三角堆");
+        }
+
+        // ============================== 渲染描边（HasOutline → ParticlePixelBuffer 调暗） ==============================
+
+        /// <summary>该格按调色板与 shade 应显示的基底色（未描边、未变暗）。</summary>
+        private static Color32 BaseColorAt(ParticleWorld world, int x, int y)
+        {
+            Cell cell = world.GetCell(x, y);
+            return ParticleRegistry.Types[cell.typeId].Info.Palette[cell.shade];
+        }
+
+        private static Color32 Darkened(Color32 color)
+        {
+            return new Color32(
+                (byte)(color.r * ParticlePixelBuffer.OutlineFactor),
+                (byte)(color.g * ParticlePixelBuffer.OutlineFactor),
+                (byte)(color.b * ParticlePixelBuffer.OutlineFactor),
+                color.a);
+        }
+
+        /// <summary>
+        /// 描边的核心不变量：与空气交界的格调暗、四邻全是实物的中心格保持基底色。
+        /// 3×3 沙块放在 5×5 世界中央，角格 (1,1) 邻空气 → 描边；中心 (2,2) 被沙围满 → 原色。
+        /// </summary>
+        [Test]
+        public void Outline_AirBoundaryCellIsDarkened_InteriorCellIsNot()
+        {
+            ParticleWorld world = new ParticleWorld(5, 5, 7u);
+            for (int y = 1; y <= 3; y++)
+            {
+                for (int x = 1; x <= 3; x++)
+                {
+                    world.Set(x, y, Sand);
+                }
+            }
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Assert.AreEqual(BaseColorAt(world, 2, 2), pixels[world.Index(2, 2)], "中心格四邻全是沙，不应描边");
+            Assert.AreEqual(Darkened(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "角格与空气交界，应调暗");
+        }
+
+        /// <summary>石 / 沙 / 土三种生产类型都带描边标志：各自孤立放置在空气里时都被调暗。</summary>
+        [Test]
+        public void Outline_StoneSandSoil_AllDarkenedAtAirBoundary()
+        {
+            ParticleWorld world = new ParticleWorld(5, 3, 7u);
+            world.Set(1, 1, Stone);
+            world.Set(2, 1, Sand);
+            world.Set(3, 1, Soil);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            for (int x = 1; x <= 3; x++)
+            {
+                Assert.AreEqual(Darkened(BaseColorAt(world, x, 1)), pixels[world.Index(x, 1)], $"x={x} 的粒子应与空气交界而调暗");
+            }
+        }
+
+        /// <summary>没带 HasOutline 的类型（水）即使与空气交界也保持基底色——描边是逐类型的显式选择。</summary>
+        [Test]
+        public void Outline_TypesWithoutFlag_AreNotDarkened()
+        {
+            ParticleWorld world = new ParticleWorld(3, 3, 7u);
+            world.Set(1, 1, ParticleIds.Water);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Assert.AreEqual(BaseColorAt(world, 1, 1), pixels[world.Index(1, 1)], "水没有描边标志，与空气交界也不应调暗");
+        }
+
+        /// <summary>网格越界视同空气：贴在世界边缘的粒子是暴露面，照样描边。</summary>
+        [Test]
+        public void Outline_WorldEdgeCountsAsBackground()
+        {
+            ParticleWorld world = new ParticleWorld(4, 3, 7u);
+            world.Set(0, 0, Sand);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Assert.AreEqual(Darkened(BaseColorAt(world, 0, 0)), pixels[world.Index(0, 0)], "贴世界边缘的沙应描边");
+        }
+
+        /// <summary>透明调色板的类型（隐形大气）显示为背景：与它相邻与与空气相邻等价，照样触发描边。</summary>
+        [Test]
+        public void Outline_TransparentAtmosphereCountsAsBackground()
+        {
+            ParticleWorld world = new ParticleWorld(3, 3, 7u);
+            for (int y = 0; y < 3; y++)
+            {
+                for (int x = 0; x < 3; x++)
+                {
+                    world.Set(x, y, ParticleIds.Atmosphere);
+                }
+            }
+
+            world.Set(1, 1, Sand);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Assert.AreEqual(Darkened(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "被隐形大气包围等同被空气包围，应描边");
+        }
+
+        /// <summary>描边格仍算「画了实物」：夜晚亮度变暗照常作用在描边色上（不会在夜里露出亮边）。</summary>
+        [Test]
+        public void Outline_DimsWithNightBrightness()
+        {
+            ParticleWorld world = new ParticleWorld(3, 3, 7u);
+            world.Set(1, 1, Sand);
+
+            var day = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, day, new Color32(9, 8, 7, 255));
+            Color32 dayEdge = day[world.Index(1, 1)]; // 已是描边色
+
+            var night = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, night, new Color32(9, 8, 7, 255), 0.5f);
+
+            Assert.AreEqual((byte)(dayEdge.r / 2), night[world.Index(1, 1)].r, "夜晚：描边色也要减半");
+            Assert.AreEqual((byte)(dayEdge.g / 2), night[world.Index(1, 1)].g);
         }
     }
 }

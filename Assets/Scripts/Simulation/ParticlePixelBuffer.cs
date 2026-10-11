@@ -16,6 +16,12 @@ namespace TapTap2026.Simulation
         private static readonly Color32 CloudColor = new Color32(244, 248, 252, 255);
 
         /// <summary>
+        /// 描边调暗系数：带 <see cref="ParticleTypeInfo.HasOutline"/> 的格，四邻中有「显示为背景」的格
+        /// （空气 / 透明类型，越界视同空气）时，基底色乘上它。纯表现层，无逐类型配置。
+        /// </summary>
+        public const float OutlineFactor = 0.55f;
+
+        /// <summary>
         /// 按 typeId 查调色板、按 shade 取色，一次性填满缓冲。
         /// **湿度足够高的空气（云）**再按湿度在底色与 <see cref="CloudColor"/> 之间插值——
         /// 云不是一种粒子，而是"很湿的空气"，因此它的显示由湿度场给出（见 <see cref="HumidityField"/>）。
@@ -77,9 +83,34 @@ namespace TapTap2026.Simulation
             // 低于阈值完全不显示——否则近海面那种常年偏湿的空气会给整片天空蒙一层灰。
             float visibleSpan = HumidityField.CloudFullHumidity - HumidityField.VisibleThreshold;
 
+            int width = world.Width;
+            int height = world.Height;
+            int x = 0;
+            int y = 0;
             for (int i = 0; i < cells.Length; i++)
             {
                 Color32 color = BaseColor(cells[i], types, background, out bool painted);
+
+                // 描边：带 HasOutline 的格，四邻中有「显示为背景」的格（含越界）时按 OutlineFactor 调暗。
+                // 在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
+                // painted 恒为真（底色已画出实物），描边格因此照常参与昼夜变暗。
+                if (painted)
+                {
+                    ushort id = cells[i].typeId;
+                    if (id < types.Length)
+                    {
+                        ParticleType type = types[id];
+                        if (type != null && type.Info.HasOutline
+                            && NeighbourShowsBackground(cells, types, width, height, x, y))
+                        {
+                            color = new Color32(
+                                (byte)(color.r * OutlineFactor),
+                                (byte)(color.g * OutlineFactor),
+                                (byte)(color.b * OutlineFactor),
+                                color.a);
+                        }
+                    }
+                }
 
                 float cloud = (humidity.GetAt(i) - HumidityField.VisibleThreshold) / visibleSpan;
                 if (cloud > 0f)
@@ -108,7 +139,48 @@ namespace TapTap2026.Simulation
                 }
 
                 pixels[i] = color;
+
+                if (++x == width)
+                {
+                    x = 0;
+                    y++;
+                }
             }
+        }
+
+        /// <summary>描边判据：四邻（上下左右）中是否至少有一格「显示为背景」。越界视同空气（网格边缘的暴露面也描边）。</summary>
+        private static bool NeighbourShowsBackground(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        {
+            return DisplaysAsBackground(cells, types, width, height, x - 1, y)
+                || DisplaysAsBackground(cells, types, width, height, x + 1, y)
+                || DisplaysAsBackground(cells, types, width, height, x, y - 1)
+                || DisplaysAsBackground(cells, types, width, height, x, y + 1);
+        }
+
+        /// <summary>与 <see cref="BaseColor"/> 同一套「背景」语义：空气 / 未注册 / 空槽位 / 透明调色板 → 背景；越界 → 空气。</summary>
+        private static bool DisplaysAsBackground(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        {
+            if ((uint)x >= (uint)width || (uint)y >= (uint)height)
+            {
+                return true;
+            }
+
+            Cell cell = cells[y * width + x];
+            ushort id = cell.typeId;
+            if (id == ParticleRegistry.AirTypeId || id >= types.Length)
+            {
+                return true;
+            }
+
+            ParticleType type = types[id];
+            if (type == null)
+            {
+                return true;
+            }
+
+            Color32[] palette = type.Info.Palette;
+            int shade = cell.shade;
+            return (shade < palette.Length ? palette[shade] : palette[0]).a == 0;
         }
 
         /// <summary>单格的静态颜色：空气 / 未注册 id / 空槽位 → 背景色，否则查该类型调色板。

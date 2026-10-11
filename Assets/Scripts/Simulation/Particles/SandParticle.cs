@@ -36,7 +36,8 @@ namespace TapTap2026.Simulation
             debugName: nameof(SandParticle),
             // 运动阅读盒：摩擦/粘性 0 → 净空 1，只读正下 1 格与斜下 1 格 ⇒ (1, 0, 1)。
             motionReadReach: new MotionReadBox(x: 1, up: 0, down: 1),
-            hasLogic: false); // OnLogic 严格空体：沙只有运动
+            hasLogic: false, // OnLogic 严格空体：沙只有运动
+            hasOutline: true); // 渲染描边：与空气交界的沙格调暗
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
