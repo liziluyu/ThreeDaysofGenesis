@@ -102,7 +102,8 @@ namespace TapTap2026.Simulation
             debugName: nameof(WaterParticle),
             // 运动阅读盒：TryFlowSide 的「落差视野」逐格扫到 x ± MaxFlowSpread(= 5) 并读 (scanX, y−1)
             // 是否有气体；TryLiquidConvect 读 (x, y+1) 是否也是液体 ⇒ (5, 1, 1)。
-            motionReadReach: new MotionReadBox(x: 5, up: 1, down: 1));
+            motionReadReach: new MotionReadBox(x: 5, up: 1, down: 1),
+            hasSurfaceHighlight: true); // 渲染提亮液面：正上方不是液体的水格向浅蓝白插值
 
         /// <summary>
         /// 水蒸发：**提升附近的湿度**（以本格为中心、半径 <paramref name="radius"/> 的气体/空格，总量与

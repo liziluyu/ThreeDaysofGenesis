@@ -126,10 +126,18 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// 是否在渲染时给本类型的连片区域描边（默认 <c>false</c>）。纯表现层标志：
         /// 只被 <c>ParticlePixelBuffer.Fill</c> 读取——本格四邻中有「显示为背景」的格
-        /// （空气 / 未注册 / 透明调色板类型，越界视同空气）时，本格颜色按描边系数调暗。
-        /// 不参与模拟、不影响确定性，描边色 = 基底色 × 固定系数，无逐类型配置。
+        /// （空气 / 未注册 / 透明调色板类型，越界视同空气）**或带 Liquid 标签的格**（固液交界）时，
+        /// 本格颜色按描边系数调暗。不参与模拟、不影响确定性，描边色 = 基底色 × 固定系数，无逐类型配置。
         /// </summary>
         public readonly bool HasOutline;
+
+        /// <summary>
+        /// 是否在渲染时提亮液面（默认 <c>false</c>）。纯表现层标志：只被 <c>ParticlePixelBuffer.Fill</c>
+        /// 读取——本格**正上方无实物**（非 Solid 非 Liquid：空气 / 气体算液面，被固体或液体压住不算；
+        /// 越界顶行算）时，基底色向固定的浅蓝白高光色插值。给液体类型用；对非液体类型没有意义。
+        /// 不参与模拟、不影响确定性。
+        /// </summary>
+        public readonly bool HasSurfaceHighlight;
 
         public ParticleTypeInfo(
             ParticleTags tags,
@@ -147,7 +155,8 @@ namespace TapTap2026.Simulation
             float lightAbsorption = 1f,
             MotionReadBox motionReadReach = default,
             bool hasLogic = true,
-            bool hasOutline = false)
+            bool hasOutline = false,
+            bool hasSurfaceHighlight = false)
         {
             Tags = tags;
             Density = density;
@@ -165,6 +174,7 @@ namespace TapTap2026.Simulation
             MotionReadReach = motionReadReach.IsUnspecified ? MotionReadBox.Default : motionReadReach;
             HasLogic = hasLogic;
             HasOutline = hasOutline;
+            HasSurfaceHighlight = hasSurfaceHighlight;
         }
     }
 }

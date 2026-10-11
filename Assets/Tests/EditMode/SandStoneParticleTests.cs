@@ -225,17 +225,17 @@ namespace TapTap2026.Tests
             }
         }
 
-        /// <summary>没带 HasOutline 的类型（水）即使与空气交界也保持基底色——描边是逐类型的显式选择。</summary>
+        /// <summary>两个渲染标志都没带的类型（草）即使与空气交界也保持基底色——描边与高光是逐类型的显式选择。</summary>
         [Test]
         public void Outline_TypesWithoutFlag_AreNotDarkened()
         {
             ParticleWorld world = new ParticleWorld(3, 3, 7u);
-            world.Set(1, 1, ParticleIds.Water);
+            world.Set(1, 1, ParticleIds.Grass);
 
             var pixels = new Color32[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
 
-            Assert.AreEqual(BaseColorAt(world, 1, 1), pixels[world.Index(1, 1)], "水没有描边标志，与空气交界也不应调暗");
+            Assert.AreEqual(BaseColorAt(world, 1, 1), pixels[world.Index(1, 1)], "草没有任何渲染标志，与空气交界也不应改色");
         }
 
         /// <summary>网格越界视同空气：贴在世界边缘的粒子是暴露面，照样描边。</summary>
@@ -288,6 +288,24 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual((byte)(dayEdge.r / 2), night[world.Index(1, 1)].r, "夜晚：描边色也要减半");
             Assert.AreEqual((byte)(dayEdge.g / 2), night[world.Index(1, 1)].g);
+        }
+
+        /// <summary>固液交界也描边：沙的右侧是水（不是空气），其余方向被石头围死——仍应调暗。</summary>
+        [Test]
+        public void Outline_LiquidBoundaryCellIsDarkened()
+        {
+            ParticleWorld world = new ParticleWorld(4, 3, 7u);
+            world.Set(1, 1, Sand);
+            world.Set(2, 1, ParticleIds.Water);
+            // 石头围死其余三个方向：它们不触发描边，唯一的描边来源就是水。
+            world.Set(0, 1, Stone);
+            world.Set(1, 0, Stone);
+            world.Set(1, 2, Stone);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Assert.AreEqual(Darkened(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "沙与水交界，应调暗");
         }
     }
 }

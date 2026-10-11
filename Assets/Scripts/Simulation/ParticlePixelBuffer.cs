@@ -17,9 +17,18 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 描边调暗系数：带 <see cref="ParticleTypeInfo.HasOutline"/> 的格，四邻中有「显示为背景」的格
-        /// （空气 / 透明类型，越界视同空气）时，基底色乘上它。纯表现层，无逐类型配置。
+        /// （空气 / 透明类型，越界视同空气）或带 Liquid 标签的格（固液交界）时，基底色乘上它。纯表现层，无逐类型配置。
         /// </summary>
         public const float OutlineFactor = 0.55f;
+
+        /// <summary>
+        /// 液面高光色：带 <see cref="ParticleTypeInfo.HasSurfaceHighlight"/> 的格、正上方不是液体时，
+        /// 基底色向它插值（<see cref="SurfaceHighlightFactor"/>）。非常浅的淡蓝白。纯表现层，无逐类型配置。
+        /// </summary>
+        public static readonly Color32 SurfaceHighlightColor = new Color32(200, 228, 245, 255);
+
+        /// <summary>液面高光的插值比例（0 = 原样，1 = 纯高光色）。</summary>
+        public const float SurfaceHighlightFactor = 0.6f;
 
         /// <summary>
         /// 按 typeId 查调色板、按 shade 取色，一次性填满缓冲。
@@ -91,23 +100,33 @@ namespace TapTap2026.Simulation
             {
                 Color32 color = BaseColor(cells[i], types, background, out bool painted);
 
-                // 描边：带 HasOutline 的格，四邻中有「显示为背景」的格（含越界）时按 OutlineFactor 调暗。
-                // 在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
+                // 描边：带 HasOutline 的格，四邻中有「显示为背景」的格（含越界）或是液体（固液交界）时
+                // 按 OutlineFactor 调暗。在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
                 // painted 恒为真（底色已画出实物），描边格因此照常参与昼夜变暗。
+                // 液面高光：带 HasSurfaceHighlight 的格，正上方无实物（液面）时向浅蓝白插值（同一轮判定，不另开 pass）。
                 if (painted)
                 {
                     ushort id = cells[i].typeId;
                     if (id < types.Length)
                     {
                         ParticleType type = types[id];
-                        if (type != null && type.Info.HasOutline
-                            && NeighbourShowsBackground(cells, types, width, height, x, y))
+                        if (type != null)
                         {
-                            color = new Color32(
-                                (byte)(color.r * OutlineFactor),
-                                (byte)(color.g * OutlineFactor),
-                                (byte)(color.b * OutlineFactor),
-                                color.a);
+                            ParticleTypeInfo info = type.Info;
+                            if (info.HasOutline
+                                && NeighbourTriggersOutline(cells, types, width, height, x, y))
+                            {
+                                color = new Color32(
+                                    (byte)(color.r * OutlineFactor),
+                                    (byte)(color.g * OutlineFactor),
+                                    (byte)(color.b * OutlineFactor),
+                                    color.a);
+                            }
+                            else if (info.HasSurfaceHighlight
+                                && IsOpenSurface(cells, types, width, height, x, y))
+                            {
+                                color = Color32.Lerp(color, SurfaceHighlightColor, SurfaceHighlightFactor);
+                            }
                         }
                     }
                 }
@@ -148,17 +167,20 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>描边判据：四邻（上下左右）中是否至少有一格「显示为背景」。越界视同空气（网格边缘的暴露面也描边）。</summary>
-        private static bool NeighbourShowsBackground(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        /// <summary>描边判据：四邻（上下左右）中是否至少有一格触发描边（<see cref="TriggersOutline"/>）。</summary>
+        private static bool NeighbourTriggersOutline(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
         {
-            return DisplaysAsBackground(cells, types, width, height, x - 1, y)
-                || DisplaysAsBackground(cells, types, width, height, x + 1, y)
-                || DisplaysAsBackground(cells, types, width, height, x, y - 1)
-                || DisplaysAsBackground(cells, types, width, height, x, y + 1);
+            return TriggersOutline(cells, types, width, height, x - 1, y)
+                || TriggersOutline(cells, types, width, height, x + 1, y)
+                || TriggersOutline(cells, types, width, height, x, y - 1)
+                || TriggersOutline(cells, types, width, height, x, y + 1);
         }
 
-        /// <summary>与 <see cref="BaseColor"/> 同一套「背景」语义：空气 / 未注册 / 空槽位 / 透明调色板 → 背景；越界 → 空气。</summary>
-        private static bool DisplaysAsBackground(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        /// <summary>
+        /// 该格是否触发邻格的描边：「显示为背景」（与 <see cref="BaseColor"/> 同一套语义——空气 / 未注册 /
+        /// 空槽位 / 透明调色板，越界视同空气）或**带 Liquid 标签**（固液交界也描边）。
+        /// </summary>
+        private static bool TriggersOutline(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
         {
             if ((uint)x >= (uint)width || (uint)y >= (uint)height)
             {
@@ -178,9 +200,39 @@ namespace TapTap2026.Simulation
                 return true;
             }
 
-            Color32[] palette = type.Info.Palette;
+            ParticleTypeInfo info = type.Info;
+            if ((info.Tags & ParticleTags.Liquid) != 0)
+            {
+                return true;
+            }
+
+            Color32[] palette = info.Palette;
             int shade = cell.shade;
             return (shade < palette.Length ? palette[shade] : palette[0]).a == 0;
+        }
+
+        /// <summary>
+        /// 液面判据：本格正上方**不是实物**（非 Solid 非 Liquid）= 液面——空气 / 气体（含火）算液面，
+        /// 被固体盖住或被另一格液体压住都不算；越界顶行算（水漫到顶也有液面）。
+        /// 只被带 <see cref="ParticleTypeInfo.HasSurfaceHighlight"/> 的类型使用。
+        /// </summary>
+        private static bool IsOpenSurface(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        {
+            int ny = y + 1;
+            if (ny >= height)
+            {
+                return true;
+            }
+
+            Cell above = cells[ny * width + x];
+            ushort id = above.typeId;
+            if (id == ParticleRegistry.AirTypeId || id >= types.Length)
+            {
+                return true;
+            }
+
+            ParticleType type = types[id];
+            return type == null || (type.Info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) == 0;
         }
 
         /// <summary>单格的静态颜色：空气 / 未注册 id / 空槽位 → 背景色，否则查该类型调色板。

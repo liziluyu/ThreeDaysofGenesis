@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using TapTap2026.Simulation;
+using UnityEngine;
 
 namespace TapTap2026.Tests
 {
@@ -726,6 +727,50 @@ namespace TapTap2026.Tests
 
             Assert.Greater(water, soil,
                 $"夜间后段水面温度（{water:F2}）应高于土面温度（{soil:F2}）：对流本应把白天储进深水的热带回表面");
+        }
+
+        // ============================== 液面高光（渲染映射，HasSurfaceHighlight → ParticlePixelBuffer 提亮） ==============================
+
+        /// <summary>该格按调色板与 shade 应显示的基底色（未提亮、未变暗）。</summary>
+        private static Color32 WaterBaseColorAt(ParticleWorld world, int x, int y)
+        {
+            Cell cell = world.GetCell(x, y);
+            return world.Types[cell.typeId].Info.Palette[cell.shade];
+        }
+
+        /// <summary>
+        /// 液面不变量：正上方是空气的水格向浅蓝白插值（液面），被另一格水压住的格保持基底色（水下）。
+        /// </summary>
+        [Test]
+        public void SurfaceHighlight_TopWaterCellIsLightened_UnderwaterCellIsNot()
+        {
+            ParticleWorld world = CreateWorld(4, 4);
+            world.Set(2, 0, WaterId);
+            world.Set(2, 1, WaterId);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Color32 expected = Color32.Lerp(
+                WaterBaseColorAt(world, 2, 1),
+                ParticlePixelBuffer.SurfaceHighlightColor,
+                ParticlePixelBuffer.SurfaceHighlightFactor);
+            Assert.AreEqual(expected, pixels[world.Index(2, 1)], "液面水格应向浅蓝白插值");
+            Assert.AreEqual(WaterBaseColorAt(world, 2, 0), pixels[world.Index(2, 0)], "被水压住的格不是液面，保持基色");
+        }
+
+        /// <summary>正上方是固体的水不是液面（被岩石盖住的水不高光）。</summary>
+        [Test]
+        public void SurfaceHighlight_WaterUnderSolidIsNotHighlighted()
+        {
+            ParticleWorld world = CreateWorld(4, 4);
+            world.Set(2, 0, WaterId);
+            world.Set(2, 1, StoneId);
+
+            var pixels = new Color32[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+
+            Assert.AreEqual(WaterBaseColorAt(world, 2, 0), pixels[world.Index(2, 0)], "正上方是固体的水不是液面");
         }
 
     }
