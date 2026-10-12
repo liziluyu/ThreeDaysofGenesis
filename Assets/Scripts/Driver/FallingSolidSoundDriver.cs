@@ -4,10 +4,22 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 落下的固体声：把 <see cref="ParticleWorld.SolidMotion"/>（**固体的运动格数** = 本轮发生换位的固体端数）
-    /// 折算成一条**连续**循环声床的目标响度——下落的固体越多越响，低于死区就淡出静音。
+    /// 落下的固体声：把世界里的**固体运动格数**（本轮发生换位的固体端数）折算成一条**连续**循环声床的目标
+    /// 响度——下落的固体越多越响，低于死区就淡出静音。同一份映射 / 推响度逻辑被两种来源共用，由
+    /// <see cref="Source"/> 选读哪个观察者、配哪条音效：<see cref="Source.Sand"/> 读
+    /// <see cref="ParticleWorld.SolidMotion"/>（松散固体 → <c>falling_sand</c>），
+    /// <see cref="Source.Stone"/> 读 <see cref="ParticleWorld.RockMotion"/>（岩石 → <c>falling_stone</c>）。
+    /// 两个来源各挂一个组件——两条独立的循环声床，互不影响。
     /// </summary>
     /// <remarks>
+    /// <para><b>两种来源对应什么</b>：<see cref="Source.Sand"/> 的口径是**松散固体**——带
+    /// <see cref="ParticleTags.Solid"/> 且**不带** <see cref="ParticleTags.Organic"/>、**不带**
+    /// <see cref="ParticleTags.Rock"/>：沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 水生态种子。
+    /// <see cref="Source.Stone"/> 的口径是**岩石**——带 <see cref="ParticleTags.Solid"/> 且带
+    /// <see cref="ParticleTags.Rock"/>（当前只有石头）。世界的两个观察者就是按这对互补、互斥的标签掩码分的，
+    /// 因此同一格固体永远只喂其中一条声床：石头不走落沙声，沙土不走落石声。树叶 / 草种子 / 树木种子带
+    /// <see cref="ParticleTags.Organic"/>，连同草 / 花 / 树干一起被排除，故树叶飘落、种子下沉**不会**触发
+    /// 任何一种落声。</para>
     /// <para><b>为什么响度量取「运动格数」而不是比例</b>：固体存量里绝大多数是常年静止的草 / 树干 / 树叶 /
     /// 花 / 水生植物——一张地图上不动的东西远多于会掉的沙石，比例会被这些静止成员稀释到近 0，
     /// 「一柱沙在落」与「满地沙在滚」几乎分不出来。绝对格数还与玩家直觉一致：**落得越多越吵**，
@@ -17,23 +29,32 @@ namespace TapTap2026.Game
     /// 因此不存在「在死区边界来回开合」的问题，也不需要低通去抹平抖动。响度的平滑已由
     /// <see cref="SoundController"/> 自己的 <c>_loudnessPerSecond</c> 完成（每条声床的音量朝目标每秒推进）。
     /// 这是本驱动比水的流动声简单的原因。</para>
-    /// <para><b>口径</b>：读的是 <see cref="ParticleWorld.SolidMotion"/>——带 <see cref="ParticleTags.Solid"/>
-    /// 且**不带** <see cref="ParticleTags.Organic"/> 的类型，即会下落的粉末 / 石：石、沙、土、湿土、腐殖质、
-    /// 腐殖土、湿润腐殖土、水生态种子。树叶 / 草种子 / 树木种子带 <see cref="ParticleTags.Organic"/>，
-    /// 连同草 / 花 / 树干一起被排除，故树叶飘落、种子下沉**不会**触发落沙声。</para>
     /// <para><b>不重播</b>：本组件只做「读计数 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
     /// 每帧都推、推几次都一样；起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里这条循环声床。</para>
     /// <para><b>先清账再判开关</b>：<c>_enabled == false</c> 期间也**无条件**读掉并重置运动计数，
     /// 否则重新打开的那一帧会把关闭期间积压的运动当作「此刻在落」补发出去（响一下）。</para>
     /// </remarks>
     [DisallowMultipleComponent]
-    public sealed class FallingSandSoundDriver : MonoBehaviour
+    public sealed class FallingSolidSoundDriver : MonoBehaviour
     {
+        /// <summary>落声来源：既决定读哪个运动观察者（也就是听哪种固体的下落），也决定这条声床配哪条音效。</summary>
+        public enum Source
+        {
+            /// <summary>松散固体的下落声：沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 水生态种子。</summary>
+            Sand = 0,
+
+            /// <summary>岩石的下落声（带 <see cref="ParticleTags.Rock"/> 的固体，当前只有石头）。</summary>
+            Stone = 1,
+        }
+
         [Tooltip("留空则回退到同物体 / 场景里的 ParticleSimulationDriver（只为拿 world）。")]
         [SerializeField] private ParticleSimulationDriver _driver;
 
         [Tooltip("留空则回退到同物体 / 场景里的 SoundController。")]
         [SerializeField] private SoundController _sound;
+
+        [Tooltip("落声来源：Sand 读松散固体（SolidMotion），Stone 读岩石（RockMotion）。")]
+        [SerializeField] private Source _source = Source.Sand;
 
         [Tooltip("声音文件名。交给 SoundController 查音频表：取最后一段、去扩展名，不区分大小写。")]
         [SerializeField] private string _soundFile = "falling_sand";
@@ -85,8 +106,9 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 把 <paramref name="world"/> **本轮**（自上次调用以来）累积的固体运动格数折算成声床目标响度：
-        /// 读计数 → 清账 → 映射 → 推给 <see cref="SoundController.SetAmbience"/>。
+        /// 把 <paramref name="world"/> **本轮**（自上次调用以来）累积的、<see cref="Source"/> 所选那条口径的
+        /// 固体运动格数折算成声床目标响度：读计数 → 清账 → 映射 → 推给
+        /// <see cref="SoundController.SetAmbience"/>。
         /// 由 <see cref="Update"/> 每帧调一次；公开是为了让测试能脱离帧循环确定性地驱动它。
         /// </summary>
         /// <param name="world">要观察的世界；null（驱动未就绪）时收声。</param>
@@ -98,10 +120,12 @@ namespace TapTap2026.Game
                 return Silence();
             }
 
+            MotionMonitor motion = _source == Source.Stone ? world.RockMotion : world.SolidMotion;
+
             // **无条件先清账**：关闭期间也必须把运动计数读掉，否则重新打开的那一帧会把
             // 关闭期间积压的运动当作「此刻在落」补发出去（响一下）。
-            long moving = world.SolidMotion.MovingCount;
-            world.SolidMotion.Reset();
+            long moving = motion.MovingCount;
+            motion.Reset();
 
             if (!_enabled || _sound == null)
             {

@@ -45,8 +45,11 @@ namespace TapTap2026.Simulation
         /// <param name="world">被观察的世界（只读）。</param>
         /// <param name="tags">必须**全部**带上的标签（<c>(info.Tags &amp; tags) == tags</c>）。</param>
         /// <param name="excludedTags">带上其中**任何一个**即排除（<c>(info.Tags &amp; excludedTags) == 0</c>）。
-        /// 例如固体运动观察者取 <see cref="ParticleTags.Solid"/> + 排除 <see cref="ParticleTags.Organic"/>，
-        /// 只留会下落的无机粉末。</param>
+        /// 可以用它把某个**属性**标签（如 <see cref="ParticleTags.Organic"/> / <see cref="ParticleTags.Rock"/>）
+        /// 从掩码里排掉：世界就是这样把「松散固体」（沙 / 土等）与「岩石」分成两条信号——
+        /// 松散固体那条取 <see cref="ParticleTags.Solid"/> 并排除 <see cref="ParticleTags.Organic"/> |
+        /// <see cref="ParticleTags.Rock"/>，岩石那条取 <see cref="ParticleTags.Solid"/> |
+        /// <see cref="ParticleTags.Rock"/>。</param>
         /// <exception cref="ArgumentNullException"><paramref name="world"/> 为 null。</exception>
         internal MotionMonitor(ParticleWorld world, ParticleTags tags, ParticleTags excludedTags = ParticleTags.None)
         {

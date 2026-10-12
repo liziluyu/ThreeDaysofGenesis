@@ -37,5 +37,9 @@ namespace TapTap2026.Simulation
         /// 必须与至少一个类别标签（Solid / Liquid / Gas）同时使用。
         /// </summary>
         Organic = 1 << 3,
+
+        /// <summary>岩石（属性标签，**不参与 rank**）：矿物类的硬质固体（当前只有石头）。与 Organic 并列——
+        /// 落石声用它把「石」从「松散固体」里分出来。必须与至少一个类别标签同时使用。</summary>
+        Rock = 1 << 4,
     }
 }

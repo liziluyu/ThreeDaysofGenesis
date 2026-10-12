@@ -6,7 +6,8 @@ namespace TapTap2026.Tests
 {
     /// <summary>
     /// <see cref="MotionMonitor"/>（世界新成员 <see cref="ParticleWorld.LiquidMotion"/> /
-    /// <see cref="ParticleWorld.SolidMotion"/>）的测试：按标签掩码分类、两条信号互不干扰、
+    /// <see cref="ParticleWorld.SolidMotion"/> / <see cref="ParticleWorld.RockMotion"/>）的测试：
+    /// 按标签掩码分类、三条信号互不干扰、
     /// 存量差分（Set / Clear / Swap）、运动计数按换位匹配端数累加、比例语义与稀释、
     /// 以及「读观察者不改变世界与随机流」的纯净性。
     /// </summary>
@@ -14,13 +15,16 @@ namespace TapTap2026.Tests
     /// <para>全部用隔离类型表（<see cref="TestTables.Build"/>）——**不碰全局注册表**，
     /// 因此本文件与生产注册顺序、与其它测试文件互不污染。</para>
     /// <para>类型表：1 = 无机固体（会下落）、2 = 带 <see cref="ParticleTags.Organic"/> 的固体（会下落，
-    /// 应被固体那条排除）、3 = 液体。</para>
+    /// 应被固体那条排除）、3 = 液体。涉及岩石掩码的用例改用 <c>CreateRockWorld</c>，在末尾追加
+    /// 4 = 带 <see cref="ParticleTags.Solid"/> | <see cref="ParticleTags.Rock"/> 的固体（岩石），
+    /// 于是两条信号在同一世界里可对照。</para>
     /// </remarks>
     public sealed class MotionMonitorTests
     {
         private const ushort SandId = 1;
         private const ushort OrganicSolidId = 2;
         private const ushort WaterId = 3;
+        private const ushort RockSolidId = 4;
         private const uint SeedValue = 20261012u;
 
         /// <summary>隔离世界：1 = 无机固体、2 = 带 Organic 的固体、3 = 液体。</summary>
@@ -31,6 +35,21 @@ namespace TapTap2026.Tests
                 height,
                 SeedValue,
                 TestTables.Build(new TestGrainParticle(), new TestOrganicSolidParticle(), new TestLiquidParticle()));
+        }
+
+        /// <summary>隔离世界（额外带岩石类型）：1 / 2 / 3 同上，4 = 带 <see cref="ParticleTags.Solid"/> |
+        /// <see cref="ParticleTags.Rock"/> 的固体（岩石）。既有用例仍走 <see cref="CreateWorld"/>，不受影响。</summary>
+        private static ParticleWorld CreateRockWorld(int width, int height)
+        {
+            return new ParticleWorld(
+                width,
+                height,
+                SeedValue,
+                TestTables.Build(
+                    new TestGrainParticle(),
+                    new TestOrganicSolidParticle(),
+                    new TestLiquidParticle(),
+                    new TestRockSolidParticle()));
         }
 
         /// <summary>逐格真源：某类型在网格上的实际格数（与观察者读数对照）。</summary>
@@ -133,6 +152,48 @@ namespace TapTap2026.Tests
             world.Set(2, 2, OrganicSolidId);
             Assert.AreEqual(0, world.SolidMotion.TrackedCount, "换成带 Organic 的固体：固体那条 −1");
             Assert.AreEqual(0, world.LiquidMotion.TrackedCount);
+        }
+
+        /// <summary>
+        /// 岩石那条只认「带 Solid 且带 Rock」：带 <see cref="ParticleTags.Rock"/> 的固体会下落，
+        /// 计入 <see cref="ParticleWorld.RockMotion"/>，但被松散固体那条（excludedTags 含 Rock）排除——
+        /// 石与沙由此分成两条互不重叠的信号。
+        /// </summary>
+        [Test]
+        public void RockMotion_TracksSolidRockType_AndSolidMotionExcludesIt()
+        {
+            ParticleWorld world = CreateRockWorld(8, 8);
+            world.Set(3, 6, RockSolidId);
+
+            Assert.AreEqual(1, world.RockMotion.TrackedCount, "带 Solid|Rock 的固体要进岩石那条的存量");
+            Assert.AreEqual(0, world.SolidMotion.TrackedCount, "它不进松散固体那条（被 excludedTags 排除）");
+
+            world.RockMotion.Reset();
+            world.SolidMotion.Reset();
+            world.StepMotion();
+
+            Assert.Less(FindY(world, RockSolidId), 6, "带 Rock 的固体确实在下落（否则本用例没有说服力）");
+            Assert.Greater(world.RockMotion.MovingCount, 0L, "岩石下落要计入岩石那条");
+            Assert.AreEqual(0L, world.SolidMotion.MovingCount, "岩石不进松散固体那条");
+        }
+
+        /// <summary>反向：纯 <see cref="ParticleTags.Solid"/>（不带 Rock）只进松散固体那条，岩石那条恒为 0。</summary>
+        [Test]
+        public void RockMotion_IgnoresPlainSolids_WhichStayOnTheLooseSolidSide()
+        {
+            ParticleWorld world = CreateRockWorld(8, 8);
+            world.Set(3, 6, SandId);
+
+            Assert.AreEqual(1, world.SolidMotion.TrackedCount, "纯 Solid 进松散固体那条的存量");
+            Assert.AreEqual(0, world.RockMotion.TrackedCount, "纯 Solid 不带 Rock，不进岩石那条");
+
+            world.SolidMotion.Reset();
+            world.RockMotion.Reset();
+            world.StepMotion();
+
+            Assert.Less(FindY(world, SandId), 6, "砂确实在下落");
+            Assert.Greater(world.SolidMotion.MovingCount, 0L, "砂下落计入松散固体那条");
+            Assert.AreEqual(0L, world.RockMotion.MovingCount, "砂不进岩石那条");
         }
 
         // ============================== 存量语义 ==============================
@@ -329,6 +390,44 @@ namespace TapTap2026.Tests
                     return new ParticleTypeInfo(
                         ParticleTags.Solid | ParticleTags.Organic, 1f, 1f, 1f, 1f, true, false, 0, 0.5f, 0.5f,
                         Palette, "TestOrganicSolidParticle");
+                }
+            }
+
+            public void OnMotion(ParticleWorld world, int x, int y)
+            {
+                ParticleRules.TryFall(world, x, y);
+            }
+
+            public void OnLogic(ParticleWorld world, int x, int y)
+            {
+            }
+
+            public void OnRandomTick(ParticleWorld world, int x, int y)
+            {
+            }
+
+            public void OnSpawn(ParticleWorld world, int x, int y)
+            {
+            }
+
+            public void OnKill(ParticleWorld world, int x, int y, ushort killerTypeId)
+            {
+            }
+        }
+
+        /// <summary>测试专用的「岩石」：像石头那样带 <see cref="ParticleTags.Solid"/> |
+        /// <see cref="ParticleTags.Rock"/> 且会下落，应只被岩石运动观察者追踪。</summary>
+        private sealed class TestRockSolidParticle : IParticleType
+        {
+            private static readonly Color32[] Palette = { new Color32(120, 120, 120, 255) };
+
+            public ParticleTypeInfo Info
+            {
+                get
+                {
+                    return new ParticleTypeInfo(
+                        ParticleTags.Solid | ParticleTags.Rock, 1f, 1f, 1f, 1f, true, false, 0, 0.5f, 0.5f,
+                        Palette, "TestRockSolidParticle");
                 }
             }
 
