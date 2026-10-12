@@ -413,7 +413,6 @@ GameObject:
   - component: {fileID: 1926363758}
   - component: {fileID: 1926363759}
   - component: {fileID: 1926363760}
-  - component: {fileID: 1926363761}
   m_Layer: 0
   m_Name: Particle Sandbox
   m_TagString: Untagged
@@ -614,7 +613,6 @@ MonoBehaviour:
   - {fileID: 8300000, guid: bea7e2c4bd295234d99e1812d87012cb, type: 3}
   - {fileID: 8300000, guid: 36aff899f1cba194bab8687997ccec6b, type: 3}
   - {fileID: 8300000, guid: d91439c291124804c8e70daa43e9a5a9, type: 3}
-  - {fileID: 8300000, guid: cb90496cc4512c649a93b3919352860f, type: 3}
   _loudnessPerSecond: 3
 --- !u!114 &1926363758
 MonoBehaviour:
@@ -667,30 +665,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _driver: {fileID: 0}
   _sound: {fileID: 0}
-  _source: 0
   _soundFile: falling_sand
   _minMovingCount: 0
   _fullVolumeCount: 40
-  _volume: 1
-  _enabled: 1
---- !u!114 &1926363761
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1926363748}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 9ce93f7efb8f4b08ad60065729462b38, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  _driver: {fileID: 0}
-  _sound: {fileID: 0}
-  _source: 1
-  _soundFile: falling_stone
-  _minMovingCount: 0
-  _fullVolumeCount: 30
   _volume: 1
   _enabled: 1
 --- !u!1 &2010000000

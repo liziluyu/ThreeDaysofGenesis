@@ -118,23 +118,6 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 生产注册路径的标签口径：石头同时带 <see cref="ParticleTags.Solid"/> 与
-        /// <see cref="ParticleTags.Rock"/>（属性标签，不参与 rank），沙只带 Solid、不带 Rock——
-        /// 世界的「岩石」与「松散固体」两条运动信号（落石声 / 落沙声）正是靠 Rock 这一位分开的。
-        /// </summary>
-        [Test]
-        public void ProductionRegistration_StoneCarriesRockTag_SandDoesNot()
-        {
-            ParticleTypeInfo stone = ParticleRegistry.Types[Stone].Info;
-            ParticleTypeInfo sand = ParticleRegistry.Types[Sand].Info;
-
-            Assert.IsTrue((stone.Tags & ParticleTags.Solid) != 0, "石头应带 Solid 标签");
-            Assert.IsTrue((stone.Tags & ParticleTags.Rock) != 0, "石头应带 Rock 标签：落石声的掩码靠它");
-            Assert.IsTrue((sand.Tags & ParticleTags.Solid) != 0, "沙应带 Solid 标签");
-            Assert.IsTrue((sand.Tags & ParticleTags.Rock) == 0, "沙不带 Rock：它属于松散固体那档，走落沙声");
-        }
-
-        /// <summary>
         /// 安息角剖面不变量：沙逐颗落下后必须收敛成下大上小的三角堆——
         /// 每一行都不比它下面一行宽，且堆顶严格窄于堆底（平摊成一层会让两者相等）。
         /// 断言只取每行的粒数，不依赖左右随机顺序的逐格结果。

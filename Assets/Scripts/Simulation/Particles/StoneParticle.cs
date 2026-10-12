@@ -2,11 +2,7 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // StoneParticle —— 石头（固体标签 + 岩石属性标签，摩擦度 0.9 + 高粘性 0.9）
-    //
-    // 标签：Solid（类别）+ Rock（属性，不参与 rank）——见 ParticleTags.Rock。
-    //       带 Rock 意味着它不进世界的「松散固体」运动观察者（落沙声），而是进「岩石」那条
-    //       （落石声），两条信号靠标签掩码分开，不靠 typeId 特判。
+    // StoneParticle —— 石头（固体标签，摩擦度 0.9 + 高粘性 0.9）
     //
     // flags 私有位：无（bit3-7 全部空闲）
     // 邻居查询范围：正下 + 左下/右下 + 斜滑反侧同一行（粘性判据：旁边有没有固体）
@@ -29,7 +25,7 @@ namespace TapTap2026.Simulation
         };
 
         public ParticleTypeInfo Info => new ParticleTypeInfo(
-            tags: ParticleTags.Solid | ParticleTags.Rock,
+            tags: ParticleTags.Solid,
             density: 3.0f,
             heatCapacity: 0.80f,   // 石头：从 0.9 调到 0.8，升温更快
             thermalConductivity: 0.80f,   // 石头：固体里导热最快（原 0.7，接近水）
