@@ -33,11 +33,8 @@ namespace TapTap2026.Game
     /// 每帧都推、推几次都一样；起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里这条循环声床。</para>
     /// <para><b>先清账再判开关</b>：<c>_enabled == false</c> 期间也**无条件**读掉并重置运动计数，
     /// 否则重新打开的那一帧会把关闭期间积压的运动当作「此刻在落」补发出去（响一下）。</para>
-    /// <para><b>刻意不带 <see cref="DisallowMultipleComponent"/></b>：本组件**就是**要给同一物体挂
-    /// **两个**实例的（一个 <see cref="Source.Sand"/>、一个 <see cref="Source.Stone"/>，各配一条独立声床）。
-    /// 加上这个特性会让 Unity 丢弃第二个实例——落石声会永远不响，而且因为场景文件里两条都在、
-    /// 只在运行期少一条，这种失败极难从代码上看出来。</para>
     /// </remarks>
+    [DisallowMultipleComponent]
     public sealed class FallingSolidSoundDriver : MonoBehaviour
     {
         /// <summary>落声来源：既决定读哪个运动观察者（也就是听哪种固体的下落），也决定这条声床配哪条音效。</summary>
