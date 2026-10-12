@@ -71,6 +71,8 @@ namespace TapTap2026.Simulation
         private readonly HeatMap _heat;
         private readonly HumidityField _humidity;
         private readonly LightController _light;
+        private readonly LiquidMotionMonitor _liquidMotion;
+        private readonly ParticleCountMonitor _counts;
         private readonly ParticleType[] _types;
 
         // ── 运动休眠（阶段 B）──
@@ -206,6 +208,8 @@ namespace TapTap2026.Simulation
             _humidity = new HumidityField(width, height);
             _heat = new HeatMap(width, height, _cells, types, _humidity);
             _light = new LightController();
+            _liquidMotion = new LiquidMotionMonitor(this);
+            _counts = new ParticleCountMonitor(this);
 
             // 扫描进行中的热 / 湿度变化要同帧并入候选位图（见 OnThermalCellDirtied）：全网格旧路径里，
             // 先扫到的格 OnLogic 改了温度后，扫描序在其后的格同帧就能在新温度下做 OnMotion；混合扫描
@@ -370,6 +374,30 @@ namespace TapTap2026.Simulation
         public LightController Light
         {
             get { return _light; }
+        }
+
+        /// <summary>
+        /// 液体**运动量**的观察者（按换位的液体端数记账，见 <see cref="LiquidMotionMonitor"/>）。
+        /// 世界常驻持有并随世界重建，读数方每帧读完 <see cref="LiquidMotionMonitor.Reset"/> 一次
+        /// （水的流动声就是它的消费方：响度 ∝ <see cref="LiquidMotionMonitor.MovingCount"/>）。
+        /// 它是纯观察者：读不读、用它做什么都不改变模拟结果。
+        /// </summary>
+        public LiquidMotionMonitor LiquidMotion
+        {
+            get { return _liquidMotion; }
+        }
+
+        /// <summary>
+        /// 粒子**存量**的观察者（按 <see cref="Set"/> / <see cref="SetPhase"/> 的旧/新类型差分记账，
+        /// 见 <see cref="ParticleCountMonitor"/>）。世界常驻持有并随世界重建；消费方读
+        /// <see cref="ParticleCountMonitor.Count"/> 取某类型的当前格数、读
+        /// <see cref="ParticleCountMonitor.ConsumeCreated"/> 取自上次读取以来新写入的格数
+        /// （火焰持续声就是它的消费方：世界里有没有火、这一帧又冒出几格火）。
+        /// 它是纯观察者：零 RNG 消耗、零格子写入、零场写入——读不读、用它做什么都不改变模拟结果。
+        /// </summary>
+        public ParticleCountMonitor Counts
+        {
+            get { return _counts; }
         }
 
         /// <summary>网格宽（格数）。</summary>
@@ -708,6 +736,10 @@ namespace TapTap2026.Simulation
                 _monitor.OnSwap(x0, y0, x1, y1);
             }
 
+            // 液体运动量的记账（水的流动声的数据源）：按换位的液体端数累加，无方向 / 无格位过滤——
+            // 平静水面的逐格抖动与瀑布的整片下落都算「液体在动」，量级自然区分开。
+            _liquidMotion.OnSwap(x0, y0, x1, y1);
+
             return true;
         }
 
@@ -827,6 +859,13 @@ namespace TapTap2026.Simulation
             {
                 _monitor.OnCellReplaced(previousId, typeId, x, y);
             }
+
+            // 液体存量：类型换了就按旧/新是否液体差分（水的流动声的响度的分母）。
+            _liquidMotion.OnCellReplaced(previousId, typeId);
+
+            // 粒子存量：同一次类型替换按旧/新类型差分，并记「新格」一次（火焰持续声的存量与新增来源）。
+            // Clear(x, y) 就等价于 Set(x, y, AirTypeId)（见 Clear），因此递减走的是这一条路径，不需要额外钩子。
+            _counts.OnCellReplaced(previousId, typeId);
 
             // 新物质继承该格原有热量：旧物质离场，但它的热视作就地留给了新物质（新生成的有机物
             // 不会被拍成 0°——例如夜里发芽的草继承暖空气的 Q，不会当帧冻死）。相变要带走自己的热时用 SetPhase。
@@ -1016,6 +1055,12 @@ namespace TapTap2026.Simulation
             {
                 _monitor.OnCellReplaced(previousId, typeId, x, y);
             }
+
+            // 液体存量：相变改了类型就差分（水↔湿土、水↔蒸汽等都算）。
+            _liquidMotion.OnCellReplaced(previousId, typeId);
+
+            // 粒子存量：相变同样是一次类型替换，按旧/新类型差分并记「新格」一次（水⇄蒸汽等相变也计入存量）。
+            _counts.OnCellReplaced(previousId, typeId);
 
             // Q 跟着物质走，不重置（这正是与 Set 的区别）。
             _heat.SetHeat(x, y, heat);
