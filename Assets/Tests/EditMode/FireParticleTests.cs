@@ -9,8 +9,8 @@ namespace TapTap2026.Tests
     /// 水汽走湿度场、总水守恒）；熄灭按互斥档位（压顶立灭 / **被包围时窒息立灭** / 游离火冷却即灭或 1/8 /
     /// **有燃料则不摇熄灭骰** / 贴液体 1/2 / 贴任何非可燃固体 1/5——附着火没有「烧尽骰」，
     /// 无燃料必在数帧内熄灭）；附着火上方是气体且本格 ≥200° 时 1/10 抛射火舌；
-    /// **游离火不再下沉**，改为 OnLogic 末尾按坐标哈希上升 + 摇曳（不消耗随机流）。投放资格（不覆盖实体、
-    /// 不浮空、锚点含火链）与生产注册路径不变。
+    /// **游离火不再下沉**，改为 OnLogic 末尾按坐标哈希上升 + 摇曳（不消耗随机流）。投放资格（只在空气 /
+    /// 气体格、不覆盖实体、**无附着 / 悬空限制**）与生产注册路径不变。
     /// </summary>
     /// <remarks>
     /// <para>跨类型相变（草→火、湿土→干土）依赖 <see cref="ParticleIds"/> 回填，因此全部走
@@ -338,44 +338,35 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 投放资格 ②：**不许浮空**——目标格八邻内必须有锚点（固 / 液的一格，或另一格火：
-        /// 投放层允许火链，见圆刷回归测试）。同时覆盖：大气格（气体）可投放、越界不可投放。
-        /// （刷出的无支撑火在 v2 里会上升 + 摇曳并很快熄灭，见游离火用例。）
+        /// 投放资格 ②：**没有附着 / 悬空限制**——四邻全空的空气格照常可投（浮空的火是游离火，
+        /// 会上升 + 摇曳并很快熄灭，见游离火用例）。同时覆盖：贴实体 / 远离实体都可投、
+        /// 大气格（气体）可投放、越界不可投放。
         /// </summary>
         [Test]
-        public void Fire_Placement_NeedsAttachment_NoFloating()
+        public void Fire_Placement_AllowsFloatingAnywhere()
         {
             var world = new ParticleWorld(16, 16, 2026u);
 
-            Assert.IsFalse(FireParticle.CanPlaceAt(world, 8, 8), "八邻全空（浮空）不可投放");
+            Assert.IsTrue(FireParticle.CanPlaceAt(world, 8, 8), "八邻全空（浮空）也可投放");
+            Assert.IsTrue(FireParticle.CanPlaceAt(world, 0, 0), "角落（仅三邻在界内）也可投放");
 
             world.Set(5, 5, ParticleIds.Stone);
             Assert.IsTrue(FireParticle.CanPlaceAt(world, 6, 5), "正交贴着石头可投放");
-            Assert.IsTrue(FireParticle.CanPlaceAt(world, 6, 6), "斜贴着石头可投放");
-            Assert.IsFalse(
-                FireParticle.CanPlaceAt(world, 7, 7), "离附着物两格（浮空）不可投放");
-
-            // 投放锚点含火链：与已有的火相邻（正交 / 斜角）也可以投放——圆刷靠它连锁铺满整团火。
-            // 物理燃烧的附着物仍不含火（刷出的无支撑火是游离火，会上升 / 快熄，见上升测试）。
-            world.Set(8, 8, ParticleIds.Fire);
-            Assert.IsTrue(FireParticle.CanPlaceAt(world, 8, 9), "正交火链（投放锚点）可投放");
-            Assert.IsTrue(FireParticle.CanPlaceAt(world, 9, 9), "斜向火链（投放锚点）可投放");
+            Assert.IsTrue(FireParticle.CanPlaceAt(world, 7, 7), "离附着物两格（浮空）同样可投放");
 
             world.Set(12, 12, ParticleIds.Atmosphere);
-            world.Set(12, 11, ParticleIds.Stone);
-            Assert.IsTrue(FireParticle.CanPlaceAt(world, 12, 12), "大气格（有附着物时）可投放");
+            Assert.IsTrue(FireParticle.CanPlaceAt(world, 12, 12), "大气格（气体）可投放");
 
             Assert.IsFalse(FireParticle.CanPlaceAt(world, -1, 0), "越界不可投放");
             Assert.IsFalse(FireParticle.CanPlaceAt(world, 16, 0), "越界不可投放");
         }
 
         /// <summary>
-        /// 圆刷回归（「无论笔刷多大只有薄薄一层」的修复）：半径 2 的实心圆（13 格）悬在地面上方，
-        /// 按编辑器笔刷顺序逐格判定——底格先锚到地面，上面的格子再锚到已落下的火，13 格全落；
-        /// 高空同一半径没有任何锚点，一格都放不下（不许浮空）。
+        /// 圆刷：半径 2 的实心圆（13 格）**无论落在哪里都铺满**——贴地时 13 格全落，
+        /// 悬空时同样 13 格全落（投放已无附着 / 悬空限制；浮空的火格会上升 + 摇曳并很快熄灭）。
         /// </summary>
         [Test]
-        public void Fire_Placement_CircleBrush_FillsBlobOnGround_NoneInAir()
+        public void Fire_Placement_CircleBrush_FillsBlobAnywhere()
         {
             var world = new ParticleWorld(32, 16, 2026u);
             for (int gx = 13; gx <= 17; gx++)
@@ -383,8 +374,8 @@ namespace TapTap2026.Tests
                 world.Set(gx, 0, ParticleIds.Grass);
             }
 
-            Assert.AreEqual(13, PaintCircle(world, 15, 3, 2), "贴地圆刷应连锁铺满整团火（13 格全落）");
-            Assert.AreEqual(0, PaintCircle(world, 15, 10, 2), "悬空圆刷（无锚点）应一格都放不下");
+            Assert.AreEqual(13, PaintCircle(world, 15, 3, 2), "贴地圆刷应铺满整团火（13 格全落）");
+            Assert.AreEqual(13, PaintCircle(world, 15, 10, 2), "悬空圆刷同样 13 格全落");
         }
 
         /// <summary>
