@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // FlowerParticle —— 花（草株顶端的显色格：固体 + Organic，长在原地不动；由草种子发芽时按 10% 开出）
+    // FlowerParticle —— 花（草株顶端的显色格：固体 + Organic，长在原地不动；由草种子发芽时按 30% 开出）
     //
     // flags 私有位：**不占用**。花色存在 Cell.shade（= 调色板下标），由 ParticleWorld.Set / SetPhase 随机抽样——
     //       本类型**不**在 OnSpawn 覆写它（草把抽样钉成 0 以表达「新生 = 最年轻的绿」，花则要保留随机花色）。

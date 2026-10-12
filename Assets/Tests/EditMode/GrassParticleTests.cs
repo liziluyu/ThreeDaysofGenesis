@@ -5,7 +5,7 @@ using UnityEngine;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 草的寿命系统：每逻辑帧衰老（年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + flags bit3-5），
+    /// 草的寿命系统：每逻辑帧衰老（年龄 = <see cref="Cell.shade"/> × <c>TicksPerShadeStep</c> + flags bit3-6），
     /// 每 <c>TicksPerShadeStep</c> 帧颜色向黄绿推进一档，年龄到 <see cref="GrassParticle.LifespanTicks"/>
     /// 寿终（走 <c>Clear</c> → 世界的有机衰变）。衰老不消耗世界随机流、不移动、不读邻居。
     /// </summary>
@@ -69,13 +69,13 @@ namespace TapTap2026.Tests
             }
 
             Cell before = world.GetCell(4, 4);
-            Assert.AreEqual(ParticleIds.Grass, before.typeId, "第 1199 逻辑帧仍在寿命内");
+            Assert.AreEqual(ParticleIds.Grass, before.typeId, $"第 {GrassParticle.LifespanTicks - 1} 逻辑帧仍在寿命内");
             Assert.AreEqual(GrassParticle.ShadeCount - 1, before.shade, "寿终前一帧应已到最老颜色档");
 
             world.StepLogic();
 
             ushort after = world.GetCell(4, 4).typeId;
-            Assert.AreNotEqual(ParticleIds.Grass, after, "第 1200 逻辑帧应寿终");
+            Assert.AreNotEqual(ParticleIds.Grass, after, $"第 {GrassParticle.LifespanTicks} 逻辑帧应寿终");
             Assert.IsTrue(
                 after == ParticleRegistry.AirTypeId || after == ParticleIds.Humus,
                 $"寿终只允许空气或腐殖质（20% 有机衰变），实际 typeId={after}");

@@ -2,11 +2,11 @@ using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
-    // GrassParticle —— 草（固体：长在原地不动；每逻辑帧衰老，随机刻把附近的沙变成土、并以 10% 概率撒下新草种子）
+    // GrassParticle —— 草（固体：长在原地不动；每逻辑帧衰老，随机刻把附近的沙变成土、并以 15% 概率撒下新草种子）
     //
-    // flags 私有位：bit3-5（CellFlags.GrassAgeRemainderMask）—— 年龄的**逻辑帧余数** 0..TicksPerShadeStep-1。
+    // flags 私有位：bit3-6（CellFlags.GrassAgeRemainderMask，4 位）—— 年龄的**逻辑帧余数** 0..TicksPerShadeStep-1。
     //              年龄 = Cell.shade × TicksPerShadeStep + 余数：shade 存高位（它同时就是**颜色档**，
-    //              越老越接近黄绿），余数存低位——两段拼起来才够数到 LifespanTicks（1200 > 255），
+    //              越老越接近黄绿），余数存低位——两段拼起来才够数到 LifespanTicks（2400 > 255），
     //              且不引入新的 per-cell 字段（Cell 仍 4 字节）。
     // 邻居查询范围：随机刻时以自身为中心、半径 2 格（GrassParticle.SandConversionRadius /
     //               SeedSpawnRadius）的圆盘，以及候选空地下方 1 格（判固体支撑）
@@ -19,9 +19,9 @@ namespace TapTap2026.Simulation
     //       才能收到随机刻；靠空的 OnMotion（而不是 IsStatic）保证它不移动。草带 Solid 标签且与同 rank
     //       的固体（沙 / 土 / 石）互不置换（CanDisplace 要求严格更高的 rank），因此上方的沙会停在草上，
     //       草也不会被同类顶掉。
-    //   逻辑帧（OnLogic）：**衰老**。每逻辑帧年龄 +1；每攒满 TicksPerShadeStep（5）帧就把 Cell.shade
-    //       推进一档（颜色从年轻绿渐变到老黄绿），年龄到 LifespanTicks（1200 ≈ 60 秒 @20 Hz）即**寿终**——
-    //       走 Clear，因而按 20% 概率就地留下腐殖质。衰老只用 shade 与 flags bit3-5（无新 per-cell 字段）、
+    //   逻辑帧（OnLogic）：**衰老**。每逻辑帧年龄 +1；每攒满 TicksPerShadeStep（10）帧就把 Cell.shade
+    //       推进一档（颜色从年轻绿渐变到老黄绿），年龄到 LifespanTicks（2400 ≈ 120 秒 @20 Hz）即**寿终**——
+    //       走 Clear，因而按 20% 概率就地留下腐殖质。衰老只用 shade 与 flags bit3-6（无新 per-cell 字段）、
     //       不消耗世界随机流、不读邻居、不移动。压死 / 失去扎根 / 温度致死仍在随机刻里（见下）。
     //   随机刻（OnRandomTick）每次命中按固定顺序执行，死亡一旦触发就清掉整段并 return（本帧不再撒种/固沙）：
     //       ① **被压住就死**：正上方是**固体或液体、且不是同一株**（沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、
@@ -36,7 +36,7 @@ namespace TapTap2026.Simulation
     //          的一格腐殖土（退化为普通土）——腐殖土的优待是消耗型资源。
     //          （只死这一格；相邻草格各有自己的温度，级联随时间涌现。）
     //       三种死法都走 Clear，因而各自按 20% 概率留下腐殖质。
-    //       ④ **撒种（10% 概率）**：先摇一次骰（NextUInt() % SeedSpawnChanceDenominator == 0，每次都摇、
+    //       ④ **撒种（15% 概率）**：先摇一次骰（NextUInt() % SeedSpawnChanceDenominator < SeedSpawnChanceNumerator，每次都摇、
     //          消耗 1 个随机数，保证确定性），命中才在半径 2 格圆盘内找**第一个「下方 1 格是可托住种子的
     //          固体的空地」**（固定扫描序：y 升序、同行 x 升序，只取 dx²+dy² ≤ 半径²），在那里 Set 一颗
     //          新草种子。「空地」= 空气或气体（ParticleRules.IsGasOrEmpty）——世界被大气填满，若只认
@@ -53,8 +53,14 @@ namespace TapTap2026.Simulation
         /// <summary>撒下新草种子时搜索的半径（格，欧氏距离）：只处理 dx²+dy² ≤ 半径² 的格。</summary>
         public const int SeedSpawnRadius = 2;
 
-        /// <summary>撒种概率的分母：每次随机刻命中时 <c>NextUInt() % 本值 == 0</c> 才尝试撒种，即 1/10 = 10%。</summary>
-        public const uint SeedSpawnChanceDenominator = 10u;
+        /// <summary>
+        /// 撒种概率的分母：每次随机刻命中时摇一次骰 <c>NextUInt() % 本值 &lt; <see cref="SeedSpawnChanceNumerator"/></c>
+        /// 才尝试撒种，即 3/20 = 15%（= 1.5 × 原先的 1/10）。
+        /// </summary>
+        public const uint SeedSpawnChanceDenominator = 20u;
+
+        /// <summary>撒种概率的分子（与 <see cref="SeedSpawnChanceDenominator"/> 组成 3/20 = 15%）。</summary>
+        public const uint SeedSpawnChanceNumerator = 3u;
 
         /// <summary>致死高温（温度严格**高于**它即死）。温度是导出量 <c>T = Q / 热容</c>。</summary>
         public const float LethalHeatTemperature = 50f;
@@ -78,16 +84,16 @@ namespace TapTap2026.Simulation
         public const float LightAbsorptionFactor = 0.8f;
 
         /// <summary>
-        /// 寿命（逻辑帧）：年龄到此即寿终（1200 逻辑帧 ≈ 60 秒 @20 Hz）。「暂时设定」——改这里即可，
+        /// 寿命（逻辑帧）：年龄到此即寿终（2400 逻辑帧 ≈ 120 秒 @20 Hz）。「暂时设定」——改这里即可，
         /// 只需保证能被 <see cref="TicksPerShadeStep"/> 整除、且 <see cref="ShadeCount"/> ≤ 256。
         /// </summary>
-        public const int LifespanTicks = 1200;
+        public const int LifespanTicks = 2400;
 
         /// <summary>
         /// 每推进一档 <see cref="Cell.shade"/>（颜色档）所需的逻辑帧数：年龄的量化粒度。
-        /// 不足一档的余数存在 <see cref="CellFlags.GrassAgeRemainderMask"/>（3 位，故本值必须 ≤ 8）。
+        /// 不足一档的余数存在 <see cref="CellFlags.GrassAgeRemainderMask"/>（4 位，故本值必须 ≤ 16）。
         /// </summary>
-        public const int TicksPerShadeStep = 5;
+        public const int TicksPerShadeStep = 10;
 
         /// <summary>
         /// 颜色档数量 = 调色板长度：年龄 <c>[0, LifespanTicks)</c> 量化成这么多档
@@ -143,7 +149,7 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // 衰老：年龄 = Cell.shade × TicksPerShadeStep + flags bit3-5 的余数。每逻辑帧年龄 +1：
+            // 衰老：年龄 = Cell.shade × TicksPerShadeStep + flags bit3-6 的余数。每逻辑帧年龄 +1：
             // 未满一档只推进余数；攒满一档把 shade +1（颜色向黄绿推进一档）；shade 到顶即年龄到 LifespanTicks。
             ref Cell cell = ref world.At(x, y);
             int remainder = ((cell.flags & CellFlags.GrassAgeRemainderMask) >> CellFlags.GrassAgeRemainderShift) + 1;
@@ -215,8 +221,8 @@ namespace TapTap2026.Simulation
                 HumusSoilParticle.ConsumeFarthestBelow(world, x, y);
             }
 
-            // ④ 撒种（10% 概率）：先摇骰（每次都消耗 1 个随机数，保证确定性），命中才搜索落点。
-            if (world.NextUInt() % SeedSpawnChanceDenominator == 0u)
+            // ④ 撒种（15% 概率，= 3/20）：先摇骰（每次都消耗 1 个随机数，保证确定性），命中才搜索落点。
+            if (world.NextUInt() % SeedSpawnChanceDenominator < SeedSpawnChanceNumerator)
             {
                 TrySpawnSeed(world, x, y);
             }
@@ -322,7 +328,7 @@ namespace TapTap2026.Simulation
         public void OnSpawn(ParticleWorld world, int x, int y)
         {
             // 新生草从**最年轻**的一档开始：ParticleWorld.Set / SetPhase 的随机 shade 抽样被这里覆盖。
-            // 年龄余数位（flags bit3-5）由写入原语清零（flags = 当前标记），无需处理。
+            // 年龄余数位（flags bit3-6）由写入原语清零（flags = 当前标记），无需处理。
             world.At(x, y).shade = 0;
         }
 

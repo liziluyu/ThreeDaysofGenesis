@@ -4,7 +4,8 @@ namespace TapTap2026.Simulation
 {
     // AquaticPlantParticle —— 水生植物（沉水、扎根水底；逻辑帧衰老 + 随机刻逐格生长 + 四种死法；每格植物 ⇔ 一格水）
     //
-    // flags 私有位：bit3-5（CellFlags.GrassAgeRemainderMask，与草**共用**同一组位）—— 年龄的**逻辑帧余数**
+    // flags 私有位：bit3-6（CellFlags.GrassAgeRemainderMask，4 位，与草**共用**同一组位；水草只用到低 3 位）
+    //              —— 年龄的**逻辑帧余数**
     //              0..TicksPerShadeStep-1。年龄 = Cell.shade × TicksPerShadeStep + 余数：shade 存高位
     //              （它同时就是**颜色档**，越老越接近黄绿），余数存低位。能共用的依据与
     //              CellFlags.SeedStrikeMask 相同：同一时刻一格只属于一个类型，Set / SetPhase 换类型时
@@ -20,7 +21,7 @@ namespace TapTap2026.Simulation
     //   **OnLogic 只做衰老**（与草同一模式）：每逻辑帧年龄 +1，每攒满 TicksPerShadeStep（5）帧把 Cell.shade
     //   推进一档（颜色由深绿渐变到黄绿），年龄到 LifespanTicks（1200 ≈ 60 秒 @20 Hz）即**寿终**——走 SetPhase
     //   还成水（每格植物 ⇔ 一格水；植物不带 Organic，所以**不**是 Clear / 腐殖质）。衰老只用 shade 与 flags
-    //   bit3-5、不消耗世界随机流、不读邻居、不移动。其余全部行为写在随机刻（OnRandomTick），按固定顺序：
+    //   bit3-6、不消耗世界随机流、不读邻居、不移动。其余全部行为写在随机刻（OnRandomTick），按固定顺序：
     //       ① **被压死**：正上方是**固体且非同类** → 死亡沿竖直向下传播，把下面整段连续的植物**还成水**。
     //          **液体（水）上方是"沉水"常态，不算压**（与草相反——草把液体算压）。
     //       ② **失去扎根**：正下方不是软底 {Soil, WetSoil, HumusSoil, Sand}（也不是同株下段）→ 死亡沿竖直
@@ -75,7 +76,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 每推进一档 <see cref="Cell.shade"/>（颜色档）所需的逻辑帧数：年龄的量化粒度。
-        /// 不足一档的余数存在 <see cref="CellFlags.GrassAgeRemainderMask"/>（3 位，故本值必须 ≤ 8）。
+        /// 不足一档的余数存在 <see cref="CellFlags.GrassAgeRemainderMask"/>（4 位，故本值必须 ≤ 16；水草取 5）。
         /// </summary>
         public const int TicksPerShadeStep = 5;
 
@@ -132,7 +133,7 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // 衰老：年龄 = Cell.shade × TicksPerShadeStep + flags bit3-5 的余数。每逻辑帧年龄 +1：
+            // 衰老：年龄 = Cell.shade × TicksPerShadeStep + flags bit3-6 的余数（水草只用到低 3 位）。每逻辑帧年龄 +1：
             // 未满一档只推进余数；攒满一档把 shade +1（颜色向黄绿推进一档）；shade 到顶即年龄到 LifespanTicks。
             ref Cell cell = ref world.At(x, y);
             int remainder = ((cell.flags & CellFlags.GrassAgeRemainderMask) >> CellFlags.GrassAgeRemainderShift) + 1;
