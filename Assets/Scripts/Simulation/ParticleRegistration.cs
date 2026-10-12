@@ -56,7 +56,8 @@ namespace TapTap2026.Simulation
                     new TreeLeafParticle(),
                     new FlowerParticle(),
                     new WetHumusSoilParticle(),
-                    new LightningParticle());
+                    new LightningParticle(),
+                    new BiomassParticle());
                 // ===========================================================
 
                 ParticleIds.Stone = ids[0];
@@ -78,6 +79,7 @@ namespace TapTap2026.Simulation
                 ParticleIds.Flower = ids[16];
                 ParticleIds.WetHumusSoil = ids[17];
                 ParticleIds.Lightning = ids[18];
+                ParticleIds.Biomass = ids[19];
                 _registered = true;
             }
             catch (Exception exception)

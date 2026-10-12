@@ -88,11 +88,12 @@ namespace TapTap2026.Game
 
         [Header("投放白名单")]
         [Tooltip("不可手动投放的类型名（按 DebugName 或类名匹配；留空 = 全部可投）。" +
-                 "草、花、湿土、腐殖质、腐殖土、湿润腐殖土、水生植物、树干、树叶只能由模拟产生，默认已列入。")]
+                 "草、花、湿土、腐殖质、腐殖土、湿润腐殖土、水生植物、树干、树叶、生物质只能由模拟产生，默认已列入。")]
         [SerializeField] private string[] _unplaceableTypes =
         {
             "GrassParticle", "FlowerParticle", "WetSoilParticle", "HumusParticle", "HumusSoilParticle",
             "WetHumusSoilParticle", "AquaticPlantParticle", "TreeTrunkParticle", "TreeLeafParticle",
+            "BiomassParticle",
         };
 
         [Tooltip("「单颗投放」白名单（按 DebugName 或类名匹配）：右键切到这些类型时，无论笔刷半径多大，" +
