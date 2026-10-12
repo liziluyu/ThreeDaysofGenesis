@@ -19,6 +19,9 @@ namespace TapTap2026.Rendering
     /// 用 <see cref="Creature.PrevX"/>/<see cref="Creature.PrevY"/> 与当前位置按本逻辑帧已流逝的时间比例插值，
     /// 否则动起来是一格一格跳。逻辑帧停住（暂停）时 alpha 饱和到 1，实体稳定停在落点，不需要额外分支。</para>
     /// <para>z = −1：世界 quad 在 z = 0、相机在 z = −10，实体画在世界之上（取景约定见 <see cref="ParticleRenderer"/>）。</para>
+    /// <para>美术朝向：兔 / 鱼的源 sprite 都是**头朝左**（<see cref="SpriteFacesLeft"/>，序列化可配置），
+    /// 因此 <see cref="Creature.Facing"/> 为 +1（朝右）时镜像翻转、−1（朝左）时保持原样；
+    /// 这条「美术 ↔ 运动」的映射只由 <see cref="ResolveFlipX"/> 一处定义，换美术时改那个字段即可。</para>
     /// <para>所有运行期资源（纹理 / sprite / 子物体）都带 <see cref="HideFlags.DontSave"/>，绝不随场景落盘——
     /// 与 <see cref="ParticleRenderer"/> 的网格链同一约定。</para>
     /// </remarks>
@@ -53,6 +56,16 @@ namespace TapTap2026.Rendering
 
         /// <summary>真 sprite 的放大倍数：16 = 1 源像素恰好渲染成 1 格（与世界纹理的 texel 网格对齐，Point 过滤下不糊）。</summary>
         [SerializeField] private float _spriteScale = 16f;
+
+        [Tooltip("源 sprite 的美术朝向：true = 头朝左。当前兔 / 鱼美术都是头朝左 ⇒ 向右移动时镜像翻转；" +
+                 "换成头朝右的美术时设为 false。映射只由 CreatureRenderer.ResolveFlipX 使用。")]
+        [SerializeField] private bool _spriteFacesLeft = true;
+
+        /// <summary>源 sprite 的美术朝向（只读）：true = 头朝左。供测试与后续物种美术核对。</summary>
+        public bool SpriteFacesLeft
+        {
+            get { return _spriteFacesLeft; }
+        }
 
         private ParticleRenderer _particles;
 
@@ -145,8 +158,11 @@ namespace TapTap2026.Rendering
 
                 if (view.Frames != null)
                 {
-                    view.Renderer.sprite = view.Frames[(int)(_animTime * _idleFps) % view.Frames.Length];
-                    view.Renderer.flipX = creature.Facing < 0;
+                    // §8：帧播放速度随状态缩放（不换帧图）。倍速直接乘在帧索引推进上，不新建时钟。
+                    float speedFactor = ResolveAnimSpeedFactor(creature);
+                    view.Renderer.sprite = view.Frames[(int)(_animTime * _idleFps * speedFactor) % view.Frames.Length];
+                    // 朝向由 ResolveFlipX 统一决定（美术头朝左 ⇒ 朝右才翻），此处不写第二份分支。
+                    view.Renderer.flipX = ResolveFlipX(creature.Facing, _spriteFacesLeft);
                 }
 
                 Color baseColor = view.BaseColor;
@@ -213,6 +229,35 @@ namespace TapTap2026.Rendering
             renderer.color = creature.PlaceholderColor;
 
             return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f, BaseColor = creature.PlaceholderColor };
+        }
+
+        /// <summary>
+        /// 「美术朝向 ↔ 运动朝向」的唯一映射点：给定运动朝向 <paramref name="facing"/>（+1 = 朝右、−1 = 朝左，
+        /// 见 <see cref="Creature.Facing"/>）与美术约定 <paramref name="spriteFacesLeft"/>（true = 源 sprite 头朝左），
+        /// 返回该实体该用的 <see cref="SpriteRenderer.flipX"/>。
+        /// </summary>
+        /// <remarks>
+        /// 源 sprite 头朝左时，只有朝右移动才需要镜像（<c>facing &gt; 0</c>）；头朝右的美术则相反，朝左移动时镜像（<c>facing &lt; 0</c>）。
+        /// <paramref name="facing"/> 为 0（静止 / 朝向未定）时不翻，保持美术原样。
+        /// 纯函数、无状态：所有翻转判断都必须走这里，渲染处不得再写第二份分支。
+        /// </remarks>
+        public static bool ResolveFlipX(int facing, bool spriteFacesLeft)
+        {
+            return spriteFacesLeft ? facing > 0 : facing < 0;
+        }
+
+        /// <summary>
+        /// 动画帧速倍率（§8）：兔子逃命 ×3（最高优先）、否则在动 ×2（<c>|Vx| &gt; 0.01</c>）、静止 ×1。
+        /// </summary>
+        /// <remarks>v1 只有 4 帧 idle，物种 / 状态差异全靠播放速度 + 程序动作表达，因此这里只调速度、不换帧图。</remarks>
+        private static float ResolveAnimSpeedFactor(Creature creature)
+        {
+            if (creature is RabbitCreature && creature.AiState == RabbitBrain.StateFlee)
+            {
+                return 3f;
+            }
+
+            return Mathf.Abs(creature.VelocityX) > 0.01f ? 2f : 1f;
         }
 
         /// <summary>
