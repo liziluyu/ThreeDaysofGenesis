@@ -11,10 +11,9 @@ namespace TapTap2026.Simulation
     /// 速率配置，落体因此快 3 倍而**运动形状不变**（两者同比缩放，达到终端速度所需的帧数不变）；
     /// 水中速率经 <see cref="Buoyancy"/> 重算后与初版逐位一致。改重力时这两个常数要一起动——
     /// 只提重力会让终端速度成为真正的上限、看不出效果。</para>
-    /// <para>本阶段**纯物理、零行为**：不覆写任何钩子（<see cref="Creature.OnSpawn"/> /
-    /// <see cref="Creature.OnLogic"/> / <see cref="Creature.OnDeath"/> 全用基类空体），
-    /// 因此兔子的运动完全由 <see cref="Creature.StepPhysics"/> + 重力决定。
-    /// 移动 / 觅食 / 繁殖留给后续阶段——接口已经预留好。</para>
+    /// <para><b>行为：</b>决策全在静态 <see cref="RabbitBrain"/>（Idle / Wander / Flee），本类只负责
+    /// 用 <see cref="ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 起跳 / 致死门控）接到虚门上；
+    /// 逐帧的意图逼近、悬崖守卫、撞墙翻越、环境致死由基类 <see cref="Creature.ApplyLocomotion"/> 统一执行。</para>
     /// </remarks>
     public sealed class RabbitCreature : Creature
     {
@@ -22,6 +21,66 @@ namespace TapTap2026.Simulation
         public RabbitCreature()
             : base(1.5f, 1f)
         {
+        }
+
+        /// <summary>每逻辑帧的逻辑钩子：门控命中后调 <see cref="RabbitBrain.Think"/>（2 Hz）。
+        /// 运动层 <see cref="Creature.ApplyLocomotion"/> 随后把意图转成速度。</summary>
+        /// <param name="creatures">所属动物世界。</param>
+        /// <param name="world">粒子世界（只读）。</param>
+        public override void OnLogic(CreatureWorld creatures, ParticleWorld world)
+        {
+            if (ShouldThink(creatures))
+            {
+                RabbitBrain.Think(this, creatures, world);
+            }
+        }
+
+        /// <summary>陆上水平加速度：复用 <see cref="RabbitBrain.Accel"/>（数值单一来源在 Brain）。</summary>
+        protected override float MoveAccel
+        {
+            get { return RabbitBrain.Accel; }
+        }
+
+        /// <summary>兔子能跨上一格高的坎（陆生小型动物，靠它翻过沙堆 / 台阶；鱼不具备）。</summary>
+        protected override bool CanStepUp
+        {
+            get { return true; }
+        }
+
+        /// <summary>兔子不会主动游：竖直意图不生效，水中竖直完全交给浮力 / 重力。</summary>
+        protected override float SwimAccel
+        {
+            get { return 0f; }
+        }
+
+        /// <summary>起跳脉冲速度：复用 <see cref="RabbitBrain.HopVelocity"/>。</summary>
+        protected override float HopVelocity
+        {
+            get { return RabbitBrain.HopVelocity; }
+        }
+
+        /// <summary>连续淹没超过 <see cref="Creature.DrownTicksLimit"/> 帧即溺死。</summary>
+        protected override bool DrownsInWater
+        {
+            get { return true; }
+        }
+
+        /// <summary>陆地物种：离水不会死。</summary>
+        protected override bool DiesWhenBeached
+        {
+            get { return false; }
+        }
+
+        /// <summary>兔子食草：饥饿饱和（<see cref="Creature.MaxHungerTicks"/>）即饿死。</summary>
+        protected override bool StarvesWithoutFood
+        {
+            get { return true; }
+        }
+
+        /// <summary>逃命优先：Flee 态跳过悬崖守卫，宁可冲下坑也不回头撞火。</summary>
+        protected override bool IgnoresCliffGuard
+        {
+            get { return AiState == RabbitBrain.StateFlee; }
         }
 
         /// <summary>重力 0.24 格 / 逻辑帧²（20 Hz 下约 4.8 格/秒²）——比初版（0.08）快 3 倍，落地不再有滞空感。</summary>

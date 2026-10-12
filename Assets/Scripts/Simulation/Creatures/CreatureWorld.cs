@@ -14,8 +14,9 @@ namespace TapTap2026.Simulation
     /// <see cref="ParticleWorld.NextUInt"/> 逐字一致），**绝不消耗世界的随机流**。
     /// 这样动物的存在与否不会扰动粒子模拟的任何一次摇骰——两层的确定性互相隔离，
     /// 加一只兔子不会让整片森林长歪。</para>
-    /// <para><b>本阶段对世界只读：</b><see cref="Step"/> 只查询 <see cref="ParticleWorld"/>，
-    /// 不写任何格。未来的写（打洞 / 吃草）必须走 <c>Set</c> / <c>Clear</c> / <c>SetPhase</c>。</para>
+    /// <para><b>对世界近乎只读：</b>逐帧推进阶段只查询 <see cref="ParticleWorld"/>，不写任何格；
+    /// 唯一的写发生在死亡清扫阶段——由 <see cref="CreatureDeathMaterializer"/> 按轮廓写入生物质，
+    /// 且只走 <see cref="ParticleWorld.SetWithShade"/>（未来的打洞 / 吃草也必须走 Set / Clear / SetPhase）。</para>
     /// <para><b>为什么用列表而不是数组池：</b>个体数量与粒子数不在一个量级（个位数到几十），
     /// 每帧 O(n) 遍历的成本可忽略，换取的是「生成 / 移除对渲染层与测试都直观」。</para>
     /// </remarks>
@@ -32,6 +33,10 @@ namespace TapTap2026.Simulation
 
         /// <summary>已推进的逻辑帧数。</summary>
         private int _logicTicks;
+
+        /// <summary>累计生成序号：用于把 <see cref="Creature.SensePhase"/> 钉成 <c>序号 % ThinkEvery</c>，
+        /// 使同批个体的思考帧错开。只增不减——移除个体不会让后来者复用旧相位（相位一旦钉死就终身不变）。</summary>
+        private int _spawnCounter;
 
         /// <summary>用 seed 建立动物世界（与世界随机流分离：驱动层传 <c>settings.Seed ^ 0x9E3779B9u</c>）。</summary>
         /// <param name="seed">随机种子；为 0 时替换为 <c>0x9E3779B9</c>。</param>
@@ -113,6 +118,9 @@ namespace TapTap2026.Simulation
             creature.PrevY = creature.Y;
             creature.Alive = true;
 
+            // 思考相位按生成序号钉死：同批个体因此错峰（最坏同相位 = 同批 30 只同帧思考，仍远低于一个世界 pass）。
+            creature.SensePhase = (byte)(_spawnCounter++ % Creature.ThinkEvery);
+
             _creatures.Add(creature);
             creature.OnSpawn(this, world);
             CreatureSpawned?.Invoke(creature);
@@ -121,9 +129,9 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 推进一个逻辑帧。三个阶段：① 全体快照 <c>Prev = Cur</c>；② 按生成顺序逐只
-        /// <see cref="Creature.OnLogic"/> → <see cref="Creature.StepPhysics"/> → <c>AgeTicks++</c>；
-        /// ③ 倒序清扫 <c>!Alive</c> 的实体，先调 <see cref="Creature.OnDeath"/>、发
-        /// <see cref="CreatureDied"/>，再从列表移除。
+        /// <see cref="Creature.OnLogic"/> → <see cref="Creature.ApplyLocomotion"/> → <see cref="Creature.StepPhysics"/> → <c>AgeTicks++</c>；
+        /// ③ 倒序清扫 <c>!Alive</c> 的实体，先由 <see cref="CreatureDeathMaterializer"/> 写入生物质，
+        /// 再调 <see cref="Creature.OnDeath"/>、发 <see cref="CreatureDied"/>，最后从列表移除。
         /// </summary>
         /// <remarks>
         /// <para>驱动层在 <c>ParticleWorld.StepLogic()</c> **之后**调用本方法，保证动物看到的是本帧
@@ -134,9 +142,10 @@ namespace TapTap2026.Simulation
         /// 尸体不该继续跑物理，清扫阶段照常发它的死亡事件。</para>
         /// <para>③倒序遍历 → 移除下标 i 不影响尚未访问的更小下标；事件在移除**之前**发，
         /// 便于监听者读到最后的位置 / 状态。</para>
-        /// <para>不触碰 <paramref name="world"/> 的随机流，本阶段对世界只读。</para>
+        /// <para>③ 的死亡物质化只走显式 shade 的 <see cref="ParticleWorld.SetWithShade"/>（不抽样颜色），
+        /// 因此**不消耗世界的随机流**；除这一处外，本方法对 <paramref name="world"/> 只读。</para>
         /// </remarks>
-        /// <param name="world">粒子世界（只读）。</param>
+        /// <param name="world">粒子世界（推进阶段只读；死亡清扫阶段写入生物质）。</param>
         public void Step(ParticleWorld world)
         {
             if (world == null)
@@ -162,6 +171,7 @@ namespace TapTap2026.Simulation
                 }
 
                 c.OnLogic(this, world);
+                c.ApplyLocomotion(world);
                 c.StepPhysics(world);
                 c.AgeTicks++;
             }
@@ -174,6 +184,10 @@ namespace TapTap2026.Simulation
                 {
                     continue;
                 }
+
+                // 死亡物质化：按物种轮廓写入生物质（**必须先于** OnDeath / CreatureDied，
+                // 使监听者看到的是「尸体已经物质化」的世界；顺序即契约，见设计 §16.1）。
+                CreatureDeathMaterializer.Materialize(world, c);
 
                 c.OnDeath(this, world, c.PendingDeathCause);
                 CreatureDied?.Invoke(c, c.PendingDeathCause);
