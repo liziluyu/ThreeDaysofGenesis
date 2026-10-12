@@ -510,8 +510,9 @@ public sealed class ParticleWorld
     public ParticleType[] Types { get; }        // Types[0] == null（空气）
     public HeatMap Heat { get; }                // 与网格同形的热量场 Q（float/格），见下
     public LightController Light { get; }       // 光照控制器（按时序向每列最上面的非气体粒子施热——光打到水面就停），见下
-    public LiquidMotionMonitor LiquidMotion { get; } // 液体运动量的观察者（运动比例，供水的流动声等消费），见下
-    public ParticleCountMonitor Counts { get; }      // 粒子存量的观察者（每类型存量 + 新增格数，供火焰声 / 雷电声等消费），见下
+    public MotionMonitor LiquidMotion { get; }   // 液体运动量的观察者（运动比例，供水的流动声消费），见下
+    public MotionMonitor SolidMotion { get; }    // 无机固体的运动量观察者（运动格数，供落沙声消费），见下
+    public ParticleCountMonitor Counts { get; }  // 粒子存量的观察者（每类型存量 + 新增格数，供火焰声 / 雷电声等消费），见下
 
     // —— 读 ——
     public int  Index(int x, int y);            // y * Width + x
@@ -540,33 +541,45 @@ public sealed class ParticleWorld
 > 种子约定：`seed == 0` 会被静默替换为内部默认种子（xorshift32 需要非零状态）。回放/存档请避免使用 0。
 
 
-### 液体运动量的观察者（`LiquidMotionMonitor`）：供表现层消费的派生量
+### 运动量的观察者（`MotionMonitor`）：按标签掩码，一份实现两个信号
 
-`world.LiquidMotion` 是世界常驻的一个**纯观察者**，用 O(1) 增量同时追踪两个量，供表现层（水的流动声）
-取二者的**比例**当响度。它**不参与模拟**——零 RNG 消耗、零格子写入、零场写入，读不读它世界都逐位一致。
+世界常驻两个 `MotionMonitor` 实例，各自盯住一个**标签掩码**：
+
+| 世界属性 | 掩码 | 消费方 |
+|---|---|---|
+| `world.LiquidMotion` | 带 `Liquid` | 水的流动声（用**比例**） |
+| `world.SolidMotion` | 带 `Solid` **且不带** `Organic` | 落沙声（用**绝对运动格数**） |
+
+两者都是**纯观察者**——零 RNG 消耗、零格子写入、零场写入，读不读它世界都逐位一致。
 
 | 读法 | 语义 |
 |---|---|
-| `LiquidCount` | 世界当前液体粒子总数（存量；`Set` / `SetPhase` 的旧/新类型差分，O(1)） |
-| `MovingCount` | 自上次 `Reset` 以来移动过的液体粒子数（每帧 `Swap` 按换位的液体端数累加） |
-| `MovingRatio` | `MovingCount ÷ LiquidCount`，夹在 `[0,1]`；无液体时 0 ——**响度的输入** |
+| `TrackedCount` | 匹配类型的当前存量（`Set` / `SetPhase` 的旧/新类型差分，O(1)） |
+| `MovingCount` | 自上次 `Reset` 以来移动过的匹配格数（每帧 `Swap` 按换位的匹配端数累加；两端都匹配就 +2） |
+| `MovingRatio` | `MovingCount ÷ TrackedCount`，夹在 `[0,1]`；无存量时 0 |
 | `Reset()` | 清空移动计数（存量不受影响）。消费方每帧读完即清 |
 
-**为什么用比例**：绝对移动数随水体大小涨（水面越宽、抖动越多），当响度会让大水塘无端更响。
-比例与尺寸无关，且**石盆 / 塘里的静水恒为 0.00**（封闭水体没有自由液面搅动、等温后也无对流）。
+匹配判据在构造时按 `world.Types` 摊成表：类型非 null 且 `(Tags & tags) == tags && (Tags & excluded) == 0`。
+空气（typeId 0）永不匹配；越界 id 不匹配、读返回 0、不抛。分类只走 `ParticleTags`，不特判 typeId。
 
-**实测锚点**（生产表）：石盆静水 `0.00`；退潮期 `≈0.14`；摊开的薄水层 `0.21~0.32`；连续瀑布
-`0.72`（起始可达 `0.86`）。**注意**：瀑布注水入盆时，分母随积水增长而变大，比例会随时间下滑
-（实测同一股瀑布：积水 599→4689 格时比例 `0.86→0.23`）——「一大湖配一股水」本来就「大部分水没动」，
-但若期望「倒得越多越响」，用比例会与直觉相反。要改口径只需换一个分母。
+**比例 vs 绝对数——两种口径都是刻意的**：
+- **水用比例**：绝对移动数随水体大小涨（水面越宽、抖动越多），当响度会让大水塘无端更响。比例与尺寸无关，
+  且**石盆 / 塘里的静水恒为 0.00**。实测锚点：石盆静水 `0.00`；退潮期 `≈0.14`；摊开的薄水层 `0.21~0.32`；
+  连续瀑布 `0.72`（起始可达 `0.86`）。**代价**：瀑布注水入盆时分母随积水增长，比例会下滑
+  （实测同一股瀑布：积水 599→4689 格时 `0.86→0.23`），若期望「倒得越多越响」会与直觉相反。
+- **固体用绝对运动格数**：固体的存量里绝大多数是**常年静止**的成员（草 / 树干 / 树叶 / 花 / 水生植物），
+  比例会被这些不动的格稀释到近 0——「一柱沙在落」与「满地沙在滚」几乎分不出来。绝对格数还与玩家直觉
+  一致（落得越多越吵），且固体**落地即静止、没有噪声底**（实测：落定沙堆的运动格数恒为 0），
+  因此既不需要滞回也不需要 EMA。实测锚点（生产表 320×180）：落定沙堆 `0`；单条 40 格沙柱整体下落
+  峰值恰为 `40`；40×60 沙块倾泻峰值 `2400`；持续投沙峰值 `1319`（后两者都封顶）。
 
-维护方式：<see cref="ParticleWorld.Swap"/> 只累加移动计数（一次交换不改变液体总数）；
-`LiquidCount` 只由 `Set` / `SetPhase` 的旧/新类型差分维护。分类只看标签（`Liquid`），不特判 typeId。
+维护方式：`Swap` 只累加移动计数（一次交换不改变任何存量）；`TrackedCount` 只由 `Set` / `SetPhase`
+的旧/新类型差分维护。
 
 
 ### 粒子存量的观察者（`ParticleCountMonitor`）：两种读法对应两类声音
 
-`world.Counts` 与世界常驻的 `LiquidMotion` 并列，同样是一个**纯观察者**（零 RNG 消耗、零格子写入、
+`world.Counts` 与两个 `MotionMonitor` 并列，同样是一个**纯观察者**（零 RNG 消耗、零格子写入、
 零场写入；读不读它世界都逐位一致）。它用 O(1) 增量维护**每种类型**的两个量：
 
 | 读法 | 语义 | 谁在用 |
@@ -1322,7 +1335,7 @@ Assets/Scripts/
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
-    LiquidMotionMonitor.cs                    液体运动量的观察者（world.LiquidMotion）：O(1) 增量维护「液体总数」（Set/SetPhase 差分）与「本帧移动的液体数」（Swap 按换位液体端数），导出 MovingRatio 供表现层（水的流动声的响度）；无方向 / 无格位过滤；纯观察者——零 RNG 消耗、零格子/场写入
+    MotionMonitor.cs                          按标签掩码的**运动量观察者**（世界持有两个实例：`world.LiquidMotion` = 带 Liquid、`world.SolidMotion` = 带 Solid 且非 Organic）：O(1) 增量维护 `TrackedCount`（匹配类型存量，Set/SetPhase 差分）与 `MovingCount`（本帧移动过的匹配格数，Swap 按换位匹配端数累加），导出 `MovingRatio`；掩码在构造时对 `world.Types` 摊表（空气与越界恒不匹配、不抛）。水的流动声用 `LiquidMotion.MovingRatio`（比例，尺寸无关、静水恒 0）；落沙声用 `SolidMotion.MovingCount`（**绝对格数**——固体存量里绝大多数是常年静止的草 / 树干 / 树叶 / 花 / 水生植物，比例会被稀释到近 0）。纯观察者——零 RNG 消耗、零格子/场写入
     ParticleCountMonitor.cs                   粒子存量的观察者（world.Counts）：按类型 O(1) 增量维护「存量」Count(typeId)（Set/SetPhase 旧/新类型差分）与「新增格数」ConsumeCreated(typeId)（读后清零、按类型独立），供表现层消费——火焰持续声读存量（烧得越大越响）、雷电一次性音效读新增（一帧最多一声）；Clear 走 Set 故无第三条钩子、Swap 不参与、空气（0）与越界 id 恒 0 且不抛；纯观察者——零 RNG 消耗、零格子/场写入
     MotionReadBox.cs                          类型的运动阅读盒 (X, Up, Down)：OnMotion 对 _cells 的轴对齐读距，世界求反转并集作为运动休眠的写入唤醒集
     TreeSpecies.cs                           树木物种静态表（五物种 杨/橡/松/柏/柳 = flags bit3-5 编号，只能追加）：H 树干高 / N 生长分母 / D 发芽分母 / 基质档（Drought 任意三土；Moist 三土且八邻有湿土或腐殖土；Wet 正下方湿土或腐殖土）/ 树冠有序偏移表（数组顺序＝生长顺序；**表自支撑**——除首项外每项与树干列或更早项 Chebyshev 相邻，生长守卫据此防浮空叶）/ 支撑半径 / 色片色数；含物种位读写 helper `Read` / `Stamp`（Stamp 在 Set/SetPhase 之后调用：重写 bit3-5 并把世界已抽样的 shade 折进本物种色片，零额外随机流；编辑器与粒子共用）
@@ -1360,6 +1373,7 @@ Assets/Scripts/
     LiquidFlowSoundDriver.cs                 水的流动声（表现层）：每帧读 `world.LiquidMotion.MovingRatio` → `Reset` → 死区 `_minRatio`（0.15）+ 滞回 `_hysteresis`（0.03）→ 比例→响度线性映射（满响 `_fullVolumeRatio` = 0.6）→ EMA `_smoothingSeconds`（0.25 秒）→ `SoundController.SetAmbience`；停流推 0 平滑淡出、关闭或世界未就绪时先清账再静音。`Pump(world, deltaTime)` 与 `IsFlowing` 均可脱离帧循环验证；映射 / EMA 的纯数学在 `SoundController.MapLoudness` / `SoundController.Ema`
     FireSoundDriver.cs                       火焰的持续声（表现层）：每帧读 `world.Counts.Count(ParticleIds.Fire)`（**火格数**，不是比例——玩家直觉是「烧得越大越响」，与水流声用比例的口径不同）→ `MapLoudness(火格数, _minFireCount(0), _fullVolumeCount(40)) × _volume` → EMA `_smoothingSeconds`（0.25 秒，抹平火格逐帧生灭的抖动）→ `SetAmbience`；无火 / 关闭 / 世界未就绪 / `ParticleIds.Fire` 未注册（= 0）→ 收声返回 0
     LightningSoundDriver.cs                   闪电的一次性音效（表现层）：每帧**无条件** `world.Counts.ConsumeCreated(ParticleIds.Lightning)`（先清账再判开关，关闭期间也读掉，重开不补发积压起爆）→ `created > 0` 且启用时 `PlayOneShot` 响一声。**`created` 是格数而非次数**（一次起爆写整条主干几十格），故判据 `> 0` ⇒ **一帧最多一声**，且绝不循环 / 取模 / 锁相位——这正是「只在劈下时响一次、音频很短」的实现
+    FallingSandSoundDriver.cs                 落下的固体声（表现层）：每帧读 `world.SolidMotion.MovingCount`（**绝对运动格数**——固体存量被常驻静止的草 / 树干 / 树叶 / 花 / 水生植物占满，比例会被稀释到近 0；且「落得越多越吵」正是直觉）→ `MapLoudness(运动格数, _minMovingCount(0), _fullVolumeCount(40)) × _volume` → `SetAmbience`。**没有 EMA、没有滞回、没有 dt 参数**——固体落地即静止、运动格数没有噪声底（实测落定沙堆恒 0），响度平滑已由 `SoundController._loudnessPerSecond` 完成，这是它比水流声简单的原因。口径 = `Solid` 且非 `Organic`（石 / 沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 水生态种子），故树叶飘落、种子下沉不触发；关闭或世界未就绪时先清账再收声
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
     SystemProxyGuard.cs                       系统代理无法被 Mono 解析时把 WebRequest.DefaultWebProxy 钉为直连（保 Unity-MCP 连通）
@@ -1390,14 +1404,16 @@ Assets/Tests/EditMode/
     SoundControllerTests.cs                   声音控制器（纯逻辑契约，12 项）：文件查找正/反、`ClampDeltaTime` 上限与脏值、`NextVolume` 步进与 dt 上限、`MapLoudness` 区间与退化、`Ema` 平滑与 dt 上限、多声床互相独立、`StopAmbience(file)` 只停指定声床、`PlayOneShot` 不触碰声床且计数 +1、未知音频不抛且不改状态、查询中立值
     LiquidFlowSoundDriverTests.cs             水的流动声（4 项纯逻辑契约）：`IsFlowing` 死区 + 滞回门、静水推 0 / 流水推响度到声床、停流后 EMA 单调衰减到听不见、关闭即收声、关闭期间仍清账
     ParticleCountMonitorTests.cs              粒子存量观察者（8 项，隔离类型表）：Set/Clear 存量差分、同类型覆盖写不动存量（且不重复计新增——同类型重复 Set 在 `ParticleWorld.Set` 内提前返回）、A→B 覆盖写两端、Swap 不动存量也不计新增、`ConsumeCreated` 读后清零且按类型独立、空气 / 越界为 0、以及纯净性（反复读数后世界逐格 + 热场 + 湿度场 + 随机流逐位不变）
+    MotionMonitorTests.cs                     运动量观察者（8 项，隔离类型表）：`SolidMotion` 掩码口径（非 Organic 固体下落计入、带 Organic 的固体下落**恒 0**、与 `LiquidMotion` 互不干扰）/ 液体改名回归 / `TrackedCount` 的 Set-Clear-Swap 语义 / `MovingRatio` 缩放、夹取与**固体稀释**（大量静止固体 + 少量下落 ⇒ ratio 远小于 1 而 `MovingCount` 仍是真实运动格数）/ `Reset` 只清运动计数
     FireSoundDriverTests.cs                   火焰持续声（7 项，生产注册路径）：无火推 0 且声床目标为 0、火格数达 `_fullVolumeCount` 后 EMA 单调收敛到满响、更多火更响（锚定「取格数而非比例」）、死区边界、`_volume` 缩放、单帧推进受 dt 上限约束、关闭 / world=null 收声
     LightningSoundDriverTests.cs              闪电一次性音效（5 项，生产注册路径）：无世界不响、干燥世界不响、**一次起爆恰好 +1**（整条多格主干只响一声）、一帧内两次起爆仍最多一声、禁用期间仍清账且重开不补发
+    FallingSandSoundDriverTests.cs            落下的固体声（8 项，生产注册路径）：无运动静音、固体下落推响度到声床、落更多格更响（锚定「绝对运动格数」口径）、死区边界、`_volume` 缩放、关闭 / world=null 收声、关闭期间仍清账不补发、以及**口径锚点**（草种子下落 ⇒ 0，落沙声不认有机颗粒）
 ```
 
-测试总数 **461**（`ParticleWorldTests` 89 + `SandStoneParticleTests` 9 + `ThermalDriftTests` 7 + `WaterParticleTests` 20 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 25 + `GrassParticleTests` 13 + `FlowerParticleTests` 13 + `FireParticleTests` 28 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24 + `TreeParticleTests` 45 + `GroundwaterTests` 14 + `HumusSoilParticleTests` 13 + `CreatureWorldTests` 12 + `LightningParticleTests` 11 + `SoundControllerTests` 12 + `LiquidFlowSoundDriverTests` 4 + `ParticleCountMonitorTests` 8 + `FireSoundDriverTests` 7 + `LightningSoundDriverTests` 5）。
+测试总数 **477**（`ParticleWorldTests` 89 + `SandStoneParticleTests` 9 + `ThermalDriftTests` 7 + `WaterParticleTests` 20 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 25 + `GrassParticleTests` 13 + `FlowerParticleTests` 13 + `FireParticleTests` 28 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24 + `TreeParticleTests` 45 + `GroundwaterTests` 14 + `HumusSoilParticleTests` 13 + `CreatureWorldTests` 12 + `LightningParticleTests` 11 + `SoundControllerTests` 12 + `LiquidFlowSoundDriverTests` 4 + `ParticleCountMonitorTests` 8 + `MotionMonitorTests` 8 + `FireSoundDriverTests` 7 + `LightningSoundDriverTests` 5 + `FallingSandSoundDriverTests` 8）。
 声音测试只断言纯逻辑与目标响度 / 计数，**不断言主观听感**；真正的出声只能在编辑器 Play 模式里由人耳确认。
 
-**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂九个组件并已两两接线：
+**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂十个组件并已两两接线：
 
 
 ```
@@ -1421,7 +1437,7 @@ Particle Sandbox
                                 _enabled=1 / _litTicks=600 / _darkTicks=600 / _intensity=10 / _cloudExtinction=0.05
                                 _dayBackground=#CCE5FF / _nightBackground=#2A223A / _nightBrightness=0.5
                                 （每帧写回 world.Light、并把昼夜参数推给渲染器；过渡长度由周期自动推出）
-   SoundController             _clips → water / fire / lightning（Assets/Sounds/*.mp3）
+   SoundController             _clips → water / fire / lightning / falling_sand（Assets/Sounds/*.mp3）
                                 _loudnessPerSecond=3；每条音频一条独立循环声床（惰性建源）+ 一个一次性音效源
    LiquidFlowSoundDriver       _soundFile=water / _minRatio=0.15 / _fullVolumeRatio=0.6
                                 _hysteresis=0.03 / _smoothingSeconds=0.25 / _enabled=1
@@ -1432,6 +1448,10 @@ Particle Sandbox
    LightningSoundDriver        _soundFile=lightning / _volume=1 / _enabled=1
                                 （每帧消费 world.Counts.ConsumeCreated(Lightning)，>0 就 PlayOneShot 响一次——
                                  一帧最多一声，不循环 / 不取模 / 不锁相位）
+   FallingSandSoundDriver      _soundFile=falling_sand / _minMovingCount=0 / _fullVolumeCount=40
+                                _volume=1 / _enabled=1
+                                （每帧消费 world.SolidMotion.MovingCount 的绝对运动格数 → 响度，落得越多越吵；
+                                 无滞回 / 无 EMA——固体落地即静止、没有噪声底）
 ```
 
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。

@@ -71,7 +71,8 @@ namespace TapTap2026.Simulation
         private readonly HeatMap _heat;
         private readonly HumidityField _humidity;
         private readonly LightController _light;
-        private readonly LiquidMotionMonitor _liquidMotion;
+        private readonly MotionMonitor _liquidMotion;
+        private readonly MotionMonitor _solidMotion;
         private readonly ParticleCountMonitor _counts;
         private readonly ParticleType[] _types;
 
@@ -208,7 +209,8 @@ namespace TapTap2026.Simulation
             _humidity = new HumidityField(width, height);
             _heat = new HeatMap(width, height, _cells, types, _humidity);
             _light = new LightController();
-            _liquidMotion = new LiquidMotionMonitor(this);
+            _liquidMotion = new MotionMonitor(this, ParticleTags.Liquid);
+            _solidMotion = new MotionMonitor(this, ParticleTags.Solid, ParticleTags.Organic); // 无机固体：落沙声的口径
             _counts = new ParticleCountMonitor(this);
 
             // 扫描进行中的热 / 湿度变化要同帧并入候选位图（见 OnThermalCellDirtied）：全网格旧路径里，
@@ -377,14 +379,31 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 液体**运动量**的观察者（按换位的液体端数记账，见 <see cref="LiquidMotionMonitor"/>）。
-        /// 世界常驻持有并随世界重建，读数方每帧读完 <see cref="LiquidMotionMonitor.Reset"/> 一次
-        /// （水的流动声就是它的消费方：响度 ∝ <see cref="LiquidMotionMonitor.MovingCount"/>）。
-        /// 它是纯观察者：读不读、用它做什么都不改变模拟结果。
+        /// 液体**运动量**的观察者（按换位的液体端数记账，见 <see cref="MotionMonitor"/>）。
+        /// 世界常驻持有并随世界重建，读数方每帧读完 <see cref="MotionMonitor.Reset"/> 一次
+        /// （水的流动声就是它的消费方：响度 ∝ <see cref="MotionMonitor.MovingRatio"/>）。
+        /// 掩码 = <see cref="ParticleTags.Liquid"/>（带上该标签的类型）。
+        /// 它是纯观察者：零 RNG 消耗、零格子写入、零场写入——读不读、用它做什么都不改变模拟结果。
         /// </summary>
-        public LiquidMotionMonitor LiquidMotion
+        public MotionMonitor LiquidMotion
         {
             get { return _liquidMotion; }
+        }
+
+        /// <summary>
+        /// 固体**运动量**的观察者（按换位的固体端数记账，见 <see cref="MotionMonitor"/>）。
+        /// 世界常驻持有并随世界重建，读数方每帧读完 <see cref="MotionMonitor.Reset"/> 一次
+        /// （下落声就是它的消费方：它读**绝对** <see cref="MotionMonitor.MovingCount"/> 而不是比例——
+        /// 固体存量里大多是常年定植不动的成员，<see cref="MotionMonitor.MovingRatio"/> 会被稀释，
+        /// 详见 <see cref="MotionMonitor"/> 的类型注释）。
+        /// 掩码 = 带 <see cref="ParticleTags.Solid"/> **且不带** <see cref="ParticleTags.Organic"/>：
+        /// 石 / 沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 水生态种子——会下落的粉末；
+        /// 树叶 / 草种子 / 树木种子 / 草 / 花 / 树干带 <see cref="ParticleTags.Organic"/>，被排除。
+        /// 它是纯观察者：零 RNG 消耗、零格子写入、零场写入——读不读、用它做什么都不改变模拟结果。
+        /// </summary>
+        public MotionMonitor SolidMotion
+        {
+            get { return _solidMotion; }
         }
 
         /// <summary>
@@ -740,6 +759,10 @@ namespace TapTap2026.Simulation
             // 平静水面的逐格抖动与瀑布的整片下落都算「液体在动」，量级自然区分开。
             _liquidMotion.OnSwap(x0, y0, x1, y1);
 
+            // 固体运动量的记账（下落声的数据源）：同一交换按换位的「无机固体」端数累加。液体与固体各自
+            // 只看自己掩码内的端点，一次只涉及一类的交换对另一类毫无影响。
+            _solidMotion.OnSwap(x0, y0, x1, y1);
+
             return true;
         }
 
@@ -862,6 +885,9 @@ namespace TapTap2026.Simulation
 
             // 液体存量：类型换了就按旧/新是否液体差分（水的流动声的响度的分母）。
             _liquidMotion.OnCellReplaced(previousId, typeId);
+
+            // 固体存量：同一次类型替换按旧/新是否「无机固体」差分（下落声那条的存量，纯观察、无消费方读比例）。
+            _solidMotion.OnCellReplaced(previousId, typeId);
 
             // 粒子存量：同一次类型替换按旧/新类型差分，并记「新格」一次（火焰持续声的存量与新增来源）。
             // Clear(x, y) 就等价于 Set(x, y, AirTypeId)（见 Clear），因此递减走的是这一条路径，不需要额外钩子。
@@ -1058,6 +1084,9 @@ namespace TapTap2026.Simulation
 
             // 液体存量：相变改了类型就差分（水↔湿土、水↔蒸汽等都算）。
             _liquidMotion.OnCellReplaced(previousId, typeId);
+
+            // 固体存量：相变同样按旧/新是否「无机固体」差分（水↔湿土这类相变在固体那条也会出入账）。
+            _solidMotion.OnCellReplaced(previousId, typeId);
 
             // 粒子存量：相变同样是一次类型替换，按旧/新类型差分并记「新格」一次（水⇄蒸汽等相变也计入存量）。
             _counts.OnCellReplaced(previousId, typeId);

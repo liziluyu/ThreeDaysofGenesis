@@ -11,7 +11,7 @@ namespace TapTap2026.Game
     /// <para><b>为什么用运动比例而不是位置 / 绝对数</b>：绝对移动数随水体大小涨（水面越宽、抖动越多），
     /// 用它当响度会让大水塘无端更响；位置 / 方向都不行，因为当前流体算法在平静水面上也会逐格穿行。
     /// 比例与尺寸无关：静止水洼只有一薄层液面在动、比例低；瀑布整片在动、比例高
-    /// （见 <see cref="LiquidMotionMonitor"/>）。</para>
+    /// （见 <see cref="MotionMonitor"/>）。</para>
     /// <para><b>不重播</b>：本组件只做「读比例 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
     /// 每帧都推、推几次都一样。起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里水那条循环声床
     /// （控制器**每条音频各有一条独立声床**，故水与火能同时响），因此根本没有「续声」——旧版按一个持续秒数周期
@@ -117,7 +117,7 @@ namespace TapTap2026.Game
 
             // **先清账再判开关**：关闭期间也必须把监视器的本轮计数读掉，否则重新打开的那一帧会把
             // 关闭期间积压的流动当作「此刻在流」补发出去（响一下）。
-            LiquidMotionMonitor motion = world.LiquidMotion;
+            MotionMonitor motion = world.LiquidMotion;
             float ratio = motion.MovingRatio;
             motion.Reset();
 
