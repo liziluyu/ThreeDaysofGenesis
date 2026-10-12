@@ -1,3 +1,4 @@
+using System.Reflection;
 using NUnit.Framework;
 using TapTap2026.Game;
 using UnityEditor;
@@ -207,6 +208,77 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(0.5f, _controller.TargetLoudness("water"), 1e-6f, "查不到的名字不改动已建立的声床");
             Assert.AreEqual(1, _controller.OneShotPlayCount, "查不到的名字不计入一次性音效次数");
+        }
+
+        /// <summary>
+        /// 高速模式整层静音：会话 Active 期间声床不起播、正在响的声源当帧被硬停、一次性音效被丢弃（也不计数），
+        /// 但**目标响度照记**；玩家确认退出（<c>Exit</c>）后一切照常，且被记下的目标立刻重新淡入。
+        /// 判定者是驱动上的 <c>HighSpeedActive</c>——这里是生产里的同一个 `ParticleSimulationDriver`（`Awake` 建好世界后进入模式）。
+        /// </summary>
+        [Test]
+        public void HighSpeedMode_SilencesEverySourceAndResumesAfterExit()
+        {
+            var settings = ScriptableObject.CreateInstance<ParticleSimulationSettings>();
+            var driverObject = new GameObject("SoundControllerTests.Driver");
+            var driver = driverObject.AddComponent<ParticleSimulationDriver>();
+
+            try
+            {
+                // 小网格（4×4）省掉一次 320×180 的建世界开销；其余参数用类型默认值。
+                var driverSerialized = new SerializedObject(driver);
+                driverSerialized.FindProperty("_settings").objectReferenceValue = settings;
+                driverSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                var settingsSerialized = new SerializedObject(settings);
+                settingsSerialized.FindProperty("_width").intValue = 4;
+                settingsSerialized.FindProperty("_height").intValue = 4;
+                settingsSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                // EditMode 里 AddComponent 不触发 Awake，直接反射调一次（世界 / 倍速控制器都在那里建）。
+                // 不走 SendMessage：它会走 Unity 的消息派发，在 EditMode 下断言 ShouldRunBehaviour()。
+                typeof(ParticleSimulationDriver)
+                    .GetMethod("Awake", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(driver, null);
+
+                // 与运行时同一条路：驱动留空时控制器自己在 Awake 里找，这里显式接线以固定顺序。
+                var serialized = new SerializedObject(_controller);
+                serialized.FindProperty("_driver").objectReferenceValue = driver;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+
+                Assert.IsFalse(_controller.HighSpeedSilenced, "未进入高速模式：不静音");
+
+                _controller.SetAmbience("water", 0.6f);
+                Assert.IsTrue(_controller.IsPlaying("water"), "未静音时声床照常起播");
+
+                driver.EnterHighSpeed();
+                Assert.IsTrue(_controller.HighSpeedSilenced, "进入高速模式即静音");
+
+                _controller.Tick(0.016f); // 静音中的那一帧：硬停正在响的声部
+                Assert.IsFalse(_controller.IsPlaying("water"), "静音期间正在响的声床被硬停");
+                Assert.AreEqual(0f, _controller.CurrentLoudness("water"), 1e-6f, "硬停不留在淡出尾巴上");
+
+                _controller.SetAmbience("water", 0.6f);
+                Assert.AreEqual(0.6f, _controller.TargetLoudness("water"), 1e-6f, "目标响度照记（退出后据此淡入）");
+                Assert.IsFalse(_controller.IsPlaying("water"), "静音期间不起播声床");
+
+                _controller.PlayOneShot("rain", 0.7f);
+                Assert.AreEqual(0, _controller.OneShotPlayCount, "静音期间丢弃一次性音效，也不计数");
+
+                driver.HighSpeed.Exit(driver.Speed);
+                Assert.IsFalse(_controller.HighSpeedSilenced, "确认退出后不再静音");
+
+                _controller.Tick(0.016f);
+                Assert.IsTrue(_controller.IsPlaying("water"), "退出后声床按记下的目标重新淡入");
+                Assert.Greater(_controller.CurrentLoudness("water"), 0f, "淡入从静音起步、当帧就推离 0");
+
+                _controller.PlayOneShot("rain", 0.7f);
+                Assert.AreEqual(1, _controller.OneShotPlayCount, "退出后照常起播");
+            }
+            finally
+            {
+                Object.DestroyImmediate(driverObject);
+                Object.DestroyImmediate(settings);
+            }
         }
 
         /// <summary>查询接口对「未知音频 / 从未推过的声床」一律给中立值 0 / false，不抛、不建源。</summary>

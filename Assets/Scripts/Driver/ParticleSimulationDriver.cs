@@ -101,14 +101,12 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>是否处于高速模式：进入后、确认退出前恒为 true（<see cref="HighSpeedSession.Completed"/> 后仍为 true）。</summary>
+        /// <summary>是否处于高速模式：进入后、确认退出前恒为 true（<see cref="HighSpeedSession.Completed"/> 后仍为 true）。
+        /// 只读字段、**不触发懒建**——每帧查询它的调用方（<see cref="SoundController"/> 的静音闸门）不该因此凭空建出会话；
+        /// 会话仍由 <see cref="EnterHighSpeed"/> 或 <see cref="GameController"/> 的轮询建立。</summary>
         public bool HighSpeedActive
         {
-            get
-            {
-                HighSpeedSession session = HighSpeed;
-                return session != null && session.Active;
-            }
+            get { return _highSpeed != null && _highSpeed.Active; }
         }
 
         /// <summary>进入高速模式：转发给内核会话（把倍速钉到控制器满档，退出时钉回 1×）。幂等，已在模式中则无事发生。

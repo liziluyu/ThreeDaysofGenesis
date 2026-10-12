@@ -22,6 +22,12 @@ namespace TapTap2026.Game
     /// 时间轴用 <see cref="Time.unscaledDeltaTime"/>（不随 <c>Time.timeScale</c> 变）。</para>
     /// <para><b>淡出后停止</b>：目标为 0 时音量平滑降到听不见（<see cref="SilentVolume"/>）才真正 <c>Stop()</c>；
     /// 目标重新为正会重新 <c>Play()</c>（从静音淡入）。声源与 clip 都保留，重新推目标即可再次淡入。</para>
+    /// <para><b>高速模式整层静音</b>：<see cref="ParticleSimulationDriver.HighSpeedActive"/> 期间（进入后到玩家确认退出前）
+    /// <see cref="HighSpeedSilenced"/> 恒为 true——所有声音都从本类过，因此这里一刀压掉就覆盖全部声源：
+    /// <see cref="Update"/> **硬停**全部声床与一次性源（不淡出：淡出那段尾巴也还是在出声）、
+    /// <see cref="SetAmbience"/> 不起播、<see cref="PlayOneShot"/> 直接丢弃。理由：高速模式一帧跑上百个逻辑帧
+    /// （一场沙崩、一串雷暴全挤在同一个真实帧里），逐帧出声只会变成噪音。
+    /// **目标响度照记**——驱动每帧还在推入需求，退出模式后由 <see cref="Update"/> 原样淡入。判定者留空（无驱动）时恒不静音。</para>
     /// <para><b>生命周期</b>：声床与一次性源都是运行时建的子物体（<c>HideFlags.DontSave</c>，绝不随场景落盘），
     /// 声床**惰性**：首次对某条音频 <see cref="SetAmbience"/> 才建，一次建好永久复用。
     /// <see cref="OnDestroy"/> 销毁全部自建子物体；<see cref="OnDisable"/> 把所有声床目标归零并停声（含一次性源）——
@@ -45,6 +51,10 @@ namespace TapTap2026.Game
         [Tooltip("声床响度平滑速度：每秒把音量朝目标推进的幅度（1 = 满量程约 1 秒）。0 = 立即跳变（会有台阶声）。")]
         [SerializeField, Min(0f)] private float _loudnessPerSecond = 3f;
 
+        [Tooltip("高速模式的判定者：留空则回退到同物体 / 场景里的 ParticleSimulationDriver（只为读 HighSpeedActive）。" +
+                 "留空且找不到驱动 = 永不静音。")]
+        [SerializeField] private ParticleSimulationDriver _driver;
+
         /// <summary>与 <see cref="_clips"/> 下标一一对应的循环声床；没推过的槽为 null（惰性建源）。</summary>
         private AudioSource[] _beds;
 
@@ -66,8 +76,28 @@ namespace TapTap2026.Game
             get { return _oneShotPlayCount; }
         }
 
+        /// <summary>
+        /// 是否因**高速模式**而整层静音：高速会话 <c>Active</c> 期间（进入后、玩家确认退出前——
+        /// 跑满时长自动暂停后仍为 true）恒为 true。没接驱动（留空且场景里也没有）时恒为 false。
+        /// 置真时全部声源硬停、两个播放入口一并丢弃（见类注释「高速模式整层静音」）。
+        /// </summary>
+        public bool HighSpeedSilenced
+        {
+            get { return _driver != null && _driver.HighSpeedActive; }
+        }
+
         private void Awake()
         {
+            if (_driver == null)
+            {
+                _driver = GetComponent<ParticleSimulationDriver>();
+            }
+
+            if (_driver == null)
+            {
+                _driver = FindObjectOfType<ParticleSimulationDriver>();
+            }
+
             EnsureBeds();
             EnsureOneShot();
 
@@ -85,7 +115,23 @@ namespace TapTap2026.Game
                 for (int i = 0; i < _beds.Length; i++)
                 {
                     _targets[i] = 0f;
+                }
+            }
 
+            StopAllSources();
+        }
+
+        /// <summary>
+        /// 立刻停掉全部声源（循环声床 + 一次性源）并把声床音量归零——不留任何正在出声的声部。
+        /// 禁用（<see cref="OnDisable"/>）与高速模式静音（<see cref="Update"/>）共用同一口径。
+        /// **不动目标响度**：那记的是驱动的需求，重新具备发声条件时由它推入的目标原样淡入。
+        /// </summary>
+        private void StopAllSources()
+        {
+            if (_beds != null)
+            {
+                for (int i = 0; i < _beds.Length; i++)
+                {
                     AudioSource bed = _beds[i];
                     if (bed != null)
                     {
@@ -142,7 +188,7 @@ namespace TapTap2026.Game
             _targets[index] = Mathf.Clamp01(loudness);
 
             AudioSource bed = EnsureBed(index);
-            if (_targets[index] > 0f && !bed.isPlaying)
+            if (_targets[index] > 0f && !HighSpeedSilenced && !bed.isPlaying)
             {
                 bed.Play();
             }
@@ -176,6 +222,12 @@ namespace TapTap2026.Game
         /// </summary>
         public void PlayOneShot(string fileName, float loudness)
         {
+            // 高速模式整层静音：连账都不记（没有起播就没有次数）。调用方的清账不受影响——它读自己的监视器。
+            if (HighSpeedSilenced)
+            {
+                return;
+            }
+
             int index = FindIndex(fileName);
             if (index < 0)
             {
@@ -294,12 +346,31 @@ namespace TapTap2026.Game
 
         private void Update()
         {
+            Tick(Time.unscaledDeltaTime);
+        }
+
+        /// <summary>
+        /// 一帧的声源推进：每个声床的音量朝目标走一步、目标为正且未在播就起播、目标为 0 且已淡到听不见就停源。
+        /// 高速模式静音期间（<see cref="HighSpeedSilenced"/>）不淡出、直接硬停全部声源并返回。
+        /// 由 <see cref="Update"/> 每帧调一次；公开（含显式 <paramref name="deltaTime"/>）是为了让测试能脱离帧循环
+        /// 确定性地驱动它——与四个声音驱动器的 <c>Pump</c> 同一口径。
+        /// </summary>
+        /// <param name="deltaTime">本帧真实时长（秒）；经 <see cref="ClampDeltaTime"/> 钳制。</param>
+        public void Tick(float deltaTime)
+        {
             if (_beds == null)
             {
                 return;
             }
 
-            float deltaTime = Time.unscaledDeltaTime;
+            // 高速模式：整层硬停（不淡出——淡出那段尾巴也还是在出声）。目标数组不动：
+            // 驱动每帧照旧推入需求，退出模式后下面这段循环原样把它们淡入。
+            if (HighSpeedSilenced)
+            {
+                StopAllSources();
+                return;
+            }
+
             for (int i = 0; i < _beds.Length; i++)
             {
                 AudioSource bed = _beds[i];
