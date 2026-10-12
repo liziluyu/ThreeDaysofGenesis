@@ -330,7 +330,7 @@ public readonly struct ParticleTypeInfo
 - **熄灭（档位自上而下互斥；压顶 / 窒息当帧立灭、不摇骰，其余档每帧恰摇一次）**：① **压顶立灭**：**正下方**是**石头 / 沙 / 液体**（实体顶到火头上）→ **当帧直接熄灭、不摇骰**——石头 / 沙 / 水落在火上时，rank 规则先把火置换到实体正上方（`Swap`），火在下一逻辑帧立即熄灭（位移本身来自 rank 规则、火代码拦不住）。② **窒息立灭（被包围）**：八邻**全是固 / 液**（一格空气 / 气体通风口都没有）且**没有燃料** → **当帧直接熄灭、不摇骰**——被物质埋死、被封进密闭腔的火当帧闷熄（旧实现没有这一档，此类火靠「烧尽骰」拖着烧 6 秒，还会被后续落下的物质不断顶到表面「上浮」）。③ **冷却即灭**：游离火本格温度 < `EmberTemperature`（**40**，与最暗色带同阈值）→ **当帧熄灭、不摇骰**——火舌顶端收束，余热散尽必灭、不留漂浮长尾。④ **游离熄灭骰**：其余游离火 → `1 / FreeExtinguishDenominator`（**1/8**，期望约 0.4 秒 ≈ 上升 8 格）。⑤ **有燃料 → 不摇熄灭骰**：八邻有草 / 花就是在烧燃料——**贴住的燃料必被逐格吃掉**（否则火线随机断代、草地上会留零星残株）。⑥ 八邻贴**液体**（当前所有液体视为水）→ `1 / WaterQuenchDenominator`（**1/2**，期望约 0.1 秒）——水是最强灭火剂；水边草地因此天然成防火线。⑦ 八邻贴**任何非可燃固体**（无液体时，按 `Solid` 标签统一命中——石头 / 沙 / 湿土 / 干土 / 腐殖质 / 腐殖土 / 树干 / 树叶 / 各类种子 / 水生植物；**草 / 花除外**，它们是燃料）→ `1 / QuenchDenominator`（**1/5**，期望约 0.25 秒）——**火不在不可燃物上久留**（旧实现只认石头 / 沙 / 湿土、其余靠 1/120 的烧尽骰赖 6 秒）。**收拢后「附着无燃料 → 1/120 烧尽骰」档不可达、已随本次改动删除**（附着 ⇒ 八邻必有固 / 液 ⇒ 有燃料走 ⑤、无燃料必落 ⑥ / ⑦）。每帧随机消耗：压顶 / 窒息 / 冷却即灭 0 个骰；游离 1 个；贴液体 / 非可燃固体 1 个；**有燃料时 0 个熄灭骰**（只摇 ⑦ 蔓延 / ⑥ 抛射的骰）。**注意（已拍板为涌现特性，2026-10-05）**：**火不保证烧光整片草**——点燃走 `Set`（草 → 火）会触发世界「有机死亡 20% 留腐殖质」规则，即 20% 的点燃是哑弹、直接变腐殖质而非火；腐殖质不是燃料、八邻无土时永久滞留为空洞，v2 的游离火上升后不再像 v1 下沉火那样无意回填空洞，火线会在空洞处断代，被围死的零星草格成为残株（桩实测：19×6 草块烧剩 1 格；v1 同场景能烧光，差异即来自下沉回填机制被上升取代）。
 - **火舌抛射（附着火专属，先判后摇）**：附着火且**正上方是气体 / 空、且不是火**、本格温度 ≥ 200° 时，以 `1 / TongueDenominator`（**1/10**，平均每 0.5 秒吐一格）摇一次骰，命中则 `world.Set(x, y+1, Fire)`。新火格通常无附着 → 下一逻辑帧起按「游离火上升」上窜；上方是火则跳过（火舌不叠火舌，避免垂直火柱自我无限加高）。一轮草火因此呈现「燃烧层 + 断续上窜的 2–6 格火舌」，而非静态色块。
 - **游离火上升（`OnLogic` 末尾）**：仅游离火执行，是逻辑帧的**最后一个动作**（熄灭骰全部结算、确认本帧存活之后才尝试移动）——将死之火死在原地、不拖着尸体上移。`(x, y, Tick)` 哈希取 2 bit 选向（**50% 正上 / 25% 左上 / 25% 右上**）→ `ParticleRules.CanGasEnter` 通过（火 0.6 ≥ 目标气体密度：能换进大气 / 空气 / 火，被固 / 液拒绝）则 `Swap` 过去并立即 return；首选被挡试另一斜上；再被挡本帧原地不动（**不下降**）。每逻辑帧至多一格 → 上限 20 格/秒；摇曳使火舌轨迹呈随机折线，多格并排即「跳动的火墙」；哈希不消耗世界随机流，`Swap` 后两格都被世界打上本 tick 处理标记。
-- **附着物与投放资格（两条不同的判定）**：**物理燃烧**的附着物 = 八邻的固 / 液一格（**火焰不算附着物**——火柱不互相支撑）；失去附着物的火下一帧自动变游离火、上升一二格后熄灭（v2 不再下沉）。**投放**资格（`FireParticle.CanPlaceAt`，`ParticleEditor` 手刷走它）：① 目标必须是空气 / 气体格——**不覆盖、不替换任何实体方块 / 粒子**（固、液都不行；大气是可替换的环境气）；② 八邻内必须有**锚点**（固 / 液的一格，**或另一格火**——投放层允许火链：圆刷按「低行先落」逐格判定，贴地时底圈先锚到地面 / 实体、上面的格子再连锁锚到已落下的火，一次刷出整团火；完全悬空时一格都放不下）——**不许浮空投放**。这是**投放**规则、不是生成规则：点燃草与火的自然蔓延不受约束；圆刷时不合格的格被跳过（部分投放）。
+- **附着物与投放资格（两条不同的判定）**：**物理燃烧**的附着物 = 八邻的固 / 液一格（**火焰不算附着物**——火柱不互相支撑）；失去附着物的火下一帧自动变游离火、上升一二格后熄灭（v2 不再下沉）。**投放**资格（`FireParticle.CanPlaceAt`，`ParticleEditor` 手刷走它）：① 目标必须是空气 / 气体格——**不覆盖、不替换任何实体方块 / 粒子**（固、液都不行；大气是可替换的环境气）；② **没有附着 / 悬空限制**——火可刷在任何空位（含完全悬空；浮空的火是游离火，会上升 + 摇曳并按 1/8 熄灭）。这是**投放**规则、不是生成规则：点燃草与火的自然蔓延不受约束；圆刷时不合格的格被跳过（部分投放）。
 - **FD1（显式行为，是设计不是 bug）**：**火无法停留在石头 / 沙 / 水面上**——这是压顶立灭的必然推论：手刷在石面 / 沙面 / 水面的火，下一逻辑帧即灭；落在**任何不可燃固体**（干土 / 腐殖类 / 木头 / 树叶……）上的火也活不过几帧（1/5 淬熄骰）。**只有燃料（草 / 花）能持续供火**——「篝火」要有燃料：火贴着燃料就定在原处把它逐格吃掉，燃料烧光即灭。
 - **烧过的草地按 20% 概率留下腐殖质残迹**：点火走 `Set`（草 → 火），草带 Organic 标签，自然触发上文「有机物的衰变」世界规则——零额外代码（甚至刚点着的火可能当场被腐殖质顶替）。
 - **水浇灭火是涌现的**：火不写灭火代码；固体 / 液体按 rank 规则置换火（水横流换进火格、沙沉穿火），火被覆盖即经 `OnKill` 消失；贴液体 / 不可燃固体的加速熄灭写在火自己的熄灭骰里（见上）。火不主动横移，只按「游离火上升」向上升腾。
@@ -510,6 +510,9 @@ public sealed class ParticleWorld
     public ParticleType[] Types { get; }        // Types[0] == null（空气）
     public HeatMap Heat { get; }                // 与网格同形的热量场 Q（float/格），见下
     public LightController Light { get; }       // 光照控制器（按时序向每列最上面的非气体粒子施热——光打到水面就停），见下
+    public MotionMonitor LiquidMotion { get; }   // 液体运动量的观察者（运动比例，供水的流动声消费），见下
+    public MotionMonitor SolidMotion { get; }    // 无机固体的运动量观察者（运动格数，供落沙声消费），见下
+    public ParticleCountMonitor Counts { get; }  // 粒子存量的观察者（每类型存量 + 新增格数，供火焰声 / 雷电声等消费），见下
 
     // —— 读 ——
     public int  Index(int x, int y);            // y * Width + x
@@ -536,6 +539,68 @@ public sealed class ParticleWorld
 ```
 
 > 种子约定：`seed == 0` 会被静默替换为内部默认种子（xorshift32 需要非零状态）。回放/存档请避免使用 0。
+
+
+### 运动量的观察者（`MotionMonitor`）：按标签掩码，一份实现两个信号
+
+世界常驻两个 `MotionMonitor` 实例，各自盯住一个**标签掩码**：
+
+| 世界属性 | 掩码 | 消费方 |
+|---|---|---|
+| `world.LiquidMotion` | 带 `Liquid` | 水的流动声（用**比例**） |
+| `world.SolidMotion` | 带 `Solid` **且不带** `Organic` | 落沙声（用**绝对运动格数**） |
+
+两者都是**纯观察者**——零 RNG 消耗、零格子写入、零场写入，读不读它世界都逐位一致。
+
+| 读法 | 语义 |
+|---|---|
+| `TrackedCount` | 匹配类型的当前存量（`Set` / `SetPhase` 的旧/新类型差分，O(1)） |
+| `MovingCount` | 自上次 `Reset` 以来移动过的匹配格数（每帧 `Swap` 按换位的匹配端数累加；两端都匹配就 +2） |
+| `MovingRatio` | `MovingCount ÷ TrackedCount`，夹在 `[0,1]`；无存量时 0 |
+| `Reset()` | 清空移动计数（存量不受影响）。消费方每帧读完即清 |
+
+匹配判据在构造时按 `world.Types` 摊成表：类型非 null 且 `(Tags & tags) == tags && (Tags & excluded) == 0`。
+空气（typeId 0）永不匹配；越界 id 不匹配、读返回 0、不抛。分类只走 `ParticleTags`，不特判 typeId。
+
+**比例 vs 绝对数——两种口径都是刻意的**：
+- **水用比例**：绝对移动数随水体大小涨（水面越宽、抖动越多），当响度会让大水塘无端更响。比例与尺寸无关，
+  且**石盆 / 塘里的静水恒为 0.00**。实测锚点：石盆静水 `0.00`；退潮期 `≈0.14`；摊开的薄水层 `0.21~0.32`；
+  连续瀑布 `0.72`（起始可达 `0.86`）。**代价**：瀑布注水入盆时分母随积水增长，比例会下滑
+  （实测同一股瀑布：积水 599→4689 格时 `0.86→0.23`），若期望「倒得越多越响」会与直觉相反。
+- **固体用绝对运动格数**：固体的存量里绝大多数是**常年静止**的成员（草 / 树干 / 树叶 / 花 / 水生植物），
+  比例会被这些不动的格稀释到近 0——「一柱沙在落」与「满地沙在滚」几乎分不出来。绝对格数还与玩家直觉
+  一致（落得越多越吵），且固体**落地即静止、没有噪声底**（实测：落定沙堆的运动格数恒为 0），
+  因此既不需要滞回也不需要 EMA。实测锚点（生产表 320×180）：落定沙堆 `0`；单条 40 格沙柱整体下落
+  峰值恰为 `40`；40×60 沙块倾泻峰值 `2400`；持续投沙峰值 `1319`（后两者都封顶）。
+
+维护方式：`Swap` 只累加移动计数（一次交换不改变任何存量）；`TrackedCount` 只由 `Set` / `SetPhase`
+的旧/新类型差分维护。
+
+
+### 粒子存量的观察者（`ParticleCountMonitor`）：两种读法对应两类声音
+
+`world.Counts` 与两个 `MotionMonitor` 并列，同样是一个**纯观察者**（零 RNG 消耗、零格子写入、
+零场写入；读不读它世界都逐位一致）。它用 O(1) 增量维护**每种类型**的两个量：
+
+| 读法 | 语义 | 谁在用 |
+|---|---|---|
+| `int Count(ushort typeId)` | 该类型当前**存量**（世界上有几格）。空气与越界 id 恒为 0 | 火焰持续声：烧得越大越响 |
+| `int ConsumeCreated(ushort typeId)` | 自上次对本类型调用以来**真实发生类型替换**的写入次数；读后只清自己那槽 | 雷电一次性音效：劈下时响一声 |
+
+两个量的差别就是「**持续量** vs **一次性事件**」：火焰读存量（火格数即响度，随蔓延 / 熄灭连续变化）；
+闪电读新增（一次起爆把整条主干逐格写进网格，几十格只算「这一帧劈了一次」）。
+**注意 `ConsumeCreated` 返回的是格数、不是次数**——消费方必须按 `> 0` 判定，否则会把一条闪电听成一串爆豆。
+
+维护方式（全部 O(1)，只在两个写入原语里做差分）：
+
+- `Set` / `SetPhase`：旧类型存量 −1、新类型存量 +1、新类型新增计数 +1（两端都跳过空气与越界 id）。
+  **同类型重复 `Set` 是空操作**（`previousId == typeId` 在钩子之前就返回），既不重复计数也不算新增。
+- `Clear(x, y)` 就等价于 `Set(x, y, AirTypeId)`，因此递减走的是同一条路径，**不需要额外钩子**。
+- `Swap` **不参与**：两格互换不改变任何类型的存量，也不产生新格。
+
+空气（typeId 0）永不计数——它是「空」而不是一种物质，把整张空网格算进存量只会让每种消费方都要减去一个巨量常数。
+**未注册防御**：`ParticleIds.Xxx` 由 `ParticleRegistration.RegisterAll()` 回填，从未跑过时等于 0（= 空气）；
+表现层据此判「无法解析」并静音 + 只警告一次，绝不能读 0 号槽（那会把整张空网格当成该类型）。
 
 
 ### 热力学（`HeatMap` + `LightController`）：简化的 Q ↔ T 模型
@@ -1271,6 +1336,8 @@ Assets/Scripts/
     LightController.cs                        光照控制器：按时序通断，向每列最上面的非气体粒子（固体或液体）注入热量（ApplyHeat 自顶向下边走边累加光路湿度、遇 BlocksLight 即停，按光路湿度做 Beer–Lambert 衰减；GetCloudThickness 按需扫描）；另导出 Daylight 供渲染层做昼夜明暗
     ParticleRules.cs                          无状态共享移动规则（含标签原语 TagRank / TagsAt / HasTag / IsSolid / BlocksLight）——移动规则被 OnMotion 调用，BlocksLight 另被 LightController 的光路扫描调用
     HashNoise.cs                              (x, y, tick) 坐标哈希（Hash32 / Bit）：OnMotion 路径的随机决策源，不消耗世界随机流（Hash32 即火焰 v2 哈希原样提取）
+    MotionMonitor.cs                          按标签掩码的**运动量观察者**（世界持有两个实例：`world.LiquidMotion` = 带 Liquid、`world.SolidMotion` = 带 Solid 且非 Organic）：O(1) 增量维护 `TrackedCount`（匹配类型存量，Set/SetPhase 差分）与 `MovingCount`（本帧移动过的匹配格数，Swap 按换位匹配端数累加），导出 `MovingRatio`；掩码在构造时对 `world.Types` 摊表（空气与越界恒不匹配、不抛）。水的流动声用 `LiquidMotion.MovingRatio`（比例，尺寸无关、静水恒 0）；落沙声用 `SolidMotion.MovingCount`（**绝对格数**——固体存量里绝大多数是常年静止的草 / 树干 / 树叶 / 花 / 水生植物，比例会被稀释到近 0）。纯观察者——零 RNG 消耗、零格子/场写入
+    ParticleCountMonitor.cs                   粒子存量的观察者（world.Counts）：按类型 O(1) 增量维护「存量」Count(typeId)（Set/SetPhase 旧/新类型差分）与「新增格数」ConsumeCreated(typeId)（读后清零、按类型独立），供表现层消费——火焰持续声读存量（烧得越大越响）、雷电一次性音效读新增（一帧最多一声）；Clear 走 Set 故无第三条钩子、Swap 不参与、空气（0）与越界 id 恒 0 且不抛；纯观察者——零 RNG 消耗、零格子/场写入
     MotionReadBox.cs                          类型的运动阅读盒 (X, Up, Down)：OnMotion 对 _cells 的轴对齐读距，世界求反转并集作为运动休眠的写入唤醒集
     TreeSpecies.cs                           树木物种静态表（五物种 杨/橡/松/柏/柳 = flags bit3-5 编号，只能追加）：H 树干高 / N 生长分母 / D 发芽分母 / 基质档（Drought 任意三土；Moist 三土且八邻有湿土或腐殖土；Wet 正下方湿土或腐殖土）/ 树冠有序偏移表（数组顺序＝生长顺序；**表自支撑**——除首项外每项与树干列或更早项 Chebyshev 相邻，生长守卫据此防浮空叶）/ 支撑半径 / 色片色数；含物种位读写 helper `Read` / `Stamp`（Stamp 在 Set/SetPhase 之后调用：重写 bit3-5 并把世界已抽样的 shade 折进本物种色片，零额外随机流；编辑器与粒子共用）
     ParticlePixelBuffer.cs                    Cell[] → Color32[] 的纯映射（调色板颜色 alpha == 0 → 显示背景色，透明粒子契约；热力叠加在其上）
@@ -1290,7 +1357,7 @@ Assets/Scripts/
       WetHumusSoilParticle.cs                 湿润腐殖土（固体；腐殖土 + 一份水的黑色形态，**逻辑与 WetSoilParticle 逐条同构**——受热上行 / 常温有压才渗 / 孤立永久持水；水迁移带 T(源)×1.2 的热走，热容 2.2、导热 0.75、密度 2.1。由腐殖土随机刻扩张把邻近的湿润土壤改良成它时产生。不可在编辑器中选择）
       AquaticSeedParticle.cs                  水生态种子（固体粉末，**不带 Organic**；flags bit5-6 与草种子共用 = 无发芽条件计数。随机刻命中且「正上方是水 + 正下方是软底」时**吸收头顶那格水**、自身发芽成 1 格水生植物；连续 3 次无发芽条件则变成腐殖质。不可在右键循环，但可单颗投放）
       AquaticPlantParticle.cs                 水生植物（固体，**不带 Organic**，非 IsStatic：沉水、扎根水底，空的 OnMotion 定植。**每格植物 ⇔ 一格水**（1:1）。**逻辑帧只做衰老**（与草同一模式：年龄 = `Cell.shade` × 5 + `flags` bit3-5 的余数，每 5 帧把 `shade` 推进一档 ⇒ **越老越黄**，1200 帧 ≈ 60 秒寿终；`SetPhase` **还成水**而不是腐殖质；`OnSpawn` 把 `shade` 钉成 0）。**随机刻**里按顺序：① 正上方是固体（非同类）被压死 → 向下整段**还成水**（**液体不算压**）；② 正下方非软底 {土/湿土/腐殖土/沙} 失去扎根 → 向上整段**还成水**；③ 八邻无液体脱水 → 单格还成水；④ 温度 > 50 或 < 0 → 单格还成水；⑤ 生长：头顶是水且上方还有水且株高 < 3 → 消耗头顶那格水长高一格；⑥ 10% 概率撒种：找「软底 + 正上方是水 + 水柱顶上有接收格」的列，水位 +1、水格变成种子（**基质不消耗**）。被固体压埋时那份水注入八邻气体格的湿度场。不可在编辑器中选择）
-      FireParticle.cs                         火（气体，第一个粒子级热源；v2 角色模型——每逻辑帧按八邻重判**附着火 / 游离火**。附着火定在原地：接触点燃邻接的草 / 花（八邻固定序，1/20 每逻辑帧；**有燃料就不摇熄灭骰**）、**本格火温 ≥ 60° 才**烤干邻接湿土并按湿土→干土热容差 **−1.2T** 结算潜热（水汽走湿度场守恒）、格温 < 400 注热 250（烤热贴着的沙/石）、正上方是气体且 T ≥ 200 时 1/10 抛射火舌；游离火不注热，在 OnLogic 末尾按 (x,y,Tick) 哈希上升/摇曳（50% 正上、25% 左上、25% 右上，被挡不下降；OnMotion 留空）。熄灭档位互斥：正下方石头/沙/液体压顶立灭 > **被包围（八邻全无空气/气体且无燃料）当帧窒息立灭** > 游离火 T<40 立灭 > 游离火 1/8 > **有燃料不摇骰** > 贴液体 1/2 > 贴任何非可燃固体 1/5（干土/腐殖类/木头/树叶全在内；旧「附着无燃料 1/120」烧尽骰已删）。shade 是温度分档派生量（≥300 亮黄…<40 暗红，+哈希 ±1，不消耗随机流）。投放资格 CanPlaceAt：不覆盖实体、需锚点不浮空（投放锚点含火链——圆刷贴地可铺满整团火；物理附着不含火）；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质。显式行为：火无法停留在石头/沙/水面上；落在任何不可燃物上也活不过几帧，**只有燃料（草/花）能持续供火**）
+      FireParticle.cs                         火（气体，第一个粒子级热源；v2 角色模型——每逻辑帧按八邻重判**附着火 / 游离火**。附着火定在原地：接触点燃邻接的草 / 花（八邻固定序，1/20 每逻辑帧；**有燃料就不摇熄灭骰**）、**本格火温 ≥ 60° 才**烤干邻接湿土并按湿土→干土热容差 **−1.2T** 结算潜热（水汽走湿度场守恒）、格温 < 400 注热 250（烤热贴着的沙/石）、正上方是气体且 T ≥ 200 时 1/10 抛射火舌；游离火不注热，在 OnLogic 末尾按 (x,y,Tick) 哈希上升/摇曳（50% 正上、25% 左上、25% 右上，被挡不下降；OnMotion 留空）。熄灭档位互斥：正下方石头/沙/液体压顶立灭 > **被包围（八邻全无空气/气体且无燃料）当帧窒息立灭** > 游离火 T<40 立灭 > 游离火 1/8 > **有燃料不摇骰** > 贴液体 1/2 > 贴任何非可燃固体 1/5（干土/腐殖类/木头/树叶全在内；旧「附着无燃料 1/120」烧尽骰已删）。shade 是温度分档派生量（≥300 亮黄…<40 暗红，+哈希 ±1，不消耗随机流）。投放资格 CanPlaceAt：只在空气 / 气体格、不覆盖实体、**无附着 / 悬空限制**（浮空火照放，随后作为游离火上升 / 摇曳并快熄）；水/沙置换即灭（世界规则涌现）；**唯一可手刷的 Gas**（ParticleEditor._placeableGasTypes 白名单 + CanPlaceAt 资格）。烧草按世界有机衰变规则留 20% 腐殖质。显式行为：火无法停留在石头/沙/水面上；落在任何不可燃物上也活不过几帧，**只有燃料（草/花）能持续供火**）
       LightningParticle.cs                    雷电（气体，密度 1.0 = 最重的气体 ⇒ 环境大气推不动它，热学与大气同值：不注热 / 不挡光）。**随机刻**在空气粒子（大气）上起爆：`TryStrike` 先摇 **2%** 门（每次命中恰耗 1 个随机数，随机流不随云量漂移），再要求以本格为中心、半径 3 的**圆盘**（29 格）总湿度 ≥ 3.0（厚雨云），然后把自本格向下的一整条主干铺成雷电——逐行按 `(x,y,Tick)` 坐标哈希 ±1 抖动（50% 直落 / 25% 左 / 25% 右，两个独立 salt 位、不消耗随机流），**遇非气体格即止**（那里就是落点，固 / 液从不被覆盖），并在落点上方那一排（落点 x ± 1）把气体格 Set 成火（一团火焰；整列都是气体则不生成火——没有接地就没有落点）。`Cell.shade` = 闪光档：`Set` 的随机抽样被 `OnSpawn` 钉成 0（最亮），`OnLogic` 每逻辑帧 +1，到 `LifetimeTicks` 4（≈ 0.2 秒）即 `Clear`——整条同帧起爆故一起明灭。`OnMotion` 空（定在原地闪光，不上升 / 不摇曳；被下落的沙 / 水置换是世界 rank 规则的涌现）。不占任何 flags 私有位；**不可手刷**（不在 `ParticleEditor._placeableGasTypes` 白名单里，只能由模拟起爆）。
       TreeSeedParticle.cs                     树木种子（固体粉末，摩擦 / 粘性 0.5，运动 = StepSolid；flags bit3-5 = 物种、bit6-7 = **连续**空转计数。**随机刻**命中且「正上方非固非液 + 正下方按物种基质档（松/柏耐旱＝任意三土；杨/橡喜湿＝三土且八邻有湿土或腐殖土；柳最喜水＝正下方湿土或腐殖土）」时按 **1/D 概率**发芽成树干（D=2..4，比草种子的命中即发慢）：先判后摇、掷骰未中不计打击原地等待；**连续** 3 次无发芽条件霉烂成腐殖质（**条件一旦满足即清零打击计数**，条件性写入、不消耗随机流）、空转不消耗随机数。**腐殖土是决定性基质**（柳：正下方是**非真湿土**的腐殖土；杨 / 橡：八邻无真湿土但有腐殖土）时，发芽成功会消耗脚下土层最深一格腐殖土家族（`HumusSoil→Soil` / `WetHumusSoil→WetSoil`，`SetPhase` 保水保热）；松 / 柏耐旱档永不消耗。可单颗投放，Shift+滚轮切换物种）
       TreeTrunkParticle.cs                    树干（固体 + Organic，非 IsStatic、OnMotion 空；flags bit3-5 = 物种、bit6-7 = 生长阶段 0 爬升 / 1 造冠 / 2 成熟。**每逻辑帧**：① 温度 > 50 死（低温致死取 0，同水生植物——环境温可低到 0）；② 失去扎根（下格非三土 / 沙 / 树干）→ 本格与上方整段连续树干级联 Clear，**清完整段后逐格调 `TreeLeafParticle.NotifyTrunkRemoved` 主动通知邻接树叶失活**（顺序不能反：支撑检查必须读到整段已空；即使 `RandomTicksPerStep = 0`，砍树 / 挖根后整冠也在同一次逻辑帧集体失活、随后靠运动帧落叶）；③ 顶格生长——阶段 0 按物种 H 向上爬升（先查后掷 1/N；**正上方是树叶时可顶开它继续爬升**，石头 / 水 / 沙仍硬阻塞；上方越界即触顶 → 转造冠），阶段 1 按有序偏移表取「第一个未填充且当前可放」项 Set 成树叶（可放＝界内 + 非固液 + 八邻已有树干 / **未失活**树叶防浮空；**界外冠项视为已填充**，被挡项跳过不卡死、腾空后补长；全表填满转成熟）。**随机刻（繁殖）**：成熟顶格每次命中按 **1/4** 概率在半径 **5** 的圆盘内撒一颗同物种树木种子（落点＝界内空地 + 正下方固体且非树干 / 树叶 / 种子；先判后摇——非顶格 / 未成熟零 RNG，合格格每次命中恰耗 1 骰）；成熟后 OnLogic 零随机流消耗、撒种消耗只在 OnRandomTick。不可手刷）
@@ -1304,6 +1371,11 @@ Assets/Scripts/
     ParticleSandboxSeeder.cs                  演示用（默认不跑）：右键菜单 Reseed() 才铺石头容器 + 中央一堆沙
     ParticleEditor.cs                         调试用：左键刷当前粒子、右键切换类型（材料类固/液 + Gas 白名单——默认只有火可手刷，其余 Gas 中间态与草/花/湿土/树干/树叶不可手刷）、滚轮调半径 1..10（**Shift+滚轮**循环切换树木物种，HUD 在选中树木种子时显示物种名）、空格暂停/恢复（`_pauseKey`，调驱动的 Pause()/Resume()）、**按住左右方向键 / A D 把相机在沙箱内左右平移**（`_panLeftKeys` / `_panRightKeys` / `_panSpeed` = 30 格/秒；相机位置与「视口不越出网格左右边界」的夹取在 `ParticleRenderer.PanCamera`，见 §9）、**右上角光照面板**（三个输入框 = 光照强度 / 亮相位刻数 / 暗相位刻数，直接写 `ParticleLightDriver` 的三个可写属性；输入非法标红不提交、失焦弹回真值；输入框拿着键盘时暂停 / 高速 / 平移热键让位；高速模式与 `SuppressInput` 时变灰）、鼠标旁显示当前类型、左上角读数末尾追加当前倍速（普通模式恒 `×1`——`=` / `-` / `Tab` 调速热键已移除，速度只由高速模式改变，见 §10「倍速」）；`_unplaceableTypes` / `_singlePlacementTypes` / `_placeableGasTypes` 三个按类型名配置的白名单（不可投放 / 单颗投放 + 500ms 冷却〔草种子/水生态种子/树木种子〕 / Gas 可手刷例外）
     ParticleLightDriver.cs                    把光照的开关 / 亮相位刻数 / 暗相位刻数 / 强度 / 云层消光接到 world.Light，并把昼夜天空色与夜晚亮度推给 ParticleRenderer；其中**强度 / 亮相位刻数 / 暗相位刻数三个属性可写**（运行期由 ParticleEditor 的光照面板驱动，钳制语义与 LightController 同名属性一致）
+    SoundController.cs                        声音控制器（表现层，独立于模拟）：**每条音频各有一条独立的循环声床**（与 `_clips` 下标一一对应、惰性建源、永久复用），外加**一个一次性音效源**。`SetAmbience(文件名, 目标响度)` / `StopAmbience(文件名)` 只作用于点名那条声床（故水与火能同时响），目标响度由 `Update` 经 `_loudnessPerSecond` 平滑推进；`PlayOneShot(文件名, 响度)` 走独立 `loop=false` 声源（不循环、不锁相位、不取模、不需要片段时长，重叠由原生混音叠放），累计 `OneShotPlayCount`；查询 `TargetLoudness` / `CurrentLoudness` / `IsPlaying` / `FindClip`（最后一段、去扩展名、大小写不敏感，未知名字只警告一次）。`ClampDeltaTime`（上限 0.25s，负数/NaN→0）保证异常 dt 不会让音量一步跳满；纯数学 `NextVolume` / `MapLoudness`（区间退化→1）/ `Ema` 为公开静态，供各驱动与测试复用。`OnDisable` 归零全部声床并停声、`OnDestroy` 销毁自建子物体；声源一律 2D、`HideFlags.DontSave`
+    LiquidFlowSoundDriver.cs                 水的流动声（表现层）：每帧读 `world.LiquidMotion.MovingRatio` → `Reset` → 死区 `_minRatio`（0.15）+ 滞回 `_hysteresis`（0.03）→ 比例→响度线性映射（满响 `_fullVolumeRatio` = 0.6）→ EMA `_smoothingSeconds`（0.25 秒）→ `SoundController.SetAmbience`；停流推 0 平滑淡出、关闭或世界未就绪时先清账再静音。`Pump(world, deltaTime)` 与 `IsFlowing` 均可脱离帧循环验证；映射 / EMA 的纯数学在 `SoundController.MapLoudness` / `SoundController.Ema`
+    FireSoundDriver.cs                       火焰的持续声（表现层）：每帧读 `world.Counts.Count(ParticleIds.Fire)`（**火格数**，不是比例——玩家直觉是「烧得越大越响」，与水流声用比例的口径不同）→ `MapLoudness(火格数, _minFireCount(0), _fullVolumeCount(40)) × _volume` → EMA `_smoothingSeconds`（0.25 秒，抹平火格逐帧生灭的抖动）→ `SetAmbience`；无火 / 关闭 / 世界未就绪 / `ParticleIds.Fire` 未注册（= 0）→ 收声返回 0
+    LightningSoundDriver.cs                   闪电的一次性音效（表现层）：每帧**无条件** `world.Counts.ConsumeCreated(ParticleIds.Lightning)`（先清账再判开关，关闭期间也读掉，重开不补发积压起爆）→ `created > 0` 且启用时 `PlayOneShot` 响一声。**`created` 是格数而非次数**（一次起爆写整条主干几十格），故判据 `> 0` ⇒ **一帧最多一声**，且绝不循环 / 取模 / 锁相位——这正是「只在劈下时响一次、音频很短」的实现
+    FallingSandSoundDriver.cs                 落下的固体声（表现层）：每帧读 `world.SolidMotion.MovingCount`（**绝对运动格数**——固体存量被常驻静止的草 / 树干 / 树叶 / 花 / 水生植物占满，比例会被稀释到近 0；且「落得越多越吵」正是直觉）→ `MapLoudness(运动格数, _minMovingCount(0), _fullVolumeCount(40)) × _volume` → `SetAmbience`。**没有 EMA、没有滞回、没有 dt 参数**——固体落地即静止、运动格数没有噪声底（实测落定沙堆恒 0），响度平滑已由 `SoundController._loudnessPerSecond` 完成，这是它比水流声简单的原因。口径 = `Solid` 且非 `Organic`（石 / 沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 水生态种子），故树叶飘落、种子下沉不触发；关闭或世界未就绪时先清账再收声
   Editor/
     TapTap2026.Editor.asmdef                  ← 仅 Editor 平台的工具程序集
     SystemProxyGuard.cs                       系统代理无法被 Mono 解析时把 WebRequest.DefaultWebProxy 钉为直连（保 Unity-MCP 连通）
@@ -1324,20 +1396,27 @@ Assets/Tests/EditMode/
   AquaticParticleTests.cs                     水生植物 / 水生态种子（生产注册路径，随机刻直接调 OnRandomTick）：生产注册回填（含「不带 Organic」的防截胡断言）/ 吸水发芽（头顶水变大气）且守恒 / 水柱到顶也能发芽 / 未淹没或未扎根不发芽 / 3 次空转霉烂且不消耗随机流 / 逐格生长消耗一格水 / 只剩一格保命水不长 / 株高到顶不长 / 四种死法各自还水 / 被固体覆盖走湿度场且守恒 / 液体上方不算压 / 环境低温（T=0）不冻死 / 不移动 / 撒种顶水位 +1 且基质不消耗 / 全流程（发芽→补水→生长→过热死）总量守恒 / **寿命**（逻辑帧衰老：shade 从 0 起、每 5 帧 +1、第 1200 帧寿终还成水且水账守恒、生长出的新茎格也从 0 起、衰老不消耗随机流、调色板红分量随年龄非递减且渲染更黄绿）
   GrassParticleTests.cs                       草的寿命（生产注册路径，随机刻默认 0 ⇒ 隔离出唯一的衰老变量）：新生草从 shade = 0（最年轻档）开始 / 不满 TicksPerShadeStep 帧颜色档不动、满一档 +1 / 第 1200 逻辑帧寿终（终态只允许空气或腐殖质）/ 衰老与所在逻辑帧的场 pass 不消耗世界随机流（对照世界取下一个 NextUInt 相等）/ 颜色渐变（调色板长度 = ShadeCount、红分量随年龄非递减、最老档比最年轻档更偏黄、渲染像素经 ParticlePixelBuffer 按 shade 查表后同样更偏黄绿）
   FlowerParticleTests.cs                      花（生产注册路径；随机刻里的温度致死与草的低温线（< 3°）会杀掉裸世界的草株，因此直接调 OnRandomTick 并先给参与的格显式注热隔离变量）：注册回填（Solid+Organic / 非静态 / 不落体 / 光照吸收率与草同值）/ 调色板鲜艳（最亮通道 ≥ 200）且互不相同、40 朵花抽到 ≥ 8 种花色（种子发芽 200 次直接调钩子）**株顶是花且之上无草**、比例落在 22%..39% 窗口（≈30%）且一次发芽至多一朵 / **与草互为同一株**（花不压死自己那株草，200 次双向随机刻后两者俱在）/ 被石头压死并沿竖直方向向下级联清掉草段（止于土壤）/ 失去扎根（悬空或站在石头上）死 / 过热（> 50°）与过冷（< 3°）死 / 死亡只留空气或腐殖质且 40 次里两者都出现（20% 有机衰变）/ 可燃（贴花的火不摇熄灭骰、200 帧内点燃花）/ **不衰老**（1300 逻辑帧后仍在原地、花色不变）
-  FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、不浮空；锚点含火链——贴地圆刷 13 格全落、悬空 0 格；大气可投、越界不可投）+ 烤热沙石与 1/5 淬熄 + **任何非可燃固体（干土/腐殖类/木头/树叶）都在窗口内淬熄** + **被包围当帧窒息（不摇骰，随机流 0 消耗）与「有燃料豁免窒息」** + **长在土上的草皮照样烧掉 ≥ 3/4** + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/2 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
+  FireParticleTests.cs                       火 v2：生产注册路径（Gas / 非静态 / 不透明调色板 / 追加在水生植物之后）+ 放热（关传导隔离 250/帧；默认传导首帧烤热四邻、火格 > 50°）+ 托土无燃料自然熄灭终态为空气 + 蔓延烧掉大部后全部熄灭（八邻点燃 + 有草不熄；**烧不光整片草是已拍板的涌现特性**——点燃 20% 腐殖质哑弹成空洞断火线，终态只余空气 / 腐殖质 / 零星残草）+ 投放资格（不覆盖实体、无附着 / 悬空限制——贴地 / 悬空圆刷都 13 格全落；大气可投、越界不可投）+ 烤热沙石与 1/5 淬熄 + **任何非可燃固体（干土/腐殖类/木头/树叶）都在窗口内淬熄** + **被包围当帧窒息（不摇骰，随机流 0 消耗）与「有燃料豁免窒息」** + **长在土上的草皮照样烧掉 ≥ 3/4** + 压顶立灭（落石 / 手刷在石沙水面——FD1）+ 烤干湿土（总热守恒 −1.2T、干土正温、总水守恒）+ 贴水 1/2 快熄 + 游离火上升从不下沉 + 冷却即灭 + 游离火必散尽无残留 + shade 即温度分档 + 火舌抛射（上方气体才摇骰、上方是火跳过、不覆盖实体）+ 确定性重放逐帧一致 + 覆盖大气先疏散水汽（FB2）+ 点火自灭全程总水守恒 + 生产参数下温度有界且草致死线可达 + 400° 停注
   MotionSleepTests.cs                        运动休眠（阶段 B）：休眠透明性（同一受热场景 sleep on/off 跑 200 周期后逐格 typeId / shade / 非 bit0 flags、热场、湿度场一致）/ 静止水池求值数为 0（写入后回升）/ 石头净空链的 19 格远写唤醒（清空最远那格后石头正确滑动）/ 湿度变化（无写入）也唤醒读温度的决策 / MotionSleepEnabled=false 回退全扫描且与 true 逐格一致（含来回切换）
   LogicScanTests.cs                          逻辑帧混合扫描：休眠开时活跃场景（石头底/土层/草皮/一池水/湿土，光照开、随机刻 48）300 周期 ×（3 运动帧 + 1 逻辑帧）sleep on/off 逐位透明（Cells 口径同 MotionSleepTests + 热场 + 湿度场）/ **火注热的同帧可见性回归**（320×180 生产形态：全网格大气 + 陆海 + 光照 + 随机刻 48，预热 540 周期后在 y=28 点 x=40..119 一排火，之后 300 周期**每周期**比状态哈希、末态逐格断开——未把扫描中的热变化同帧并入候选位图时首个点火周期即发散）/ HasLogic 契约（hasLogic:false 的 OnLogic 有副作用也永不被调、默认 true 每逻辑帧照常调；覆盖混合扫描与全网格两条路径）/ 回归：休眠开时沸点之上的水仍蒸发（OnLogic 未被休眠）
   HeatSkipTests.cs                           热传导不动点跳过：静止世界首帧真跑后持续跳过 / 注热后恢复执行再收敛 / 改格类型后恢复执行再收敛 / 灯照脉冲必须被下一帧热 pass 传导、暗相收敛后进入跳过 / 跳过 vs 每帧重算（FixpointSkipEnabled）逐位透明
   SpeedControllerTests.cs                    倍速控制器（纯 C#，不依赖 Unity 时钟）：手动档 tick 数随倍率精确缩放且忽略耗时反馈（含 [1,16] 钳位）/ 自适应档便宜帧加性升到 16（每 K=10 帧一次评估）、昂贵帧乘性 16→1 只花 4 次评估 / 逐帧成本噪声不再驱动换向（回归）/ 超预算丢账（cap、丢账计数、下一帧不雪球）与预算为 0 时的 1 tick 保底 / 滞回把成块便宜·昂贵交替的方向反转次数压到低于无滞回对照 / 默认手动 1× 与迁移前固定累加器在 600 帧抖动序列上逐帧 tick 数一致（预算未截断时）/ 实测倍率：16× 撞紧预算时 `EffectiveSpeed` 收敛到被 cap 的 4×（不是目标 16）、预算充裕时收敛到目标 4×、稳态 1× 精确归一（含 dt 抖动，≈1±0.02）/ 需求超预算时自适应必降档（旧实现的 EMA 只反映已交付吞吐、锁死 16 的回归）/ 周期长度由驱动注入（同一成本信号下注入周期 1 升档、注入周期 3 不升）
   CameraPanTests.cs                          相机平移（`ParticleRenderer.PanCamera`；测试里现建相机与渲染器，用 SerializedObject 把相机塞进 `_camera`，不依赖场景里的 Main Camera）：按给定格数左右平移且只动 x（y / z 不动）/ 两端各夹在 `[半视宽, Width − 半视宽]`（越界部分丢掉，不欠账）/ 视口比沙箱宽时恒居中（平移无效）/ 无输入调用（delta = 0）也把被宽高比变化挤出界外的相机夹回沙箱 / 非正交相机原样不动
   DialogueRunnerTests.cs                      对话系统（纯 C#，不碰模拟；见 `docs/DialogueSystem.md`）：JSON 解析（合法 / 畸形 / 无 segments / 角色表缺失）/ 进度推进 / 选项点阻塞与跳转 / 非法 goto 以警告收尾 / `OnEnd` 只触发一次 / 历史顺序 / Restart / 空段立即结束
+    SoundControllerTests.cs                   声音控制器（纯逻辑契约，12 项）：文件查找正/反、`ClampDeltaTime` 上限与脏值、`NextVolume` 步进与 dt 上限、`MapLoudness` 区间与退化、`Ema` 平滑与 dt 上限、多声床互相独立、`StopAmbience(file)` 只停指定声床、`PlayOneShot` 不触碰声床且计数 +1、未知音频不抛且不改状态、查询中立值
+    LiquidFlowSoundDriverTests.cs             水的流动声（4 项纯逻辑契约）：`IsFlowing` 死区 + 滞回门、静水推 0 / 流水推响度到声床、停流后 EMA 单调衰减到听不见、关闭即收声、关闭期间仍清账
+    ParticleCountMonitorTests.cs              粒子存量观察者（8 项，隔离类型表）：Set/Clear 存量差分、同类型覆盖写不动存量（且不重复计新增——同类型重复 Set 在 `ParticleWorld.Set` 内提前返回）、A→B 覆盖写两端、Swap 不动存量也不计新增、`ConsumeCreated` 读后清零且按类型独立、空气 / 越界为 0、以及纯净性（反复读数后世界逐格 + 热场 + 湿度场 + 随机流逐位不变）
+    MotionMonitorTests.cs                     运动量观察者（8 项，隔离类型表）：`SolidMotion` 掩码口径（非 Organic 固体下落计入、带 Organic 的固体下落**恒 0**、与 `LiquidMotion` 互不干扰）/ 液体改名回归 / `TrackedCount` 的 Set-Clear-Swap 语义 / `MovingRatio` 缩放、夹取与**固体稀释**（大量静止固体 + 少量下落 ⇒ ratio 远小于 1 而 `MovingCount` 仍是真实运动格数）/ `Reset` 只清运动计数
+    FireSoundDriverTests.cs                   火焰持续声（7 项，生产注册路径）：无火推 0 且声床目标为 0、火格数达 `_fullVolumeCount` 后 EMA 单调收敛到满响、更多火更响（锚定「取格数而非比例」）、死区边界、`_volume` 缩放、单帧推进受 dt 上限约束、关闭 / world=null 收声
+    LightningSoundDriverTests.cs              闪电一次性音效（5 项，生产注册路径）：无世界不响、干燥世界不响、**一次起爆恰好 +1**（整条多格主干只响一声）、一帧内两次起爆仍最多一声、禁用期间仍清账且重开不补发
+    FallingSandSoundDriverTests.cs            落下的固体声（8 项，生产注册路径）：无运动静音、固体下落推响度到声床、落更多格更响（锚定「绝对运动格数」口径）、死区边界、`_volume` 缩放、关闭 / world=null 收声、关闭期间仍清账不补发、以及**口径锚点**（草种子下落 ⇒ 0，落沙声不认有机颗粒）
 ```
 
-测试总数 **393**：`ParticleWorldTests` 89 + `SandStoneParticleTests` 2 + `ThermalDriftTests` 7 + `WaterParticleTests` 18 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 25 + `GrassParticleTests` 13 + `FlowerParticleTests` 13 + `FireParticleTests` 28 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24 + `TreeParticleTests` 45 + `GroundwaterTests` 14 + `HumusSoilParticleTests` 13。
+测试总数 **477**（`ParticleWorldTests` 89 + `SandStoneParticleTests` 9 + `ThermalDriftTests` 7 + `WaterParticleTests` 20 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 25 + `GrassParticleTests` 13 + `FlowerParticleTests` 13 + `FireParticleTests` 28 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 17 + `GameFlowTests` 24 + `TreeParticleTests` 45 + `GroundwaterTests` 14 + `HumusSoilParticleTests` 13 + `CreatureWorldTests` 12 + `LightningParticleTests` 11 + `SoundControllerTests` 12 + `LiquidFlowSoundDriverTests` 4 + `ParticleCountMonitorTests` 8 + `MotionMonitorTests` 8 + `FireSoundDriverTests` 7 + `LightningSoundDriverTests` 5 + `FallingSandSoundDriverTests` 8）。
+声音测试只断言纯逻辑与目标响度 / 计数，**不断言主观听感**；真正的出声只能在编辑器 Play 模式里由人耳确认。
 
-程序集划分：`TapTap2026.Simulation`（无渲染依赖，`Particles/` 归入同一程序集，新增类型不需要动 asmdef）、`TapTap2026.Game`（引用 Simulation，装渲染与驱动）与 `TapTap2026.Editor`（仅 Editor 平台，无运行时引用，编辑器工具）。EditMode 测试程序集引用 `TapTap2026.Simulation` + `TapTap2026.Game`（后者只为 `CameraPanTests` 这类渲染/驱动层测试；测试逻辑仍以纯模拟断言为主）。
+**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂十个组件并已两两接线：
 
-**场景接线（已完成，`SampleScene.unity`）**：场景根下 `Particle Sandbox` 一个物体，挂五个组件并已两两接线：
 
 ```
 Particle Sandbox
@@ -1360,6 +1439,21 @@ Particle Sandbox
                                 _enabled=1 / _litTicks=600 / _darkTicks=600 / _intensity=10 / _cloudExtinction=0.05
                                 _dayBackground=#CCE5FF / _nightBackground=#2A223A / _nightBrightness=0.5
                                 （每帧写回 world.Light、并把昼夜参数推给渲染器；过渡长度由周期自动推出）
+   SoundController             _clips → water / fire / lightning / falling_sand（Assets/Sounds/*.mp3）
+                                _loudnessPerSecond=3；每条音频一条独立循环声床（惰性建源）+ 一个一次性音效源
+   LiquidFlowSoundDriver       _soundFile=water / _minRatio=0.15 / _fullVolumeRatio=0.6
+                                _hysteresis=0.03 / _smoothingSeconds=0.25 / _enabled=1
+                                （每帧消费 world.LiquidMotion 的运动比例，经滞回 + EMA 推给 SoundController）
+   FireSoundDriver             _soundFile=fire / _minFireCount=0 / _fullVolumeCount=40
+                                _smoothingSeconds=0.25 / _volume=1 / _enabled=1
+                                （每帧消费 world.Counts.Count(Fire) 的火格数 → 响度，火烧得越大越响）
+   LightningSoundDriver        _soundFile=lightning / _volume=1 / _enabled=1
+                                （每帧消费 world.Counts.ConsumeCreated(Lightning)，>0 就 PlayOneShot 响一次——
+                                 一帧最多一声，不循环 / 不取模 / 不锁相位）
+   FallingSandSoundDriver      _soundFile=falling_sand / _minMovingCount=0 / _fullVolumeCount=40
+                                _volume=1 / _enabled=1
+                                （每帧消费 world.SolidMotion.MovingCount 的绝对运动格数 → 响度，落得越多越吵；
+                                 无滞回 / 无 EMA——固体落地即静止、没有噪声底）
 ```
 
 - **沙箱初始全是大气**：`ParticleSimulationDriver.Awake` 建世界后把所有空格填成 `AtmosphereParticle`（全透明，看不见）；固体/液体由 `ParticleEditor` 画进去，`ParticleSandboxSeeder` 不再在 `Start` 自动搭建。
@@ -1368,7 +1462,7 @@ Particle Sandbox
 - **高速模式（`H`）**：按 `H`（`ParticleEditor._highSpeedKey`，设 `None` 关闭）进入——内核 `HighSpeedSession` 把倍速钉到**控制器满档**（`SpeedController.MaxSpeed`，即 `_speedMax`，默认 16×；手动档、跑不满由预算封顶）、锁一切编辑（刷子/右键切换/滚轮在 `Update` 同一处统一拦截，只剩空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁），跑满 `_highSpeedLogicFrames`（默认 6000）逻辑帧后自动暂停并在屏幕中央显示每种粒子的产生/死亡结算（`Enter` 或 `H` 确认退出、倍速钉回 1×，仍保持暂停由玩家空格继续）。运行中屏幕左下角常驻 `高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456`——倍速一档只显示**实测**吞吐 `EffectiveSpeed`（EMA 平滑的一位小数；目标档恒为满档，没有显示价值），未采样时温度 / 湿度显示 `--`。状态机、O(1) 生灭统计与采样全在内核（见 §14），驱动只做懒建 + 每逻辑帧转发 + 完成自动 `Pause()`。
 - **沙箱尺寸可在 Inspector 调整**：驱动上的 `_widthOverride` / `_heightOverride`（0 = 用 `ParticleSimulationSettings` 资产的 `Width` / `Height`，非 0 则覆盖，夹在 1..4096）。改 Inspector 字段、改 Settings 资产宽高、或调用 `ParticleSimulationDriver.Resize(w, h)` 都会在下一帧重建一个**空**世界（已有内容不保留），渲染器随之重建纹理/mesh 并由 `_fitCameraOnInitialize` 重新框住整张网格；`ParticleEditor` 每帧从 `driver.World` 取尺寸，无需额外处理。
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**材料类固/液 + Gas 白名单**——石头/沙/土/水/火，外加草种子与水生态种子；其余 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/湿润腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
-- **投放白名单（`ParticleEditor`）**：三个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `FlowerParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `WetHumusSoilParticle` / `AquaticPlantParticle` / `TreeTrunkParticle` / `TreeLeafParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗；`_placeableGasTypes`（默认 `FireParticle`）让白名单里的 Gas 例外可手刷（Gas 默认一律不可投放——蒸汽/云/大气是水循环中间态、只能由相变产生，火是唯一例外；火还另有 `FireParticle.CanPlaceAt` 投放资格：不覆盖实体、需附着物不浮空，圆刷时不合格的格被跳过）。将来有更多「单颗 + 冷却」「不可投放」或「可手刷气体」的类型时，往对应列表追加类型名即可。
+- **投放白名单（`ParticleEditor`）**：三个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `FlowerParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `WetHumusSoilParticle` / `AquaticPlantParticle` / `TreeTrunkParticle` / `TreeLeafParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `AquaticSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗；`_placeableGasTypes`（默认 `FireParticle`）让白名单里的 Gas 例外可手刷（Gas 默认一律不可投放——蒸汽/云/大气是水循环中间态、只能由相变产生，火是唯一例外；火还另有 `FireParticle.CanPlaceAt` 投放资格：只在空气 / 气体格、不覆盖实体，**无附着 / 悬空限制**，圆刷时不合格的格被跳过）。将来有更多「单颗 + 冷却」「不可投放」或「可手刷气体」的类型时，往对应列表追加类型名即可。
 - **光标格读数（`ParticleEditor`，屏幕左上角）**：常驻一行 `(x,y)  粒子名  T=温度  Q=热量  湿度=…`，显示光标指向的那一格；光标落在网格外则显示「视口外」。温度是导出量 `T = Q / C`（C 取该格类型的热容，气体还会加上该格**湿度**带来的附加热容 `HeatMap.HumidityHeatCapacity`），湿度对固/液恒为 0。纯调试读数：只读 `world.Heat` / `world.Humidity`，不参与模拟，也不改动任何状态。
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。

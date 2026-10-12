@@ -887,9 +887,9 @@ namespace TapTap2026.Game
         /// 投放当前粒子。普通类型填满以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆；
         /// **单颗投放白名单**里的类型（见 <see cref="_singlePlacementTypes"/>）无论半径多大都只在中心落一颗，
         /// 且两次投放之间共享 <see cref="SinglePlacementCooldownSeconds"/> 的冷却。
-        /// **火**另有投放资格判定（<see cref="FireParticle.CanPlaceAt"/>）：不覆盖实体、八邻内必须有**锚点**——
-        /// 固 / 液的一格，**或另一格火**（投放层允许火链互相锚定，圆刷贴地时能连锁铺满整团火；
-        /// 物理燃烧的附着物**不含火**）。不合格的格被跳过（圆内部分投放，其余类型不受影响）。
+        /// **火**另有投放资格判定（<see cref="FireParticle.CanPlaceAt"/>）：目标必须是空气 / 气体格、
+        /// **不覆盖任何实体**（固 / 液）——**没有附着 / 悬空限制**，火可刷在任何空位（浮空的火是游离火，
+        /// 会上升 + 摇曳并很快熄灭）。不合格的格被跳过（圆内部分投放，其余类型不受影响）。
         /// </summary>
         /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0；
         /// 当前选中的是动物物种时恒返回 0（没有粒子可投，放置走 <see cref="SpawnCreature"/>）。</returns>
@@ -918,7 +918,7 @@ namespace TapTap2026.Game
                         continue;
                     }
 
-                    // 火不许覆盖实体、不许浮空（见 FireParticle.CanPlaceAt）；其余类型照常投放。
+                    // 火不许覆盖实体（见 FireParticle.CanPlaceAt）；其余类型照常投放。
                     if (_typeId == ParticleIds.Fire && !FireParticle.CanPlaceAt(world, cx + dx, cy + dy))
                     {
                         continue;

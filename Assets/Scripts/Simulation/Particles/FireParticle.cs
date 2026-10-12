@@ -12,8 +12,8 @@ namespace TapTap2026.Simulation
     //   附着物判定（固 / 液的一格）、燃料判定（第一格草 / 花）、干化目标（第一格湿土 / 湿润腐殖土）、**通风判定**
     //   （八邻里是否有空气 / 气体）、淬熄判定（第一格液体、第一格非可燃固体）。**火焰不算附着物**
     //   （火是气体，天然不被 Solid/Liquid 判据命中）——火柱不会互相支撑；火柱内部互相算通风口。
-    //   **投放**资格的锚点判定不同源：除固 / 液外**火链也算锚点**——同笔刷 / 已有的火可以互相锚定，
-    //   圆刷贴地时能连锁铺满整团火；完全悬空时一格都放不下。物理燃烧的附着物始终不含火。
+    //   **投放**资格（CanPlaceAt）只要求目标不是实体（空气 / 气体格）——**没有附着 / 悬空限制**：
+    //   火可刷在任何空位；浮空的火是游离火，会上升 + 摇曳并很快熄灭。物理燃烧的附着物始终不含火。
     // 交互的 ParticleIds：Grass / Flower → Fire（接触点燃，Set 成火——花继承草的可燃性）；
     //   WetSoil → Soil / WetHumusSoil → HumusSoil（接触烘干——先确认水汽
     //   摊得出去（走湿度场的不可见播撒，与湿土受热蒸发的口径完全一致），水不凭空消失；摊不出去则保留）。
@@ -382,39 +382,15 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 火能否被**投放**到 (x,y)（ParticleEditor 手刷路径）：
-        /// ① 目标必须是空气 / 气体格——**不覆盖或替换任何实体方块 / 粒子**（固、液都不行；
-        ///    空气与大气等气体格放行：大气是可替换的环境气，否则被大气填满的沙箱里火将无处可放）；
-        /// ② 八邻内必须有**锚点**：固 / 液的一格，**或另一格火**。投放层允许火链——圆刷按「低行先落」
-        ///    的顺序逐格判定，贴地时底圈先锚到地面 / 实体、上面的格子再连锁锚到已落下的火，
-        ///    因此能一次刷出整团火；完全悬空时底圈一格都锚不上、后续无火可锚，一格都放不下。
-        ///    （注意：**物理燃烧的附着物不含火**——见文件头 ② 的附着判定，刷出的无支撑火
-        ///    仍会上升、摇曳并按 1/8 熄灭。）越界返回 false。
+        /// 火能否被**投放**到 (x,y)（ParticleEditor 手刷路径）：目标必须是空气 / 气体格——
+        /// **不覆盖或替换任何实体方块 / 粒子**（固、液都不行；空气与大气等气体格放行：大气是可替换的
+        /// 环境气，否则被大气填满的沙箱里火将无处可放）。**没有任何附着 / 悬空限制**——火可刷在任何空位，
+        /// 浮空的火是游离火，会上升 + 摇曳并按 1/8 熄灭。越界返回 false。
         /// 注意这是**投放**规则、不是生成规则：点燃草与火的自然蔓延不受它约束。
         /// </summary>
         public static bool CanPlaceAt(ParticleWorld world, int x, int y)
         {
-            if (!world.IsInBounds(x, y) || !ParticleRules.IsGasOrEmpty(world, x, y))
-            {
-                return false;
-            }
-
-            for (int i = 0; i < NeighbourX.Length; i++)
-            {
-                int nx = x + NeighbourX[i];
-                int ny = y + NeighbourY[i];
-                if (world.GetCell(nx, ny).typeId == ParticleIds.Fire)
-                {
-                    return true;
-                }
-
-                if (ParticleRules.HasTag(world, nx, ny, ParticleTags.Solid | ParticleTags.Liquid))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return world.IsInBounds(x, y) && ParticleRules.IsGasOrEmpty(world, x, y);
         }
 
         /// <summary>
