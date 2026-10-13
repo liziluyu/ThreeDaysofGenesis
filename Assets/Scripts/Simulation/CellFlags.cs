@@ -162,6 +162,33 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="GrassAgeRemainderMask"/> 在 <c>flags</c> 里的右移位数。</summary>
         public const int GrassAgeRemainderShift = 3;
 
+        /// <summary>
+        /// bit3-7：**生物质私有**（<see cref="BiomassParticle"/>）——「连续落稳帧数」0..
+        /// <see cref="BiomassParticle.SettleFrames"/>（31）。
+        /// <para>生物质的 <see cref="Cell.shade"/> 已被**颜色索引**占用（继承动物死亡轮廓的颜色，不重新抽样），
+        /// 颜色与「落稳了几帧」不能共用同一个字节，因此落稳计数整段搬进 <c>flags</c> 的 bit3-7，
+        /// 而不是新增一份与 <see cref="Cell"/> 平行的世界数组（那会把同步点扩散进
+        /// <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.SetPhase"/> /
+        /// <see cref="ParticleWorld.Clear"/> / <see cref="ParticleWorld.Swap"/> 四处）。</para>
+        /// 读用本掩码、清用 <see cref="BiomassSettleClearMask"/>、写用 <c>|</c> 组合，
+        /// 绝不整体赋值 <c>flags</c>（尤其保留 bit0 处理标记与 bit1 / bit2 通用位）。
+        /// <para><b>与 <see cref="GrassAgeRemainderMask"/>（bit3-5）以及
+        /// <see cref="TreeStageMask"/> / <see cref="TreeSeedStrikeMask"/> / <see cref="TreeLeafDetachedMask"/>
+        /// （bit6-7）重叠</b>：能共用的依据仍是「一格的私有位只被当前类型解释」——同一时刻一格只属于一个类型，
+        /// 而 <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.SetPhase"/> 换类型时**整字节覆写**
+        /// <c>flags</c>（<c>cell.flags = _stamp</c>），旧类型的私有位随之清零、新类型读不到旧类型残留。
+        /// 因此生物质格的 bit3-7 永远是落稳计数、草格的 bit3-5 永远是年龄余数，二者不会同时有意义。
+        /// 任何**绕过 Set / SetPhase 直接改 <c>typeId</c> 而不整字节覆写 <c>flags</c> 的新路径**都会打破
+        /// 这条前提——届时必须给它们分派互不重叠的位。</para>
+        /// </summary>
+        public const byte BiomassSettleMask = 0xF8;
+
+        /// <summary><see cref="BiomassSettleMask"/> 的清除掩码（<c>~0xF8 &amp; 0xFF</c>）。</summary>
+        public const byte BiomassSettleClearMask = 0x07;
+
+        /// <summary><see cref="BiomassSettleMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int BiomassSettleShift = 3;
+
         /// <summary>风向记忆：无（尚未漂移，或记忆已被浮力等非水平运动清除）。</summary>
         public const byte DriftDirectionNone = 0;
 

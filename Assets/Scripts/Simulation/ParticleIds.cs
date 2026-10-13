@@ -140,5 +140,18 @@ namespace TapTap2026.Simulation
         /// 热学参数与大气同值（不注热 / 不挡光），放电的热效应由落点那团火负责。
         /// **只能追加到清单末尾**。</summary>
         public static ushort Lightning;
+
+        /// <summary>生物质。动物尸体的**物质化产物**（<c>CreatureDeathMaterializer</c> 按死亡轮廓逐格写入）：
+        /// 固体 + **不带 Organic** —— 它自带 70/30 的腐败流程，若再带 Organic 标签，被覆盖 / 抹除时
+        /// 世界还会额外摇一次 20% 通用腐殖质骰，违反「腐败一次、一次结算」。
+        /// 受重力、按安息角堆积（摩擦 / 粘性 0.5），第一版**不被水搬运**、不横向自由流动。
+        /// flags 私有位 bit3-7 = **连续落稳帧数**（`CellFlags.BiomassSettleMask`，0..31）；
+        /// `Cell.shade` = 死亡轮廓的**颜色索引**，由 `ParticleWorld.SetWithShade` 显式给定、不随机抽样。
+        /// 下落中（正下方无 Solid 支撑）一个随机数都不消耗；落到固体上满 31 逻辑帧后，每逻辑帧
+        /// 1/200 概率腐败——命中后再摇 &lt;7/10 转腐殖质（`ParticleIds.Humus`），否则消散（<c>Clear</c>）。
+        /// 腐败写在逻辑帧（不是随机刻），因此随机刻为 0 时尸体照样腐败。
+        /// **不可在编辑器中选择**（`ParticleEditor` 的 `_unplaceableTypes`，只能由动物死亡生成）。
+        /// **只能追加到清单末尾**。</summary>
+        public static ushort Biomass;
     }
 }

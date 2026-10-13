@@ -26,6 +26,9 @@ namespace TapTap2026.Simulation
         Starved,
 
         /// <summary>老死。</summary>
-        OldAge
+        OldAge,
+
+        /// <summary>搁浅而死（鱼离水过久）。</summary>
+        Beached
     }
 }

@@ -7,9 +7,13 @@ namespace TapTap2026.Tests
     /// 动物实体层（<see cref="CreatureWorld"/> / <see cref="RabbitCreature"/>）的物理骨架测试：
     /// 重力下落与落地吸附、静置的逐位稳定、淹没判定与水中缓沉、碰撞白名单（草不挡动物 / 石头挡）、
     /// 水平碰撞与边界夹取、动物层对世界随机流的零消耗、同种子确定性重放、越界生成的边界安全、
-    /// 死亡清扫与事件契约、生成事件与坐标夹取，以及鱼的物种差异（浮力 > 重力 ⇒ 水中上浮到水面、离水照落）。
+    /// 死亡清扫与事件契约、生成事件与坐标夹取，以及合成水生体的浮力不变量（浮力 &gt; 重力 ⇒ 上浮到水面、
+    /// 浮力 == 重力 ⇒ 保持深度、两者离水照落）。
     /// </summary>
     /// <remarks>
+    /// <b>被测对象：</b>物理骨架断言（重力 / 静置 / 淹没 / 碰撞 / 边界）一律用**无 AI 的被动物理体**
+    /// （<c>PassiveBody</c> / <c>PassiveSwimmer</c>，尺寸同物种、浮力由构造参数给定、钩子全空）——物种自带 AI 后会自主移动，
+    /// 拿它们当被动物理体会让「静置 X 不漂移」这类断言随决策漂移；物种行为由 <c>CreatureAiTests</c> 覆盖。
     /// 碰撞白名单按 <see cref="ParticleIds"/> 常量比对（沙 / 石头 / 土 / 湿土 / 腐殖土 / 湿润腐殖土 / 水），
     /// 因此全部走<b>生产注册路径</b>（<see cref="ParticleRegistration.RegisterAll"/>）。
     /// 世界用三参构造 <c>new ParticleWorld(w, h, seed)</c>，地形直接 <c>world.Set</c> 摆放；
@@ -125,10 +129,102 @@ namespace TapTap2026.Tests
             Assert.LessOrEqual(creature.Y, world.Height - RabbitHeight + Tol, $"{context}：Y 不应越过顶边");
         }
 
+        // ============================== 测试专用被动物理体 ==============================
+
+        /// <summary>
+        /// 无 AI 的被动物理体：与兔子**同尺寸、同物理常数**（重力 0.24 / 终端 2.4 / 浮力 0.15 / 水阻 0.5），
+        /// 但三个钩子全用基类空体——因此意图恒为 0、永不自主移动。
+        /// </summary>
+        /// <remarks>
+        /// 本文件测的是**物理骨架**（落地吸附 / 静置逐位稳定 / 边界夹取 / 水中缓沉）。物种现在带 AI
+        /// （<c>RabbitBrain</c> / <c>FishBrain</c>），拿 <see cref="RabbitCreature"/> 当被动物理体会让
+        /// 「静置 X 不漂移」这类断言随漫步决策漂移；物种行为另由 <c>CreatureAiTests</c> 覆盖。
+        /// </remarks>
+        private sealed class PassiveBody : Creature
+        {
+            public PassiveBody()
+                : base(1.5f, 1f)
+            {
+            }
+
+            protected override float Gravity
+            {
+                get { return 0.24f; }
+            }
+
+            protected override float MaxFallSpeed
+            {
+                get { return 2.4f; }
+            }
+
+            protected override float Buoyancy
+            {
+                get { return 0.15f; }
+            }
+
+            public override string DebugName
+            {
+                get { return "被动物理体"; }
+            }
+
+            public override UnityEngine.Color32 PlaceholderColor
+            {
+                get { return new UnityEngine.Color32(150, 100, 60, 255); }
+            }
+        }
+
+        /// <summary>
+        /// 无 AI 的**合成**水生体：尺寸 1 × 0.5（重力 0.24 / 终端 1.2 / 水阻 0.6），浮力由构造参数给定
+        /// （默认 0.25 = **大于**重力）。它已不对应任何具体物种（鱼的浮力现为 0.24 = 中性），只用来钉
+        /// 「浮力 vs 重力决定上浮 / 保持 / 下沉」这条**物理公式**不变量：浮力 &gt; 重力 ⇒ 水中上浮、
+        /// 浮力 == 重力 ⇒ 保持深度；两者离水都照落。
+        /// </summary>
+        private sealed class PassiveSwimmer : Creature
+        {
+            private readonly float _buoyancy;
+
+            /// <param name="buoyancy">每帧净浮力（默认 0.25 &gt; 重力 0.24）。</param>
+            public PassiveSwimmer(float buoyancy = 0.25f)
+                : base(1f, 0.5f)
+            {
+                _buoyancy = buoyancy;
+            }
+
+            protected override float Gravity
+            {
+                get { return 0.24f; }
+            }
+
+            protected override float MaxFallSpeed
+            {
+                get { return 1.2f; }
+            }
+
+            protected override float Buoyancy
+            {
+                get { return _buoyancy; }
+            }
+
+            protected override float WaterDrag
+            {
+                get { return 0.6f; }
+            }
+
+            public override string DebugName
+            {
+                get { return "被动水生体"; }
+            }
+
+            public override UnityEngine.Color32 PlaceholderColor
+            {
+                get { return new UnityEngine.Color32(86, 130, 180, 255); }
+            }
+        }
+
         // ============================== 重力与落地 ==============================
 
         /// <summary>
-        /// 沙地上空生成的兔子受重力下落，落地时吸附到沙面顶（第 3 行之上 → Y = 4）并判为着地、
+        /// 沙地上空生成的被动物理体受重力下落，落地时吸附到沙面顶（第 3 行之上 → Y = 4）并判为着地、
         /// 竖直速度归零；再步进 50 帧位置逐位不变（无随机、无累积漂移）。
         /// </summary>
         [Test]
@@ -137,26 +233,26 @@ namespace TapTap2026.Tests
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 3, Sand);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            RabbitCreature rabbit = creatures.Spawn(new RabbitCreature(), world, 16f, 10f);
+            PassiveBody body = creatures.Spawn(new PassiveBody(), world, 16f, 10f);
 
             for (int i = 0; i < 60; i++)
             {
                 StepFrame(world, creatures);
             }
 
-            Assert.AreEqual(4f, rabbit.Y, "脚底应吸附在沙面顶（沙占 0-3 行）");
-            Assert.IsTrue(rabbit.IsGrounded, "落稳后脚下应有支撑");
-            Assert.AreEqual(0f, rabbit.VelocityY, "落地后竖直速度应归零");
+            Assert.AreEqual(4f, body.Y, "脚底应吸附在沙面顶（沙占 0-3 行）");
+            Assert.IsTrue(body.IsGrounded, "落稳后脚下应有支撑");
+            Assert.AreEqual(0f, body.VelocityY, "落地后竖直速度应归零");
 
-            float restX = rabbit.X;
-            float restY = rabbit.Y;
+            float restX = body.X;
+            float restY = body.Y;
             for (int i = 0; i < 50; i++)
             {
                 StepFrame(world, creatures);
             }
 
-            Assert.AreEqual(restX, rabbit.X, "静置后 X 不应漂移");
-            Assert.AreEqual(restY, rabbit.Y, "静置后 Y 不应漂移");
+            Assert.AreEqual(restX, body.X, "静置后 X 不应漂移");
+            Assert.AreEqual(restY, body.Y, "静置后 Y 不应漂移");
         }
 
         // ============================== 静置稳定 ==============================
@@ -170,22 +266,22 @@ namespace TapTap2026.Tests
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 0, Stone);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            RabbitCreature rabbit = creatures.Spawn(new RabbitCreature(), world, 16f, 1f);
+            PassiveBody body = creatures.Spawn(new PassiveBody(), world, 16f, 1f);
 
             for (int i = 0; i < 100; i++)
             {
                 StepFrame(world, creatures);
             }
 
-            Assert.AreEqual(16f, rabbit.X, "静置兔子的 X 应逐位不变");
-            Assert.AreEqual(1f, rabbit.Y, "静置兔子的 Y 应逐位不变（停在石头面顶）");
-            Assert.IsTrue(rabbit.IsGrounded, "静置中应始终判为着地");
+            Assert.AreEqual(16f, body.X, "静置本体的 X 应逐位不变");
+            Assert.AreEqual(1f, body.Y, "静置本体的 Y 应逐位不变（停在石头面顶）");
+            Assert.IsTrue(body.IsGrounded, "静置中应始终判为着地");
         }
 
         // ============================== 淹没与缓沉 ==============================
 
         /// <summary>
-        /// 水池中的兔子应判为淹没，并以远低于自由落体的速度缓慢下沉（每帧降幅不超过 0.25 格，
+        /// 水池中的被动物理体应判为淹没，并以远低于自由落体的速度缓慢下沉（每帧降幅不超过 0.25 格，
         /// 自由落体会立刻到 0.8），最终沉到池底石面并判为着地。
         /// </summary>
         [Test]
@@ -197,39 +293,39 @@ namespace TapTap2026.Tests
             FillRect(world, W - 1, W - 1, 1, 7, Stone);
             FillRect(world, 1, W - 2, 1, 6, Water);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            RabbitCreature rabbit = creatures.Spawn(new RabbitCreature(), world, 16f, 3f);
+            PassiveBody body = creatures.Spawn(new PassiveBody(), world, 16f, 3f);
 
             bool sawSubmerged = false;
-            float prevY = rabbit.Y;
-            for (int i = 0; i < 120 && !rabbit.IsGrounded; i++)
+            float prevY = body.Y;
+            for (int i = 0; i < 120 && !body.IsGrounded; i++)
             {
                 StepFrame(world, creatures);
 
-                if (rabbit.IsSubmerged)
+                if (body.IsSubmerged)
                 {
                     sawSubmerged = true;
                 }
 
-                if (!rabbit.IsGrounded)
+                if (!body.IsGrounded)
                 {
-                    float drop = prevY - rabbit.Y;
+                    float drop = prevY - body.Y;
                     Assert.GreaterOrEqual(drop, 0f, "水中不应上浮（浮力小于重力）");
                     Assert.LessOrEqual(drop, 0.25f, "水中下沉应远慢于自由落体（水阻 + 缓沉浮力）");
                 }
 
-                prevY = rabbit.Y;
+                prevY = body.Y;
             }
 
             Assert.IsTrue(sawSubmerged, "沉底前应至少有一个逻辑帧判为淹没");
-            Assert.IsTrue(rabbit.IsGrounded, "兔子最终应沉到池底");
-            Assert.AreEqual(1f, rabbit.Y, "池底为石头第 0 行，脚底应停在其顶面");
+            Assert.IsTrue(body.IsGrounded, "本体最终应沉到池底");
+            Assert.AreEqual(1f, body.Y, "池底为石头第 0 行，脚底应停在其顶面");
         }
 
         // ============================== 碰撞白名单 ==============================
 
         /// <summary>
-        /// 草不参与动物碰撞：土（0-3 行）+ 草（第 4 行）之上落下的兔子穿过草格、停在<b>土层顶</b>（Y = 4）。
-        /// 对照：把第 4 行换成石头后，兔子停在<b>石头层顶</b>（Y = 5）——同一落点差异只可能来自白名单。
+        /// 草不参与动物碰撞：土（0-3 行）+ 草（第 4 行）之上落下的被动体穿过草格、停在<b>土层顶</b>（Y = 4）。
+        /// 对照：把第 4 行换成石头后，本体停在<b>石头层顶</b>（Y = 5）——同一落点差异只可能来自白名单。
         /// </summary>
         [Test]
         public void CollisionWhitelist_GrassIsPassable_ButStoneBlocks()
@@ -238,7 +334,7 @@ namespace TapTap2026.Tests
             FillRows(grassWorld, 0, 3, Soil);
             FillRows(grassWorld, 4, 4, Grass);
             CreatureWorld grassCreatures = new CreatureWorld(SeedValue);
-            RabbitCreature inGrass = grassCreatures.Spawn(new RabbitCreature(), grassWorld, 16f, 8f);
+            PassiveBody inGrass = grassCreatures.Spawn(new PassiveBody(), grassWorld, 16f, 8f);
             for (int i = 0; i < 60; i++)
             {
                 StepFrame(grassWorld, grassCreatures);
@@ -250,7 +346,7 @@ namespace TapTap2026.Tests
             FillRows(stoneWorld, 0, 3, Soil);
             FillRows(stoneWorld, 4, 4, Stone);
             CreatureWorld stoneCreatures = new CreatureWorld(SeedValue);
-            RabbitCreature onStone = stoneCreatures.Spawn(new RabbitCreature(), stoneWorld, 16f, 8f);
+            PassiveBody onStone = stoneCreatures.Spawn(new PassiveBody(), stoneWorld, 16f, 8f);
             for (int i = 0; i < 60; i++)
             {
                 StepFrame(stoneWorld, stoneCreatures);
@@ -262,7 +358,7 @@ namespace TapTap2026.Tests
         // ============================== 水平碰撞与边界 ==============================
 
         /// <summary>
-        /// 石墙（第 16 列，1-8 行）挡住右移的兔子：脚底中心被挡在墙左缘之外（X ≤ 16 − 半宽 = 15.25），
+        /// 石墙（第 16 列，1-8 行）挡住右移的被动物理体：脚底中心被挡在墙左缘之外（X ≤ 16 − 半宽 = 15.25），
         /// 且顶住后不再前进；反向给左移速度则被世界左边界夹住（X = Width/2 = 0.75）并保持不动。
         /// </summary>
         [Test]
@@ -273,14 +369,14 @@ namespace TapTap2026.Tests
             FillRect(world, 16, 16, 1, 8, Stone);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
 
-            RabbitCreature runner = creatures.Spawn(new RabbitCreature(), world, 10f, 1f);
+            PassiveBody runner = creatures.Spawn(new PassiveBody(), world, 10f, 1f);
             runner.VelocityX = 0.5f;
             for (int i = 0; i < 40; i++)
             {
                 StepFrame(world, creatures);
             }
 
-            Assert.Greater(runner.X, 10f, "右移的兔子应确实前进过");
+            Assert.Greater(runner.X, 10f, "右移的本体应确实前进过");
             Assert.LessOrEqual(runner.X, 16f - RabbitHalfWidth + Tol, "右缘应被石墙左面挡住");
 
             float stopped = runner.X;
@@ -291,7 +387,7 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(stopped, runner.X, Tol, "顶住石墙后不应继续前进");
 
-            RabbitCreature lefty = creatures.Spawn(new RabbitCreature(), world, 10f, 1f);
+            PassiveBody lefty = creatures.Spawn(new PassiveBody(), world, 10f, 1f);
             lefty.VelocityX = -0.5f;
             for (int i = 0; i < 40; i++)
             {
@@ -384,11 +480,15 @@ namespace TapTap2026.Tests
         /// 贴左边界、贴底生成，以及把坐标给到远远越界处：Spawn 应把坐标夹进边界内；
         /// 随后步进 30 帧不抛异常，位置恒在 X ∈ [Width/2, Width − Width/2]、Y ∈ [0, Height − Height] 内。
         /// </summary>
+        /// <remarks>
+        /// 本测试**刻意不铺任何地形**：兔子被夹到 Y = 0 后由 <c>Y &lt;= 0</c> 直接判为着地（见
+        /// <see cref="Creature.StepPhysics"/> 收尾段），不需要地板；若铺一层石地板，兔子身体会嵌在石格内、
+        /// 连续 <see cref="Creature.BuriedTicksLimit"/> 帧后被压死而提前离场，届时下面的三只 / 界内断言会失去意义。
+        /// </remarks>
         [Test]
         public void BoundarySafety_OutOfBoundsSpawnsStayInside()
         {
             ParticleWorld world = NewWorld();
-            FillRows(world, 0, 0, Stone);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
 
             RabbitCreature atLeftBottom = creatures.Spawn(new RabbitCreature(), world, -10f, -5f);
@@ -405,6 +505,14 @@ namespace TapTap2026.Tests
             {
                 StepFrame(world, creatures);
             }
+
+            Assert.AreEqual(3, creatures.Count, "空世界里没有任何固体，三只兔子都不应被压死 / 清扫");
+
+            TestContext.WriteLine(
+                "BoundarySafety 实测：Count = " + creatures.Count
+                + "；atLeftBottom = (" + atLeftBottom.X + ", " + atLeftBottom.Y + ")"
+                + "；farRightTop = (" + farRightTop.X + ", " + farRightTop.Y + ")"
+                + "；huggingLeft = (" + huggingLeft.X + ", " + huggingLeft.Y + ")");
 
             for (int i = 0; i < creatures.Count; i++)
             {
@@ -486,42 +594,64 @@ namespace TapTap2026.Tests
             Assert.AreEqual(1, creatures.Count, "生成的实体应已入列");
         }
 
-        // ============================== 鱼（水生物种） ==============================
+        // ============================== 水中浮力（合成水生体） ==============================
 
         /// <summary>
-        /// 水中的鱼**上浮**：水柱第 0..15 行，鱼从 Y = 2 出发，若干帧后应升到水面附近并停在那里——
-        /// 净浮力（+0.09）大于重力（0.08），这是「浮力 > 重力」这条设计不变量的可观察后果。
-        /// 同时断言它不会冲出水柱：身体中心一离开水格，浮力消失，只剩重力把它拉回。
+        /// 中性浮力（浮力 == 重力）的合成水生体**保持深度**：水柱第 0..15 行，从 Y = 4 出发，
+        /// 净竖直加速度为 0 ⇒ 300 帧后仍停在入水深度附近（浮力 0.25 &gt; 重力 0.24 则会升到 ≈15.75）。
         /// </summary>
         [Test]
-        public void Buoyancy_FishRisesThroughWaterAndStopsAtSurface()
+        public void NeutralBuoyancy_HoldsDepth()
         {
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 15, Water);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 2f);
+            PassiveSwimmer swimmer = creatures.Spawn(new PassiveSwimmer(0.24f), world, 16f, 4f);
 
-            float startY = fish.Y;
+            for (int i = 0; i < 300; i++)
+            {
+                StepFrame(world, creatures);
+            }
+
+            Assert.LessOrEqual(UnityEngine.Mathf.Abs(swimmer.Y - 4f), 0.5f,
+                "浮力 == 重力时不应上浮 / 下沉，应保持入水深度（浮力 0.25 会升到 ≈15.75）");
+            Assert.AreEqual(1, creatures.Count, "保持深度的合成水生体不应被清扫");
+        }
+
+        /// <summary>
+        /// 浮力 &gt; 重力的合成水生体**上浮**：水柱第 0..15 行，从 Y = 2 出发，若干帧后应升到水面附近并停在那里——
+        /// 浮力 0.25 **大于**重力 0.24（净 +0.01），这是「浮力 &gt; 重力 ⇒ 上浮」这条**物理公式**不变量的可观察后果。
+        /// 同时断言它不会冲出水柱：身体中心一离开水格，浮力消失，只剩重力把它拉回。
+        /// </summary>
+        [Test]
+        public void Buoyancy_SyntheticSwimmerRisesThroughWaterAndStopsAtSurface()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            PassiveSwimmer swimmer = creatures.Spawn(new PassiveSwimmer(), world, 16f, 2f);
+
+            float startY = swimmer.Y;
             float peakY = startY;
             for (int i = 0; i < 1200; i++)
             {
                 StepFrame(world, creatures);
-                if (fish.Y > peakY)
+                if (swimmer.Y > peakY)
                 {
-                    peakY = fish.Y;
+                    peakY = swimmer.Y;
                 }
             }
 
             // 水格是第 0..15 行，水面 = 第 15 行顶面（y = 16）。身体中心在水里的条件是 floor(Y + 0.25) <= 15。
-            Assert.Greater(fish.Y, startY + 10f, "鱼应自水中持续上浮（浮力大于重力），而不是原地不动或下沉");
-            Assert.GreaterOrEqual(fish.Y, 14.5f, "鱼应到达水面附近");
-            Assert.LessOrEqual(peakY, 16.5f, "鱼不应冲出水柱太远——离开水格后没有浮力");
-            Assert.AreEqual(1, creatures.Count, "上浮过程中鱼不应被清扫掉");
+            Assert.Greater(swimmer.Y, startY + 10f, "合成水生体应自水中持续上浮（浮力大于重力），而不是原地不动或下沉");
+            Assert.GreaterOrEqual(swimmer.Y, 14.5f, "应到达水面附近");
+            Assert.LessOrEqual(peakY, 16.5f, "不应冲出水柱太远——离开水格后没有浮力");
+            Assert.AreEqual(1, creatures.Count, "上浮过程中不应被清扫掉");
         }
 
         /// <summary>
-        /// 离水的鱼像普通重物一样落下，落到沙面顶（第 3 行之上 → Y = 4）并判为着地、竖直速度归零——
-        /// 鱼的水性行为来自「水里才有浮力」这一条，而不是无条件悬停。
+        /// 离水的被动水生体像普通重物一样落下，落到沙面顶（第 3 行之上 → Y = 4）并判为着地、竖直速度归零——
+        /// 水生行为来自「水里才有浮力」这一条，而不是无条件悬停。
         /// </summary>
         [Test]
         public void OutOfWater_FishFallsAndRestsOnSandTop()
@@ -529,7 +659,7 @@ namespace TapTap2026.Tests
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 3, Sand);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 12f);
+            PassiveSwimmer fish = creatures.Spawn(new PassiveSwimmer(), world, 16f, 12f);
 
             for (int i = 0; i < 200; i++)
             {

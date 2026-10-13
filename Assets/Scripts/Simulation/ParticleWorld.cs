@@ -115,6 +115,7 @@ namespace TapTap2026.Simulation
         private byte _stamp;
         private Cell _outside;
         private bool _unknownTypeReported;
+        private bool _invalidShadeReported;
         private bool _motionSleepEnabled = true;
         private bool _groundwaterSealingEnabled = true;
 
@@ -828,6 +829,35 @@ namespace TapTap2026.Simulation
         /// <returns>坐标越界或 typeId 未注册则 false（非法 typeId 只报错一次）。</returns>
         public bool Set(int x, int y, ushort typeId)
         {
+            return SetCore(x, y, typeId, 0, false);
+        }
+
+        /// <summary>
+        /// 与 <see cref="Set"/> **同一条写入路径**，但 <c>shade</c> 由调用方显式给定、**不随机抽样**。
+        /// </summary>
+        /// <remarks>
+        /// 唯一用途是动物死亡轮廓的物质化：轮廓的每一格要带着 profile 里的颜色索引落格
+        /// （见 <c>CreatureDeathMaterializer</c>），重抽颜色会把尸体打散成随机噪点。
+        /// 其余语义逐条等同 <see cref="Set"/>：同样触发旧类型 <c>OnKill</c> / 新类型 <c>OnSpawn</c>、
+        /// 继承该格原有热量、疏散残余水汽（<see cref="EvacuateHumidity"/>）、维护运动休眠 / 逻辑帧位图、
+        /// 通知 <c>_monitor.OnCellReplaced</c>、走通用有机衰变骰（<see cref="MaybeLeaveHumus"/>）。
+        /// 同类型重复写入同样是空操作（不触发任何钩子、不改 <c>shade</c>）。
+        /// 这两条公共入口都转调私有的 <see cref="SetCore"/>，不存在第二份会分叉的实现。
+        /// </remarks>
+        /// <param name="shade">写入 <see cref="Cell.shade"/> 的颜色索引。越界（&gt;= 该类型调色板长度）则
+        /// **整次写入被拒绝**（该格一字节不动），每个世界实例至多报一条错；空气格没有调色板，<c>shade</c> 恒写成 0。</param>
+        /// <returns>坐标越界、typeId 未注册或 shade 越界则 false。</returns>
+        public bool SetWithShade(int x, int y, ushort typeId, byte shade)
+        {
+            return SetCore(x, y, typeId, shade, true);
+        }
+
+        /// <summary>
+        /// <see cref="Set"/> 与 <see cref="SetWithShade"/> 的共同实现。
+        /// <paramref name="explicitShade"/> 为 true 时 <c>shade</c> 用调用方给的值，否则按类型调色板抽样。
+        /// </summary>
+        private bool SetCore(int x, int y, ushort typeId, byte shade, bool explicitShade)
+        {
             if (!IsInBounds(x, y))
             {
                 return false;
@@ -836,6 +866,14 @@ namespace TapTap2026.Simulation
             if (typeId != ParticleRegistry.AirTypeId && (typeId >= _types.Length || _types[typeId] == null))
             {
                 ReportUnknownType(typeId);
+                return false;
+            }
+
+            // 显式 shade 越界：写入前就整次拒绝（该格保持不变）。空气没有调色板条目、shade 恒被写成 0，不校验。
+            if (explicitShade && typeId != ParticleRegistry.AirTypeId
+                && shade >= _types[typeId].Info.Palette.Length)
+            {
+                ReportInvalidShade(typeId, shade);
                 return false;
             }
 
@@ -910,8 +948,17 @@ namespace TapTap2026.Simulation
             }
 
             ParticleType type = _types[typeId];
-            Color32[] palette = type.Info.Palette;
-            cell.shade = (byte)(NextUInt() % (uint)palette.Length);
+            if (explicitShade)
+            {
+                // 调用方给了颜色索引（死亡轮廓），原样落格、不抽样——这次写入因此不消耗随机流。
+                cell.shade = shade;
+            }
+            else
+            {
+                Color32[] palette = type.Info.Palette;
+                cell.shade = (byte)(NextUInt() % (uint)palette.Length);
+            }
+
             type.OnSpawn(this, x, y);
             MaybeLeaveHumus(previousId, typeId, x, y);
             return true;
@@ -2219,6 +2266,22 @@ namespace TapTap2026.Simulation
             _unknownTypeReported = true;
             Debug.LogError(
                 $"[ParticleWorld] 未注册的 typeId {typeId} 被写入网格，已忽略。请确认 ParticleRegistration.RegisterAll() 已执行。");
+        }
+
+        /// <summary>
+        /// 显式 <c>shade</c> 越界的报告（<see cref="SetWithShade"/>）：与 <see cref="ReportUnknownType"/>
+        /// 同一约定——**每个世界实例至多一条** LogError（逐格日志会淹没控制台），后续越界写入静默拒绝。
+        /// </summary>
+        private void ReportInvalidShade(ushort typeId, byte shade)
+        {
+            if (_invalidShadeReported)
+            {
+                return;
+            }
+
+            _invalidShadeReported = true;
+            Debug.LogError(
+                $"[ParticleWorld] SetWithShade 的 shade {shade} 超出类型 {typeId} 的调色板范围，已忽略本次写入。");
         }
     }
 }
