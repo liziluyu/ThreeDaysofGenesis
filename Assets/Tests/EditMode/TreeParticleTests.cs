@@ -9,10 +9,13 @@ namespace TapTap2026.Tests
     /// 腐殖土家族算够湿）、
     /// 概率化发芽（比草种子慢；条件满足时把「连续空转」计数清零）、爬升到 H（可顶开正上方的树叶穿冠）、
     /// 触顶封顶（低顶世界里上方越界转造冠、界外冠项视为已填充，仍能成熟）、按有序偏移表造冠（被挡项跳过、
-    /// 腾空补长、全填满转成熟且成熟后 OnLogic 零随机流消耗）、无根级联倒下（清完整段后逐格通知树叶，
+    /// 腾空补长、全填满转成熟且成熟后 OnLogic 零随机流消耗）、**转熟时 StageMature 沿树干列传播到底**
+    /// （整柱熟态：成熟树被砍顶 / 顶格热死后新顶格不再爬升 / 造冠，零随机流；造冠期被砍顶仍续长）、
+    /// 无根级联倒下（清完整段后逐格通知树叶，
     /// 随机刻关闭时整冠也在同一逻辑帧内失活并竖直下落）、扎根白名单含沙（对照：石头 / 空气级联倒下）、
     /// 成熟顶格随机刻 1/4 概率在半径 5 内撒同物种种子（非顶格 / 未成熟格零随机流消耗）、
-    /// 树叶的失活扩散（八邻一圈立刻检测）+ 竖直自由下落 + 随机刻收尸（温度 / 被压两种即时死法保留）、
+    /// 树叶的失活扩散（八邻一圈立刻检测）+ 竖直自由下落（下方是固体 / **液体**都停——泡在水里的叶停在
+    /// 水面、不穿水沉底）+ 随机刻收尸（温度 / 被压两种即时死法保留）、
     /// 整树静止与确定性重放。
     /// </summary>
     /// <remarks>
@@ -141,6 +144,19 @@ namespace TapTap2026.Tests
             }
 
             return -2;
+        }
+
+        /// <summary>把 (x,y) 砍成空气：世界对「有机 → 非有机」的 20% 通用衰变可能在原格留一格腐殖质，
+        /// 再清一次即可（腐殖质非有机，第二次不再摇骰）。</summary>
+        private static void CutCell(ParticleWorld world, int x, int y)
+        {
+            world.Clear(x, y);
+            if (world.GetCell(x, y).typeId != ParticleRegistry.AirTypeId)
+            {
+                world.Clear(x, y);
+            }
+
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(x, y).typeId, "砍过的格应为空气");
         }
 
         /// <summary>按物种基质档铺好底（喜湿附带一颗湿土邻居、最喜水正下方湿土），放种并盖上物种位。</summary>
@@ -1077,6 +1093,71 @@ namespace TapTap2026.Tests
             Assert.AreEqual(LeafId, world.GetCell(x - 1, tipY).typeId, "被挡项应被补上");
         }
 
+        [Test]
+        public void MatureTrunkColumn_IsAllMatureStage_AndCutTopDoesNotRegrow()
+        {
+            // 转熟时 StageMature 沿树干列传播到底（成熟即整柱熟态）：砍顶 / 顶格热死后的新顶格已是成熟态，
+            // OnLogic 直接 return —— 零随机流、不补叶、不再生（留下的树桩不再生长）。
+            ParticleWorld world = BuildTreeWorld(TreeSpecies.Poplar, out int x, out int yBase);
+            ParticleWorld reference = BuildTreeWorld(TreeSpecies.Poplar, out int rx, out int ryBase);
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0);
+            Assert.GreaterOrEqual(GrowToMaturity(reference, rx, ryBase), 0);
+
+            int top = TopTrunk(world, x, yBase);
+            for (int y = yBase; y <= top; y++)
+            {
+                Assert.AreEqual(TreeTrunkParticle.StageMature, ReadStage(world, x, y),
+                    $"成熟树的 ({x},{y}) 树干格应读作成熟阶段（整柱熟态）");
+            }
+
+            int trunkBefore = CountType(world, TrunkId);
+            int leavesBefore = CountType(world, LeafId);
+
+            // 砍顶对两个世界完全相同（Clear 的有机衰变骰消耗随机流），之后只驱动 world。
+            CutCell(world, x, top);
+            CutCell(reference, rx, ryBase + top - yBase);
+            Assert.AreEqual(TreeTrunkParticle.StageMature, ReadStage(world, x, top - 1), "新顶格应仍是成熟态");
+
+            GrowFrames(world, x, yBase, 2000);
+
+            Assert.AreEqual(trunkBefore - 1, CountType(world, TrunkId), "成熟树桩不得再往上长");
+            Assert.AreEqual(leavesBefore, CountType(world, LeafId), "成熟树不得二次造冠");
+            Assert.AreEqual(TreeTrunkParticle.StageMature, ReadStage(world, x, top - 1), "新顶格应保持成熟");
+            Assert.AreEqual(reference.NextUInt(), world.NextUInt(), "成熟树桩的 OnLogic 不得消耗随机流");
+        }
+
+        [Test]
+        public void CanopyStageTopCut_NewTopResumesCanopyGrowth()
+        {
+            // 造冠期被砍顶：StageCanopy 不传播 → 新顶格回到爬升阶段、续爬回 H、补完整个树冠并最终成熟
+            //（造冠期仍属生长期，照常消耗生长骰）。
+            ParticleWorld world = BuildTreeWorld(TreeSpecies.Poplar, out int x, out int yBase);
+            TreeSpecies.TreeSpeciesInfo info = TreeSpecies.Info(TreeSpecies.Poplar);
+
+            int frames = 0;
+            while (ReadStage(world, x, TopTrunk(world, x, yBase)) != TreeTrunkParticle.StageCanopy
+                && frames++ < 20000)
+            {
+                StepTrunkColumn(world, x, yBase);
+            }
+
+            int tipY = TopTrunk(world, x, yBase);
+            Assert.AreEqual(TreeTrunkParticle.StageCanopy, ReadStage(world, x, tipY), "前置：顶格进入造冠阶段");
+            Assert.AreEqual(yBase + info.TrunkHeight - 1, tipY, "前置：顶格 = H");
+
+            CutCell(world, x, tipY); // 砍顶。
+
+            Assert.GreaterOrEqual(GrowToMaturity(world, x, yBase), 0, "砍顶后应能在上限内继续长成成熟树");
+            int top = TopTrunk(world, x, yBase);
+            Assert.AreEqual(tipY, top, "新顶格应续爬回 H");
+            Assert.AreEqual(info.Crown.Length, CountType(world, LeafId), "砍顶后仍应补完整个树冠");
+            for (int i = 0; i < info.Crown.Length; i++)
+            {
+                Assert.AreEqual(LeafId, world.GetCell(x + info.Crown[i].Dx, top + info.Crown[i].Dy).typeId,
+                    $"树冠项 {i} ({info.Crown[i].Dx},{info.Crown[i].Dy}) 应补在原位置");
+            }
+        }
+
         // ============================== 树叶 ==============================
 
         /// <summary>读树叶的失活标记（flags bit6）。</summary>
@@ -1189,6 +1270,52 @@ namespace TapTap2026.Tests
             Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(3, 1).typeId, "不得滚到左斜坡");
             Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(5, 1).typeId, "不得滚到右斜坡");
             Assert.AreEqual(1, CountType(world, LeafId));
+        }
+
+        [Test]
+        public void Leaf_Detached_FallsOneCellPerMotionFrame_InAir()
+        {
+            ParticleWorld world = new ParticleWorld(9, 12, SeedValue);
+            for (int x = 0; x < world.Width; x++)
+            {
+                world.Set(x, 0, ParticleIds.Stone); // 底板。
+            }
+
+            world.Set(4, 6, LeafId);
+            TreeSpecies.Stamp(world, 4, 6, TreeSpecies.Pine, TreeSpecies.LeafColorsPerSpecies);
+            RandomTick(world, LeafId, 4, 6); // 无树干 → 失活。
+
+            world.StepMotion();
+
+            Assert.AreEqual(LeafId, world.GetCell(4, 5).typeId, "正下方是空气：一帧下落一格");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(4, 6).typeId, "原格应让给空气");
+        }
+
+        [Test]
+        public void Leaf_Detached_RestsOnWaterSurface_DoesNotSink()
+        {
+            // 叶密度 0.6 < 水 1.0：失活叶不穿水沉底，而是停在水面——只有正下方是空气 / 气体才落。
+            ParticleWorld world = new ParticleWorld(9, 12, SeedValue);
+            for (int x = 0; x < world.Width; x++)
+            {
+                world.Set(x, 0, ParticleIds.Stone); // 底板。
+            }
+
+            world.Set(3, 1, ParticleIds.Stone); // 围住水面那格，避免水在测试窗口内横流走掉。
+            world.Set(5, 1, ParticleIds.Stone);
+            world.Set(4, 1, ParticleIds.Water);
+            world.Set(4, 2, LeafId);
+            TreeSpecies.Stamp(world, 4, 2, TreeSpecies.Pine, TreeSpecies.LeafColorsPerSpecies);
+            RandomTick(world, LeafId, 4, 2); // 无树干 → 失活。
+
+            for (int i = 0; i < 40; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(LeafId, world.GetCell(4, 2).typeId, "失活叶应停在水面上，不穿水下沉");
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(4, 1).typeId, "水不得被叶置换");
+            Assert.AreEqual(1, CountType(world, LeafId), "只是停住，不该分裂 / 消失");
         }
 
         [Test]

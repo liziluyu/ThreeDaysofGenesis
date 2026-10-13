@@ -29,7 +29,8 @@ namespace TapTap2026.Simulation
     //      - 同一条支撑判据也由**树干级联倒下**主动触发（静态入口 NotifyTrunkRemoved，见上「对外入口」），
     //        因此整冠失活不依赖随机刻是否开启。
     //   ② OnMotion（运动帧 60 Hz）：失活的树叶竖直**自由下落**一格——**不参与滚落**（不做斜滑 / 横流），
-    //      正下方是固体就停（空气 / 气体 / 液体都照落）。每帧至多移动一格。
+    //      只有正下方是空气 / 气体才落：越界、固体**与液体**都停住（叶密度 0.6 < 水 1.0，泡在水里的叶
+    //      停在水面、不上浮）。每帧至多移动一格。
     //   ③ 死亡：只发生在随机刻。失活叶落稳后（或下落途中）被随机刻命中才 Clear → 世界按 20% 有机衰变
     //      就地留腐殖质（腐殖质受重力，落地后会把土壤改造成腐殖土——涌现的「落叶归根」）。
     public sealed class TreeLeafParticle : IParticleType
@@ -91,12 +92,13 @@ namespace TapTap2026.Simulation
             }
 
             int belowY = y - 1;
-            if (!world.IsInBounds(x, belowY) || ParticleRules.IsSolid(world, x, belowY))
+            if (!world.IsInBounds(x, belowY) || !ParticleRules.IsGasOrEmpty(world, x, belowY))
             {
-                return; // 触底 / 落在固体上：停止下落（不滚落）。
+                return; // 越界 / 固体 / 液体：停住（不滚落，也不上浮）。
             }
 
-            // 自由下落：只竖直换位一格；正下方非固体（空气 / 气体 / 液体）即落，落到固体上才停。
+            // 自由下落：只竖直换位一格；正下方是空气 / 气体才落——越界、固体**与液体**都停住
+            // （叶密度 0.6 < 水 1.0：泡在水里的叶停在水面，不做上浮）。
             world.Swap(x, y, x, belowY);
         }
 

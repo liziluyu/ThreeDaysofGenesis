@@ -7,6 +7,7 @@ namespace TapTap2026.Simulation
     // flags 私有位：bit3-5 = 物种（CellFlags.TreeSpeciesMask，与种子/树叶共享的「一格一类型」共享位）；
     //        bit6-7 = 生长阶段（CellFlags.TreeStageMask：0 爬升 / 1 造冠 / 2 成熟）。
     //        读用掩码、清用 ClearMask、写用 | 组合，绝不整体赋值 flags（会破坏 bit0 处理标记）。
+    //        成熟时阶段 2 沿树干列传播到底（整柱熟态）——成熟树的每一格树干都读作 StageMature。
     // 邻居查询范围：正下 1 格（扎根）、正上 1 格（顶格判定 / 爬升目标）、树冠偏移表最远 SupportRadius 格
     //               （造冠放置时查目标与八邻）；随机刻撒种时以顶格为中心、半径 SeedScatterRadius 格圆盘
     //               （含落点正下方 1 格判基质）。（本类型 OnMotion 为空，不参与运动休眠的阅读盒）。
@@ -37,11 +38,16 @@ namespace TapTap2026.Simulation
     //      八邻已有树干 / **未失活**树叶（防浮空；失活叶即将飘落、不算支撑，避免新叶贴着落叶堆
     //      长出后立刻失去支撑失活）；**偏移表越界项视为已填充**（跳过、不参与 allFilled=false）；
     //      被石头 / 水 / 别的树挡住的未填充项**跳过不卡死**，其余照长；
-    //      全表填满 → 阶段 2（成熟，此后 OnLogic 零随机数消耗）；被挡项后来腾空会被继续补上。
+    //      全表填满 → 阶段 2（成熟，此后 OnLogic 零随机数消耗），**并把 StageMature 沿树干列向下
+    //      传播到底**（成熟即整柱熟态：≤ H 格掩码写、每棵树一生一次、零随机数）——砍顶 / 顶格
+    //      热死后的新顶格已是成熟态，OnLogic 直接 return（不补叶、不再生），被腰斩的成熟树留下
+    //      不再生长的树桩；**StageCanopy 不传播**（造冠期被砍顶仍续长剩余冠项，仍属生长期、
+    //      照常摇生长骰）；被挡项后来腾空会被继续补上。
     //   ⑥ OnRandomTick 繁殖：成熟顶格每次命中 1/4 概率在半径 5 圆盘撒一颗同物种树木种子
     //      （先判后摇：合格格恰耗 1 随机数，非顶格 / 未成熟零消耗）。
-    //   成熟后 OnLogic 不再补叶（零随机数硬契约，繁殖消耗只发生在 OnRandomTick）；整树被砍时
-    //   上段浮空树会在下一帧因失去下格而倒下。
+    //   成熟后 OnLogic 不再补叶（零随机数硬契约，繁殖消耗只发生在 OnRandomTick）；成熟即整柱熟态，
+    //   砍顶 / 顶格热死后新顶格不再爬升 / 造冠（留下不再生长的树桩）；整树被砍时上段浮空树会在
+    //   下一帧因失去下格而倒下。
     public sealed class TreeTrunkParticle : IParticleType
     {
         /// <summary>阶段 0：顶格向上爬升树干。</summary>
@@ -206,7 +212,18 @@ namespace TapTap2026.Simulation
             int placeable = FindFirstPlaceableCrown(world, x, y, info, out bool allFilled);
             if (allFilled)
             {
+                // 成熟即整柱熟态：把 StageMature 沿树干列向下传播到底（含本格）——每棵树一生一次、
+                // ≤ H 格掩码写、零随机数。此后砍顶 / 顶格热死留下的新顶格已是成熟态 → OnLogic 直接
+                // return，零随机流、不补叶、不再生（被腰斩的成熟树留下不再生长的树桩）。
+                // StageCanopy 不传播：造冠期被砍顶仍续长剩余冠项（仍属生长期、照常摇生长骰）。
                 WriteStage(world, x, y, StageMature);
+                for (int scanY = y - 1;
+                     world.GetCell(x, scanY).typeId == ParticleIds.TreeTrunk;
+                     scanY--)
+                {
+                    WriteStage(world, x, scanY, StageMature);
+                }
+
                 return;
             }
 
