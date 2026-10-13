@@ -5,10 +5,11 @@ namespace TapTap2026.Tests
 {
     /// <summary>
     /// 火粒子 v2 的行为契约（见 <c>docs/design-fire.md</c>）：每逻辑帧按本格温度回写 shade（颜色即温度）、
-    /// **仅附着火**注入热量并概率点燃邻接的草、接触烤干邻接湿土（潜热按湿土→干土热容差 1.2T，
-    /// 水汽走湿度场、总水守恒）；熄灭按互斥档位（压顶立灭 / **被包围时窒息立灭** / 游离火冷却即灭或 1/8 /
-    /// **有燃料则不摇熄灭骰** / 贴液体 1/2 / 贴任何非可燃固体 1/5——附着火没有「烧尽骰」，
-    /// 无燃料必在数帧内熄灭）；附着火上方是气体且本格 ≥200° 时 1/10 抛射火舌；
+    /// **仅附着火**注入热量并按优先级链概率点燃邻接燃料（草 / 花 1/20 → 树叶 1/20 → 树干 1/60）、
+    /// 接触烤干邻接湿土（潜热按湿土→干土热容差 1.2T，水汽走湿度场、总水守恒）；熄灭按互斥档位
+    /// （压顶立灭 / **被包围时窒息立灭** / 游离火冷却即灭或 1/8 / **有燃料则不摇熄灭骰**（草 / 花 / 树叶 /
+    /// 树干任一）/ 贴液体 1/2 / 贴其它不可燃固体 1/5——附着火没有「烧尽骰」，无燃料必在数帧内熄灭）；
+    /// 附着火上方是气体且本格 ≥200° 时 1/10 抛射火舌；
     /// **游离火不再下沉**，改为 OnLogic 末尾按坐标哈希上升 + 摇曳（不消耗随机流）。投放资格（只在空气 /
     /// 气体格、不覆盖实体、**无附着 / 悬空限制**）与生产注册路径不变。
     /// </summary>
@@ -147,19 +148,21 @@ namespace TapTap2026.Tests
             return stream;
         }
 
-        /// <summary>把 (4,4) 封死的密闭腔：5×5 树干块（2..6 × 2..6）中心换成火——八邻全是固 / 液、
-        /// 一格空气 / 气体通风口都没有（<paramref name="withGrass"/> 时左邻改成一格草，用于验证燃料豁免）。
-        /// 与 <see cref="ReadSealedCavityRngStream"/> 必须逐条同序构造，才能用随机流证明「窒息档不摇骰」。
-        /// 底格用树干而非石头 / 沙 / 水：否则会先命中「压顶立灭」档、测不到窒息档。
-        /// 直接调火的 <c>OnLogic</c>（不经世界扫描），树干因此不会自己执行死亡 / 生长逻辑。</summary>
-        private static ParticleWorld BuildSealedCavity(uint seed, bool withGrass)
+        /// <summary>把 (4,4) 封死的密闭腔：5×5 的 <paramref name="wallType"/> 块（2..6 × 2..6）中心换成火——
+        /// 八邻全是固 / 液、一格空气 / 气体通风口都没有（<paramref name="withGrass"/> 时左邻改成一格草，
+        /// 用于验证燃料豁免）。与 <see cref="ReadSealedCavityRngStream"/> 必须逐条同序构造，才能用随机流
+        /// 证明「窒息档不摇骰」。壁材必须挑**不可燃固体**（土）：底格不能用石头 / 沙 / 水——会先命中
+        /// 「压顶立灭」档、测不到窒息档；也不能用树干 / 树叶——它们是燃料，会走 ⑤5 豁免
+        /// （见 <see cref="Fire_EnclosedByTreeTrunk_KeepsBurning"/>）。直接调火的 <c>OnLogic</c>
+        /// （不经世界扫描），壁材因此不会自己执行死亡 / 生长逻辑。</summary>
+        private static ParticleWorld BuildSealedCavity(uint seed, ushort wallType, bool withGrass)
         {
             var world = new ParticleWorld(9, 9, seed);
             for (int y = 2; y <= 6; y++)
             {
                 for (int x = 2; x <= 6; x++)
                 {
-                    world.Set(x, y, ParticleIds.TreeTrunk);
+                    world.Set(x, y, wallType);
                 }
             }
 
@@ -172,11 +175,11 @@ namespace TapTap2026.Tests
             return world;
         }
 
-        /// <summary>同序构造密闭腔（<c>withGrass: false</c>）后读出接下来 4 个随机数——
-        /// 供「窒息档一个随机数都不消耗」的断言比对。</summary>
-        private static uint[] ReadSealedCavityRngStream(uint seed)
+        /// <summary>同序构造密闭腔（<paramref name="wallType"/> 壁、<c>withGrass: false</c>）后读出接下来
+        /// 4 个随机数——供「窒息档一个随机数都不消耗」的断言比对。</summary>
+        private static uint[] ReadSealedCavityRngStream(uint seed, ushort wallType)
         {
-            ParticleWorld world = BuildSealedCavity(seed, withGrass: false);
+            ParticleWorld world = BuildSealedCavity(seed, wallType, withGrass: false);
             var stream = new uint[4];
             for (int i = 0; i < stream.Length; i++)
             {
@@ -184,6 +187,50 @@ namespace TapTap2026.Tests
             }
 
             return stream;
+        }
+
+        /// <summary>火贴燃料探针：火托在土上（正下方是土 ⇒ 不命中压顶立灭档），正上方放一格
+        /// <paramref name="aboveType"/>、左邻放一格 <paramref name="sideType"/>（传空气 = 不放），其余八邻全空。
+        /// 正上方是**固体**（燃料）⇒ ⑥ 抛射门直接跳过、不消耗随机数，于是本探针每逻辑帧的随机流消耗
+        /// **恰好是 ⑦ 的 1 个点燃骰**——「点燃发生在第几帧」因此可以拿世界自身的随机流逐位预言。
+        /// 与 <see cref="ReadFuelProbeRngStream"/> 必须逐条同序构造。</summary>
+        private static ParticleWorld BuildFuelProbe(uint seed, ushort aboveType, ushort sideType)
+        {
+            var world = new ParticleWorld(9, 9, seed);
+            world.Set(4, 3, ParticleIds.Soil);
+            world.Set(4, 4, ParticleIds.Fire);
+            world.Set(4, 5, aboveType);
+            world.Set(3, 4, sideType);
+            return world;
+        }
+
+        /// <summary>同序构造燃料探针后读出接下来 <paramref name="count"/> 个随机数（对照世界）——
+        /// 供「点燃帧号 = 随机流里第一次命中的下标 + 1」与「点燃当帧的世界有机衰变骰」断言使用。</summary>
+        private static uint[] ReadFuelProbeRngStream(uint seed, ushort aboveType, ushort sideType, int count)
+        {
+            ParticleWorld world = BuildFuelProbe(seed, aboveType, sideType);
+            var stream = new uint[count];
+            for (int i = 0; i < stream.Length; i++)
+            {
+                stream[i] = world.NextUInt();
+            }
+
+            return stream;
+        }
+
+        /// <summary>在随机流里找第一次 <c>% denominator == 0</c> 的下标（找不到返回 -1）——
+        /// 即「每帧恰摇一骰」前提下点燃应发生的帧号 - 1。</summary>
+        private static int FirstHitIndex(uint[] stream, uint denominator)
+        {
+            for (int i = 0; i < stream.Length; i++)
+            {
+                if (stream[i] % denominator == 0u)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
         }
 
         /// <summary>
@@ -414,8 +461,9 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// **任何非可燃固体**都淬熄（本档由 Solid 标签统一命中，草 / 花除外——它们是燃料）：干土 / 腐殖土 /
-        /// 腐殖质 / 树干 / 树叶这些旧实现里不在淬熄集合内的材料，现在同样走 1/QuenchDenominator（5）。
+        /// **任何非可燃固体**都淬熄（本档由 Solid 标签统一命中；草 / 花 / 树叶 / 树干除外——它们是燃料，
+        /// 见 <see cref="Fire_AdjacentTreeFuel_SkipsQuenchRolls"/>）：干土 / 腐殖土 / 腐殖质这些旧实现里
+        /// 不在淬熄集合内的材料，现在同样走 1/QuenchDenominator（5）。
         /// 直接调 <c>OnLogic</c>（不经世界扫描）以免材料的自身行为 / 落体干扰，40 帧窗口即可判定
         /// （1/5 每帧，40 帧未命中的概率 1.3e-4；旧实现的 1/120 烧尽骰期望 120 帧 ≈ 6 秒）。
         /// </summary>
@@ -428,8 +476,6 @@ namespace TapTap2026.Tests
                 ParticleIds.Humus,
                 ParticleIds.HumusSoil,
                 ParticleIds.WetHumusSoil,
-                ParticleIds.TreeTrunk,
-                ParticleIds.TreeLeaf,
                 ParticleIds.Stone,
                 ParticleIds.Sand,
                 ParticleIds.WetSoil,
@@ -458,15 +504,17 @@ namespace TapTap2026.Tests
         /// **被包围 → 当帧窒息**：八邻全是固 / 液（一格空气 / 气体通风口都没有）且无燃料时，
         /// 火在一个逻辑帧内熄灭、且**不摇骰**（随机流消耗为 0 —— 用「后续随机数与未动过的对照世界相同」证明）；
         /// 旧实现没有这一档，被物质埋死 / 封在密闭腔里的火会靠 1/120 烧尽骰拖着烧 6 秒。
-        /// 密封腔的**底**故意用土（不是石头 / 沙 / 水），否则会先命中「压顶立灭」档、测不到窒息档。
+        /// 密封腔的壁（含底格）用**土**：不可燃固体；底格不能是石头 / 沙 / 水（会先命中「压顶立灭」档、
+        /// 测不到窒息档），也不能是树干 / 树叶（它们现在是燃料，会走 ⑤5 豁免，见
+        /// <see cref="Fire_EnclosedByTreeTrunk_KeepsBurning"/>）。
         /// </summary>
         [Test]
         public void Fire_EnclosedByMatter_SuffocatesImmediatelyWithoutRoll()
         {
             const uint seed = 909u;
-            uint[] stream = ReadSealedCavityRngStream(seed);
+            uint[] stream = ReadSealedCavityRngStream(seed, ParticleIds.Soil);
 
-            ParticleWorld world = BuildSealedCavity(seed, withGrass: false);
+            ParticleWorld world = BuildSealedCavity(seed, ParticleIds.Soil, withGrass: false);
             ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
 
             Assert.AreEqual(
@@ -485,12 +533,178 @@ namespace TapTap2026.Tests
         [Test]
         public void Fire_EnclosedButFuelled_KeepsBurning()
         {
-            ParticleWorld world = BuildSealedCavity(303u, withGrass: true);
+            ParticleWorld world = BuildSealedCavity(303u, ParticleIds.Soil, withGrass: true);
             ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
 
             Assert.AreEqual(
                 (int)ParticleIds.Fire, (int)world.GetCell(4, 4).typeId,
                 "八邻有草（燃料）时不算闷死：火应留在原地继续烧");
+        }
+
+        /// <summary>
+        /// **燃料豁免也认树**（新契约）：密闭腔的壁换成**树干**（八邻全是树干 = 一棵树）⇒ 有燃料，
+        /// 火不被闷熄、留在原地继续烧——② 窒息档的燃料判据与 ⑤5 / ⑦ 同源（草 / 花 / 树叶 / 树干任一）。
+        /// 旧契约里树干是「非可燃固体」，这里的火会被当帧闷熄。
+        /// </summary>
+        [Test]
+        public void Fire_EnclosedByTreeTrunk_KeepsBurning()
+        {
+            ParticleWorld world = BuildSealedCavity(505u, ParticleIds.TreeTrunk, withGrass: false);
+            ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+
+            Assert.AreEqual(
+                (int)ParticleIds.Fire, (int)world.GetCell(4, 4).typeId,
+                "八邻全是树干（燃料）时不算闷死：火应留在原地继续烧这棵树");
+        }
+
+        /// <summary>
+        /// **树叶是燃料**（森林火灾）：八邻没有草 / 花、正上方是树叶时，火走 ⑦ 的**叶点燃骰**
+        /// 1/<see cref="FireParticle.LeafIgnitionDenominator"/>（20）。探针每逻辑帧只消耗 1 个随机数
+        /// （⑤5 豁免熄灭骰、⑥ 被正上方的固体跳过），所以点燃帧号必须**恰好**等于世界自身随机流里
+        /// 第一次 <c>% 20 == 0</c> 的下标 + 1——这就是「先判后摇 + 每帧恰一骰」的逐位证据。
+        /// 点燃产物：树叶带 Organic，世界的 MaybeLeaveHumus 有 20% 概率把被点燃格改判成腐殖质
+        /// （与烧草同一规则）；本用例先用对照随机流把「该骰不命中」这个前提钉死，再断言产物是火。
+        /// </summary>
+        [Test]
+        public void Fire_IgnitesAdjacentTreeLeaf_OnLeafIgnitionRoll()
+        {
+            const uint seed = 2u;
+            const int window = 200;
+            uint[] stream = ReadFuelProbeRngStream(seed, ParticleIds.TreeLeaf, ParticleRegistry.AirTypeId, window);
+            int hit = FirstHitIndex(stream, FireParticle.LeafIgnitionDenominator);
+            Assert.GreaterOrEqual(hit, 0, "种子前提：窗口内叶点燃骰必有一次命中");
+            Assert.Less(hit, window - 2, "种子前提：命中点之后还要有 2 个数（点燃 Set 的调色板抽样与有机衰变骰）");
+            Assert.AreNotEqual(0u, stream[hit + 2] % 20u, "种子前提：20% 有机衰变骰不命中（否则点燃格改判腐殖质）");
+
+            ParticleWorld world = BuildFuelProbe(seed, ParticleIds.TreeLeaf, ParticleRegistry.AirTypeId);
+            int frames = 0;
+            while (world.GetCell(4, 5).typeId == ParticleIds.TreeLeaf && frames < window)
+            {
+                ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+                frames++;
+            }
+
+            Assert.AreEqual(hit + 1, frames, "点燃帧号 = 随机流里第一次 % 20 == 0 的下标 + 1（每帧恰摇一个叶点燃骰）");
+            Assert.AreEqual(
+                (int)ParticleIds.Fire, (int)world.GetCell(4, 5).typeId,
+                "树叶被点燃：Set(叶 → 火)，新火有全新寿命");
+        }
+
+        /// <summary>
+        /// **树干是燃料且比草 / 叶难燃**：八邻既没草 / 花也没树叶、正上方是树干时，火走 ⑦ 的**干点燃骰**
+        /// 1/<see cref="FireParticle.TrunkIgnitionDenominator"/>（60）。与树叶用例同口径：探针每帧只消耗
+        /// 1 个随机数，点燃帧号必须恰好等于随机流里第一次 <c>% 60 == 0</c> 的下标 + 1——分母 60 由此钉死
+        /// （若误用 20，点燃会早于本预言发生）。
+        /// </summary>
+        [Test]
+        public void Fire_IgnitesAdjacentTreeTrunk_OnTrunkIgnitionRoll()
+        {
+            const uint seed = 2u;
+            const int window = 600;
+            uint[] stream = ReadFuelProbeRngStream(seed, ParticleIds.TreeTrunk, ParticleRegistry.AirTypeId, window);
+            int hit = FirstHitIndex(stream, FireParticle.TrunkIgnitionDenominator);
+            Assert.GreaterOrEqual(hit, 0, "种子前提：窗口内干点燃骰必有一次命中");
+            Assert.Less(hit, window - 2, "种子前提：命中点之后还要有 2 个数（点燃 Set 的调色板抽样与有机衰变骰）");
+            Assert.AreNotEqual(0u, stream[hit + 2] % 20u, "种子前提：20% 有机衰变骰不命中（否则点燃格改判腐殖质）");
+
+            ParticleWorld world = BuildFuelProbe(seed, ParticleIds.TreeTrunk, ParticleRegistry.AirTypeId);
+            int frames = 0;
+            while (world.GetCell(4, 5).typeId == ParticleIds.TreeTrunk && frames < window)
+            {
+                ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+                frames++;
+            }
+
+            Assert.AreEqual(hit + 1, frames, "点燃帧号 = 随机流里第一次 % 60 == 0 的下标 + 1（1/60 的干点燃骰）");
+            Assert.AreEqual(
+                (int)ParticleIds.Fire, (int)world.GetCell(4, 5).typeId,
+                "树干被点燃：Set(干 → 火)，新火有全新寿命");
+        }
+
+        /// <summary>
+        /// **⑦ 的优先级链**：八邻既有草（上）又有树叶（左）时走**草那一档**（1/IgnitionDenominator）——
+        /// 被点燃的是草，树叶原样不动。这条优先级保证「树出现之前」的草地燃烧逐位不变
+        /// （草 / 花存在时压根不会去摇叶 / 干那两档的骰）。
+        /// </summary>
+        [Test]
+        public void Fire_GrassTakesPriority_OverAdjacentTreeFuel()
+        {
+            const uint seed = 2u;
+            const int window = 200;
+            uint[] stream = ReadFuelProbeRngStream(seed, ParticleIds.Grass, ParticleIds.TreeLeaf, window);
+            int hit = FirstHitIndex(stream, FireParticle.IgnitionDenominator);
+            Assert.GreaterOrEqual(hit, 0, "种子前提：窗口内草点燃骰必有一次命中");
+            Assert.Less(hit, window - 2, "种子前提：命中点之后还要有 2 个数（点燃 Set 的调色板抽样与有机衰变骰）");
+            Assert.AreNotEqual(0u, stream[hit + 2] % 20u, "种子前提：20% 有机衰变骰不命中（否则点燃格改判腐殖质）");
+
+            ParticleWorld world = BuildFuelProbe(seed, ParticleIds.Grass, ParticleIds.TreeLeaf);
+            int frames = 0;
+            while (world.GetCell(4, 5).typeId == ParticleIds.Grass && frames < window)
+            {
+                ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+                frames++;
+            }
+
+            Assert.AreEqual(hit + 1, frames, "点燃帧号 = 随机流里第一次 % 20 == 0 的下标 + 1（走的是草那一档）");
+            Assert.AreEqual((int)ParticleIds.Fire, (int)world.GetCell(4, 5).typeId, "有草时点燃的是草（1/20）");
+            Assert.AreEqual(
+                (int)ParticleIds.TreeLeaf, (int)world.GetCell(3, 4).typeId,
+                "同一帧树叶不得被动过：草 / 花优先于树叶 / 树干");
+        }
+
+        /// <summary>
+        /// 火贴树燃料**不摇淬熄骰**（⑤5 的豁免扩到树叶 / 树干）：正上方是树叶 / 树干时，火连续 40 个逻辑帧
+        /// 都必须留在本格。旧契约里它们是「不可燃固体」（走 1/5 淬熄骰、期望寿命 5 帧），40 帧是它的 8 倍；
+        /// 每帧恰消耗 1 个点燃骰由上面两个点燃用例逐位钉死（这里只断言可观察的存活）。
+        /// 种子 16 下两种燃料的第一次点燃骰都落在第 112 帧（≫ 40）：窗口内燃料始终留在邻位，
+        /// 所以「火活着」只可能来自 ⑤5 豁免——燃料真被吃掉后火邻位无燃料、走 1/5 才是正确行为。
+        /// </summary>
+        [Test]
+        public void Fire_AdjacentTreeFuel_SkipsQuenchRolls()
+        {
+            ushort[] fuels = { ParticleIds.TreeLeaf, ParticleIds.TreeTrunk };
+            for (int i = 0; i < fuels.Length; i++)
+            {
+                ParticleWorld world = BuildFuelProbe(16u, fuels[i], ParticleRegistry.AirTypeId);
+                for (int frame = 0; frame < 40; frame++)
+                {
+                    ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+                    Assert.AreEqual(
+                        (int)ParticleIds.Fire, (int)world.GetCell(4, 4).typeId,
+                        $"贴 typeId={fuels[i]}（燃料）：火走 ⑤5 豁免，40 帧（旧 1/5 淬熄骰期望寿命的 8 倍）内不得熄灭");
+                }
+
+                Assert.AreEqual(
+                    (int)fuels[i], (int)world.GetCell(4, 5).typeId,
+                    "前提：本种子下 40 帧内燃料未被点燃（点燃骰第 112 帧才命中），窗口全程都在「有燃料」状态下");
+            }
+        }
+
+        /// <summary>
+        /// 对照组（无燃料的旧淬熄行为保持）：同样的探针几何，只把上方的燃料换成**不可燃固体**
+        /// （石头 / 土）⇒ 火仍走 ⑦ 的 1/<see cref="FireParticle.QuenchDenominator"/>（5），在 40 帧窗口内熄灭——
+        /// 证明 <see cref="Fire_AdjacentTreeFuel_SkipsQuenchRolls"/> 里的存活来自「树是燃料」，
+        /// 而不是探针本身让火免疫。材料在**火下方**的完整名单覆盖见
+        /// <see cref="Fire_AnyNonFlammableSolid_QuenchesWithinWindow"/>。
+        /// </summary>
+        [Test]
+        public void Fire_AdjacentNonFlammableSolid_StillQuenches()
+        {
+            ushort[] solids = { ParticleIds.Stone, ParticleIds.Soil };
+            for (int i = 0; i < solids.Length; i++)
+            {
+                ParticleWorld world = BuildFuelProbe(2026u, solids[i], ParticleRegistry.AirTypeId);
+                int frames = 0;
+                while (world.GetCell(4, 4).typeId == ParticleIds.Fire && frames < 40)
+                {
+                    ParticleRegistry.Types[ParticleIds.Fire].OnLogic(world, 4, 4);
+                    frames++;
+                }
+
+                Assert.AreEqual(
+                    (int)ParticleIds.Air, (int)world.GetCell(4, 4).typeId,
+                    $"贴不可燃固体 typeId={solids[i]}（上方）：火仍应在 40 帧窗口内被 1/5 淬熄骰熄灭");
+            }
         }
 
         /// <summary>
