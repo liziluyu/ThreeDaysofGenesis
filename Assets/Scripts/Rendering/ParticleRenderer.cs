@@ -11,6 +11,8 @@ namespace TapTap2026.Rendering
     /// <remarks>
     /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步。
     /// 上屏时机完全由调用方（<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
+    /// <para>除网格 quad 外，本组件还持有**笔刷轮廓叠层**（<see cref="SetBrushOutline"/>，编辑器驱动）：
+    /// 一层与格子逐格对齐的白像素圆 sprite，压在所有像素之上。</para>
     /// <para>上屏前按 <see cref="LightController.Daylight"/> 做昼夜表现：天空色在
     /// <see cref="NightBackground"/> / <see cref="DayBackground"/> 之间取色，粒子与云按
     /// <c>Lerp(NightBrightness, 1, Daylight)</c> 整体变暗。过渡长度由光照周期自动给出（下一时段长度的 1/10）。</para>
@@ -49,6 +51,12 @@ namespace TapTap2026.Rendering
         [Tooltip("首次建立纹理时把相机摆正到刚好框住整张网格。")]
         [SerializeField] private bool _fitCameraOnInitialize = true;
 
+        /// <summary>
+        /// 笔刷轮廓叠层的深度：比世界 quad（0）与动物视图（−1）都更靠近相机，稳稳压在所有像素之上。
+        /// 相机在 z = −10 朝 +z 看，因此这里取 −2（越小越靠前）。
+        /// </summary>
+        private const float BrushOverlayZ = -2f;
+
         private Color32[] _pixels;
         private Texture2D _texture;
         private Mesh _mesh;
@@ -56,6 +64,22 @@ namespace TapTap2026.Rendering
         private MeshFilter _meshFilter;
         private MeshRenderer _meshRenderer;
         private bool _targetFailed;
+
+        /// <summary>笔刷轮廓叠层的子物体视图（懒建）；未建时为 null。</summary>
+        private SpriteRenderer _brushRenderer;
+
+        /// <summary>叠层纹理（边长 <c>2 * _brushCapacity + 1</c>、Point 过滤）与它对应的 sprite。</summary>
+        private Texture2D _brushTexture;
+        private Sprite _brushSprite;
+
+        /// <summary>叠层的像素缓冲（行主序，与 <see cref="Texture2D.SetPixels32"/> 一致）。</summary>
+        private Color32[] _brushPixels;
+
+        /// <summary>叠层缓冲当前撑开的半径（= sprite 覆盖的半宽格数）。0 = 还没建。</summary>
+        private int _brushCapacity;
+
+        /// <summary>当前画进纹理的轮廓半径；−1 = 纹理内容无效（新建或换过尺寸），必须重画。</summary>
+        private int _brushRadius = -1;
 
         /// <summary>当前上屏用的纹理，尚未就绪时为 null。</summary>
         public Texture2D Texture
@@ -108,10 +132,142 @@ namespace TapTap2026.Rendering
             _texture.Apply(false, false);
         }
 
+        /// <summary>
+        /// 光标处的**笔刷轮廓叠层**：在以 (centerX, centerY) 为圆心的像素圆轮廓格（<see cref="BrushOutline"/>）
+        /// 上叠一层白像素，标出编辑器左键会写到哪几格。<paramref name="radius"/> &lt; 1 视同撤下。
+        /// </summary>
+        /// <remarks>
+        /// 叠层是**场景里的一个 sprite**，不是屏幕空间的白块：与粒子网格共用同一套格子坐标、1 像素 = 1 格
+        /// （<c>pixelsPerUnit = 1</c> + pivot 居中，同 <see cref="CreatureRenderer"/> 的占位块），
+        /// 所以与像素场景**逐格对齐**，相机缩放 / 平移都不需要换算；深度 <see cref="BrushOverlayZ"/> 外加
+        /// <c>sortingOrder = 1</c> 保证它压在所有像素（世界 quad）与动物之上。
+        /// <para>缓冲按半径**增长式**复用：同半径只挪位置，半径变化才重画纹理（≤ 21×21 像素）；
+        /// 叠层不参与昼夜调光——白圈是操作提示，夜里也必须是白的。</para>
+        /// </remarks>
+        public void SetBrushOutline(int centerX, int centerY, int radius)
+        {
+            if (radius < 1)
+            {
+                HideBrushOutline();
+                return;
+            }
+
+            EnsureBrushOverlay(radius);
+
+            if (_brushRadius != radius)
+            {
+                // 换半径要整块重画：只补新环会留下旧环的残影（见 BrushOutline.Fill）。
+                BrushOutline.Fill(_brushPixels, _brushCapacity, radius);
+                _brushTexture.SetPixels32(_brushPixels);
+                _brushTexture.Apply(false, false);
+                _brushRadius = radius;
+            }
+
+            // pivot 居中 ⇒ 位置取格中心：sprite 因此恰好覆盖 [centerX − capacity, centerX + capacity] 这一方块，
+            // 缓冲中心的 texel 正落在光标格上。
+            _brushRenderer.transform.localPosition = new Vector3(centerX + 0.5f, centerY + 0.5f, BrushOverlayZ);
+            _brushRenderer.enabled = true;
+        }
+
+        /// <summary>撤下笔刷轮廓叠层（还没建过就什么都不做）。</summary>
+        public void HideBrushOutline()
+        {
+            if (_brushRenderer != null)
+            {
+                _brushRenderer.enabled = false;
+            }
+        }
+
+        /// <summary>
+        /// 按需建 / 撑开叠层的子物体、纹理与 sprite：容量够用（<see cref="_brushCapacity"/> ≥ radius）时原样复用，
+        /// 否则重建到新半径（纹理边长 = <c>2 * radius + 1</c>）。
+        /// </summary>
+        private void EnsureBrushOverlay(int radius)
+        {
+            if (_brushRenderer == null)
+            {
+                // 运行期生成的子物体一律 DontSave：绝不能被保存场景烘进 .unity 文件（同世界 quad）。
+                var child = new GameObject("ParticleBrushOverlay") { hideFlags = HideFlags.DontSave };
+                child.transform.SetParent(transform, false);
+
+                _brushRenderer = child.AddComponent<SpriteRenderer>();
+
+                // 与同层其他 sprite（动物视图，order 0）拉开先后：即使相机的透明排序不看深度，叠层也在最上。
+                _brushRenderer.sortingOrder = 1;
+            }
+
+            if (_brushCapacity >= radius && _brushSprite != null)
+            {
+                return;
+            }
+
+            ReleaseBrushTexture();
+
+            _brushCapacity = radius;
+            int size = radius * 2 + 1;
+
+            _brushPixels = new Color32[size * size];
+            _brushTexture = new Texture2D(size, size, TextureFormat.RGBA32, false, false)
+            {
+                name = "ParticleBrushOverlay",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                hideFlags = HideFlags.DontSave,
+            };
+
+            // pixelsPerUnit = 1 ⇒ 1 texel 恰好 1 格；pivot 居中 ⇒ 叠层以光标格中心为中心。
+            _brushSprite = Sprite.Create(_brushTexture, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f), 1f);
+            _brushSprite.name = "ParticleBrushOverlay";
+            _brushSprite.hideFlags = HideFlags.DontSave;
+            _brushRenderer.sprite = _brushSprite;
+
+            // 新纹理是空的：标成无效，逼调用方这一帧就重画（否则会显示一个空圆）。
+            _brushRadius = -1;
+        }
+
+        /// <summary>释放叠层的纹理与 sprite（子物体与 <see cref="SpriteRenderer"/> 留着复用）。</summary>
+        private void ReleaseBrushTexture()
+        {
+            if (_brushRenderer != null)
+            {
+                _brushRenderer.sprite = null;
+            }
+
+            if (_brushSprite != null)
+            {
+                Destroy(_brushSprite);
+                _brushSprite = null;
+            }
+
+            if (_brushTexture != null)
+            {
+                Destroy(_brushTexture);
+                _brushTexture = null;
+            }
+
+            _brushPixels = null;
+            _brushRadius = -1;
+        }
+
         private void OnDestroy()
         {
-            // 这里不碰 _meshRenderer：销毁顺序不确定，子物体可能已被销毁。
+            // 这里不碰 _meshRenderer / _brushRenderer：销毁顺序不确定，子物体可能已被销毁。
             _pixels = null;
+
+            // 纹理与 sprite 由本类在运行期创建，必须自己释放（子物体随宿主一起销毁）。
+            if (_brushSprite != null)
+            {
+                Destroy(_brushSprite);
+                _brushSprite = null;
+            }
+
+            if (_brushTexture != null)
+            {
+                Destroy(_brushTexture);
+                _brushTexture = null;
+            }
+
+            _brushPixels = null;
 
             if (_runtimeMaterial != null)
             {

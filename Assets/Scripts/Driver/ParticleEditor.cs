@@ -12,6 +12,9 @@ namespace TapTap2026.Game
     /// **按住左键**用当前选中项填满鼠标处半径 <see cref="BrushRadius"/> 的圆（选中动物物种时改为**在鼠标格放置一只实体**）；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
     /// **右键**在可投放项间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷；
     /// **末尾接动物物种**兔子 / 鱼，见 <see cref="CreatureFactories"/>）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
+    /// 光标处另有一圈**白色像素圆**标出笔刷足迹——半径 = 当前笔刷半径，圈上的格恰好是左键会写到的格；
+    /// 它画在**像素场景的顶层**（渲染器的一层 sprite，1 像素 = 1 格，与格子逐格对齐、压在所有像素之上，见
+    /// <see cref="ParticleRenderer.SetBrushOutline"/>），随 <see cref="_drawHud"/> 一起开关；
     /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
     /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
@@ -61,7 +64,7 @@ namespace TapTap2026.Game
         [Tooltip("笔刷半径（格）。运行期可用鼠标滚轮调整。")]
         [SerializeField, Range(MinBrushRadius, MaxBrushRadius)] private int _brushRadius = 3;
 
-        [Tooltip("显示鼠标旁的当前粒子/半径，以及左上角光标格的读数。")]
+        [Tooltip("显示编辑器的屏幕叠层：鼠标旁的当前粒子/半径色块、左上角光标格读数、光标处的白色笔刷轮廓圈。")]
         [SerializeField] private bool _drawHud = true;
 
         [Tooltip("暂停热键：按一下停掉所有帧（运动帧与逻辑帧），再按一下继续。设为 None 关闭热键。")]
@@ -142,6 +145,13 @@ namespace TapTap2026.Game
         private string _hudText;
         private Color _hudColor;
         private string _probeText;
+
+        /// <summary>光标是否落在网格内，以及光标格——<see cref="ProbeCell"/> 用同一次射线投影顺手记下
+        /// （不重复算），<see cref="ApplyBrushOutline"/> 据此摆笔刷轮廓叠层。</summary>
+        private bool _hoverCellValid;
+        private int _hoverCellX;
+        private int _hoverCellY;
+
         private string _highSpeedHudText;
         private string[] _highSpeedReportLines;
 
@@ -297,6 +307,18 @@ namespace TapTap2026.Game
 
         private void Update()
         {
+            // 笔刷轮廓由 UpdateEditing 按光标位置刷新（见 ApplyBrushOutline），所以每次进来先按「不可见」起手：
+            // 任何提前返回（对话激活、世界没就绪、高速模式锁编辑）都不会留下上一帧的白圈。
+            _hoverCellValid = false;
+
+            UpdateEditing();
+
+            ApplyBrushOutline();
+        }
+
+        /// <summary>编辑输入：热键、相机平移、光标读数、切类型 / 调半径 / 投放 / 擦除。</summary>
+        private void UpdateEditing()
+        {
             if (SuppressInput)
             {
                 return;
@@ -351,6 +373,9 @@ namespace TapTap2026.Game
             if (_driver.HighSpeedActive)
             {
                 ProbeCell(world, Input.mousePosition);
+
+                // 锁编辑时不画笔刷轮廓：白圈会被读成「这里能落笔」（只读光标读数照旧）。
+                _hoverCellValid = false;
                 return;
             }
 
@@ -420,6 +445,32 @@ namespace TapTap2026.Game
                     _driver.PresentNow();
                 }
             }
+        }
+
+        /// <summary>
+        /// 把 <see cref="UpdateEditing"/> 记下的光标格推给渲染器的**笔刷轮廓叠层**
+        /// （<see cref="ParticleRenderer.SetBrushOutline"/>）：以光标格为圆心、当前 <see cref="BrushRadius"/>
+        /// 为半径的白色像素圆，圈上的格恰好是左键会写到的格。
+        /// </summary>
+        /// <remarks>
+        /// 叠层画在**场景里**（渲染器自建的 sprite，1 像素 = 1 格、<c>sortingOrder</c> 压在世界 quad 之上），
+        /// 不是屏幕空间的白块：因此与像素场景逐格对齐，相机缩放 / 平移都不用换算，也不会糊在粒子上面。
+        /// 光标不在网格内、HUD 关了（<see cref="_drawHud"/>）或渲染器缺失时撤下叠层。
+        /// </remarks>
+        private void ApplyBrushOutline()
+        {
+            if (_renderer == null)
+            {
+                return;
+            }
+
+            if (!_drawHud || !_hoverCellValid)
+            {
+                _renderer.HideBrushOutline();
+                return;
+            }
+
+            _renderer.SetBrushOutline(_hoverCellX, _hoverCellY, BrushRadius);
         }
 
         /// <summary>
@@ -1047,13 +1098,17 @@ namespace TapTap2026.Game
         /// 末尾追加当前倍速（见 <see cref="DescribeSpeed"/>）。</summary>
         private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
         {
-            string reading = TryGetCell(screenPosition, world, out int x, out int y)
-                ? DescribeCell(world, x, y)
-                : "视口外";
+            bool inGrid = TryGetCell(screenPosition, world, out int x, out int y);
+            string reading = inGrid ? DescribeCell(world, x, y) : "视口外";
 
             // 按住 E 时前缀一个固定串，免得以为左键还在投放。
             string line = Input.GetKey(KeyCode.E) ? "【擦除】" + reading : reading;
             _probeText = line + "  " + DescribeSpeed();
+
+            // 光标格顺手留给 OnGUI 的笔刷轮廓（与读数同一次射线，不重复投影）。
+            _hoverCellValid = inGrid;
+            _hoverCellX = x;
+            _hoverCellY = y;
         }
 
         /// <summary>
