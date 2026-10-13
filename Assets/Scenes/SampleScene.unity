@@ -522,7 +522,6 @@ MonoBehaviour:
   - TreeLeafParticle
   _singlePlacementTypes:
   - GrassSeedParticle
-  - AquaticSeedParticle
   - TreeSeedParticle
   _placeableGasTypes:
   - FireParticle

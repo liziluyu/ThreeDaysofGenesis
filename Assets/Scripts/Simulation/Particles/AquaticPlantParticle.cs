@@ -13,7 +13,7 @@ namespace TapTap2026.Simulation
     // 邻居查询范围：随机刻时以自身为中心、半径 2 格（SeedSpawnRadius）的圆盘；生长读正上方 2 格；
     //               死亡判定用正上方一格（①被压）、正下方一格（②扎根）、八邻（③脱水）
     // 交互的 ParticleIds：Water —— 生长消耗 / 死亡归还（1:1 对称，水守恒由构造保证）；
-    //                     AquaticSeed —— 撒种的产物；Atmosphere —— 被覆盖时水经湿度场归还（水汽）；
+    //                     GrassSeed —— 撒种的产物；Atmosphere —— 被覆盖时水经湿度场归还（水汽）；
     //                     Soil / WetSoil / HumusSoil / Sand —— 扎根 / 播撒判据（具体类型反应）
     //
     // 行为：
@@ -40,7 +40,7 @@ namespace TapTap2026.Simulation
     //          只有最顶上的茎格满足「头顶是水」，所以只有顶格会生长。
     //       ⑥ **撒种（10% 概率）**：每次都摇骰（消耗 1 个随机数，保证确定性）；命中才在半径 2 格圆盘内
     //          找第一个「**软底 + 正上方是水 + 水柱顶端之上有界内气体/空格**」的列：把顶端气体格 Set 成水
-    //          （水位上升一格——被顶开的水有处可去），把基质正上方的水格 SetPhase 成水生态种子。
+    //          （水位上升一格——被顶开的水有处可去），把基质正上方的水格 SetPhase 成草种子。
     //          **基质不消耗**（修掉旧版「每撒一次种海底少一格」）；水只是被顶上去，严格守恒。
     //   被覆盖（OnKill）：killerTypeId == Water 是我们自己的「死亡还水」路径（SetPhase 会触发 OnKill），
     //   直接返回不重复结算；其余（被固体压埋 / 被抹除 Clear）把这份水注入八邻第一个气体格的湿度场——
@@ -290,7 +290,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// (x,y) 是否被压住：正上方是**固体**且**不是同类植物**。
-        /// 于是沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、水生态种子（固体）都算压；
+        /// 于是沙 / 土 / 石 / 湿土 / 腐殖土 / 腐殖质、草种子（固体）都算压；
         /// **液体（水）不算压**（沉水常态）、同株茎的上一段不算压、气体 / 空气不算压。
         /// </summary>
         private static bool IsPressed(ParticleWorld world, int x, int y)
@@ -342,7 +342,7 @@ namespace TapTap2026.Simulation
         /// 在半径 <see cref="SeedSpawnRadius"/> 格的**圆盘**内找第一个「软底 + 正上方是水 +
         /// 水柱顶端之上有界内气体/空格」的列：把水柱顶端之上的气体格 <see cref="ParticleWorld.Set"/> 成水
         /// （水位上升一格），再把基质正上方的水格 <see cref="ParticleWorld.SetPhase"/> 成
-        /// <see cref="ParticleIds.AquaticSeed"/>。水只是被顶上去、不销毁；基质格不动（海底不被啃）。
+        /// <see cref="ParticleIds.GrassSeed"/>。水只是被顶上去、不销毁；基质格不动（海底不被啃）。
         /// 固定扫描序：dy 升序、同一行 dx 升序。找到即返回 true（至多一颗）。
         /// </summary>
         private static bool TrySpawnSeed(ParticleWorld world, int x, int y)
@@ -387,7 +387,7 @@ namespace TapTap2026.Simulation
                     }
 
                     world.Set(nx, receiverY, ParticleIds.Water);
-                    world.SetPhase(nx, ny + 1, ParticleIds.AquaticSeed);
+                    world.SetPhase(nx, ny + 1, ParticleIds.GrassSeed);
                     return true;
                 }
             }

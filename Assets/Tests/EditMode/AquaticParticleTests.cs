@@ -5,7 +5,7 @@ using UnityEngine;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 水生植物 / 水生态种子：吸水发芽（1:1 消耗水）、随机刻逐格生长（留保命水）、寿命（逻辑帧衰老、寿终还水）、
+    /// 水生植物 / 草种子（沉水发芽）：吸水发芽（1:1 消耗水）、随机刻逐格生长（留保命水）、寿命（逻辑帧衰老、寿终还水）、
     /// 四种死法还水、被覆盖走水汽、撒种顶水不啃基质。
     /// 跨类型相变依赖 <see cref="ParticleIds"/> 回填，因此走生产注册路径（<see cref="ParticleRegistration.RegisterAll"/>）。
     /// 随机刻用 <see cref="ParticleType.OnRandomTick"/> 直接调用，保证确定、不依赖世界随机抽格。
@@ -32,7 +32,7 @@ namespace TapTap2026.Tests
 
         private static ushort SeedId
         {
-            get { return ParticleIds.AquaticSeed; }
+            get { return ParticleIds.GrassSeed; }
         }
 
         private static ushort PlantId
@@ -75,14 +75,14 @@ namespace TapTap2026.Tests
         [Test]
         public void ProductionRegistration_BackfillsAquaticIds()
         {
-            Assert.AreNotEqual(ParticleRegistry.AirTypeId, SeedId, "水生态种子 id 应被回填");
+            Assert.AreNotEqual(ParticleRegistry.AirTypeId, SeedId, "草种子 id 应被回填");
             Assert.AreNotEqual(ParticleRegistry.AirTypeId, PlantId, "水生植物 id 应被回填");
             Assert.AreNotEqual(SeedId, PlantId);
 
             ParticleTypeInfo seed = ParticleRegistry.Types[SeedId].Info;
             Assert.IsTrue((seed.Tags & ParticleTags.Solid) != 0);
             Assert.IsFalse((seed.Tags & ParticleTags.Organic) != 0,
-                "种子不带 Organic：否则发芽时 SetPhase(种子→植物) 会被 20% 腐殖质衰变截胡");
+                "种子不带 Organic：否则沉水发芽 SetPhase(种子→植物) 会被 20% 腐殖质衰变截胡");
             Assert.IsTrue(seed.AffectedByGravity, "种子应受重力");
 
             ParticleTypeInfo plant = ParticleRegistry.Types[PlantId].Info;
@@ -154,19 +154,52 @@ namespace TapTap2026.Tests
         [Test]
         public void Seed_DoesNotGerminate_WhenNotSubmergedOrNotRooted()
         {
-            // 上方不是水（未淹没）。
+            // 上方不是水（未沉水）→ 走陆生草路；八邻没有湿土 / 腐殖土 ⇒ 不发芽。
             ParticleWorld dry = new ParticleWorld(3, 6, SeedValue);
             dry.Set(1, 0, SandId);
             dry.Set(1, 1, SeedId);
             RandomTick(dry, SeedId, 1, 1);
-            Assert.AreEqual(SeedId, dry.GetCell(1, 1).typeId, "未淹没不发芽");
+            Assert.AreEqual(SeedId, dry.GetCell(1, 1).typeId, "未沉水且无墒情邻格不发芽");
 
-            // 上方是水但正下方不是软底（未扎根）。
+            // 正上方两格都是水（沉水）但正下方不是软底（未扎根）。
             ParticleWorld loose = new ParticleWorld(3, 6, SeedValue);
+            loose.Set(1, 0, ParticleIds.Stone);
             loose.Set(1, 2, WaterId);
+            loose.Set(1, 3, WaterId);
             loose.Set(1, 1, SeedId);
             RandomTick(loose, SeedId, 1, 1);
-            Assert.AreEqual(SeedId, loose.GetCell(1, 1).typeId, "未扎根不发芽");
+            Assert.AreEqual(SeedId, loose.GetCell(1, 1).typeId, "沉水但未扎根软底不发芽");
+        }
+
+        [Test]
+        public void Seed_RequiresTwoWaterCellsAbove_ToGerminateAsPlant()
+        {
+            // 正上方只有一格水（不满足「两格全是水」）⇒ 不走沉水路径；八邻又没有湿土 ⇒ 空转、不发芽。
+            ParticleWorld world = new ParticleWorld(3, 6, SeedValue);
+            world.Set(1, 0, SandId);
+            world.Set(1, 2, WaterId);
+            world.Set(1, 1, SeedId);
+
+            RandomTick(world, SeedId, 1, 1);
+
+            Assert.AreEqual(SeedId, world.GetCell(1, 1).typeId, "正上方只有一格水 ⇒ 不按水生植物发芽");
+            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId, "那格水不被吸收");
+        }
+
+        [Test]
+        public void Seed_SubmergedTakesPriorityOverWetSoilNeighbour()
+        {
+            // 沉水且扎根，同时八邻还有湿土（草路也满足）：沉水优先——发芽成水生植物而不是草。
+            ParticleWorld world = new ParticleWorld(3, 6, SeedValue);
+            world.Set(1, 0, SandId);
+            world.Set(0, 1, ParticleIds.WetSoil); // 八邻里也有湿土
+            world.Set(1, 2, WaterId);
+            world.Set(1, 3, WaterId);
+            world.Set(1, 1, SeedId);
+
+            RandomTick(world, SeedId, 1, 1);
+
+            Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId, "沉水优先：发芽成水生植物");
         }
 
         [Test]

@@ -214,17 +214,17 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f);
         }
 
-        /// <summary>口径锚点：带 <see cref="ParticleTags.Organic"/> 的固体不算落沙声——草种子下落也静音。</summary>
+        /// <summary>口径锚点：带 <see cref="ParticleTags.Organic"/> 的固体不算落沙声——树木种子下落也静音。</summary>
         [Test]
-        public void Pump_IgnoresOrganicSolidsSuchAsGrassSeeds()
+        public void Pump_IgnoresOrganicSolidsSuchAsTreeSeeds()
         {
             ParticleWorld world = CreateWorld();
-            FloatSolidRow(world, 5, W, ParticleIds.GrassSeed);
+            FloatSolidRow(world, 5, W, ParticleIds.TreeSeed);
             world.StepMotion();
 
-            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(0, 5).typeId, "草种子确实下落了一格");
-            Assert.AreEqual(ParticleIds.GrassSeed, world.GetCell(0, 4).typeId);
-            Assert.AreEqual(0L, world.SolidMotion.MovingCount, "草种子带 Organic，不计入落沙声的运动格数");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(0, 5).typeId, "树木种子确实下落了一格");
+            Assert.AreEqual(ParticleIds.TreeSeed, world.GetCell(0, 4).typeId);
+            Assert.AreEqual(0L, world.SolidMotion.MovingCount, "树木种子带 Organic，不计入落沙声的运动格数");
             Assert.AreEqual(0f, _driver.Pump(world), 1e-6f, "有机固体下落不触发落沙声");
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f);
         }

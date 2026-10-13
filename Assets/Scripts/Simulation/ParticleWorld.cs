@@ -397,8 +397,8 @@ namespace TapTap2026.Simulation
         /// 固体存量里大多是常年定植不动的成员，<see cref="MotionMonitor.MovingRatio"/> 会被稀释，
         /// 详见 <see cref="MotionMonitor"/> 的类型注释）。
         /// 掩码 = 带 <see cref="ParticleTags.Solid"/> **且不带** <see cref="ParticleTags.Organic"/>：
-        /// 石 / 沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 水生态种子——会下落的粉末；
-        /// 树叶 / 草种子 / 树木种子 / 草 / 花 / 树干带 <see cref="ParticleTags.Organic"/>，被排除。
+        /// 石 / 沙 / 土 / 湿土 / 腐殖质 / 腐殖土 / 湿润腐殖土 / 草种子——会下落的粉末；
+        /// 树叶 / 树木种子 / 草 / 花 / 树干带 <see cref="ParticleTags.Organic"/>，被排除。
         /// 它是纯观察者：零 RNG 消耗、零格子写入、零场写入——读不读、用它做什么都不改变模拟结果。
         /// </summary>
         public MotionMonitor SolidMotion
@@ -928,7 +928,7 @@ namespace TapTap2026.Simulation
         /// 变成腐殖质」真正落到这一格，只能在写完新格之后改判——与 <see cref="StepRain"/> 直接引用
         /// <see cref="ParticleIds.Water"/> 同理，是世界的**通用过程**（判据只看标签，产物是固定的腐殖质）。
         /// 摇骰只对「有机物被非有机物替换」发生，因此普通死亡路径的随机流不受影响、依旧可复现。
-        /// **例外**：<paramref name="newId"/> 本身就是腐殖质时不摇骰——显式霉烂（草种子 / 水生态种子 /
+        /// **例外**：<paramref name="newId"/> 本身就是腐殖质时不摇骰——显式霉烂（草种子 /
         /// 树木种子的 <c>SetPhase → Humus</c>）已经是完成态的衰变，通用骰不可能再改变结果
         /// （命中后 <c>SetPhase(Humus)</c> 被 <c>previousId == typeId</c> early-return 吞掉），只会白耗一个随机数。
         /// 该豁免让霉烂路径之后的世界随机流比旧行为前移一格（确定性不受影响：同种子同命令序列仍逐位可复现）。

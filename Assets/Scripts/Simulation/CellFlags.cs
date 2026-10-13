@@ -56,12 +56,11 @@ namespace TapTap2026.Simulation
         public const int DriftDirectionShift = 3;
 
         /// <summary>
-        /// bit5-6：**草种子 / 水生态种子私有**——「被随机刻命中但没有发芽条件」的连续计数
-        /// （0..<see cref="GrassSeedParticle.MaxStrikesBeforeHumus"/>）。两种种子**共用**同一组位
-        /// （一格在同一时刻只属于一个类型，互不冲突）。与 <see cref="DriftDirectionMask"/> 同一写法：
+        /// bit5-6：**草种子私有**（<see cref="GrassSeedParticle"/>）——「被随机刻命中但没有发芽条件」的连续计数
+        /// （0..<see cref="GrassSeedParticle.MaxStrikesBeforeHumus"/>；草种子的两种发芽去向共用同一个计数）。
+        /// 与 <see cref="DriftDirectionMask"/> 同一写法：
         /// 读取用本掩码、清除用 <see cref="SeedStrikeClearMask"/>、写入用 <c>|</c> 组合，绝不整体赋值
-        /// <c>flags</c>（尤其保留 bit0）。<see cref="GrassSeedParticle"/> 与 <see cref="AquaticSeedParticle"/>
-        /// 各自在文件头部登记了该占用。
+        /// <c>flags</c>（尤其保留 bit0）。<see cref="GrassSeedParticle"/> 在文件头部登记了该占用。
         /// <para><b>与 <see cref="GrassAgeRemainderMask"/> 在 bit5-6 重叠</b>（<c>0x60 &amp; 0x78 = 0x60</c>）。
         /// 两组掩码语义互斥（种子的连续计数 vs 草的年龄余数），能共用 bit5-6 的**唯一**依据是
         /// 「一格的私有位只被当前类型解释」：同一时刻一格只属于一个类型，而 <see cref="ParticleWorld.Set"/> /
@@ -95,7 +94,7 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// bit6-7：**树木种子私有**——「被随机刻命中但没有发芽条件」的连续计数（0..3）。
-        /// 与草种子 / 水生态种子的 <see cref="SeedStrikeMask"/>（bit5-6）**不是**同一组：树木种子把
+        /// 与草种子的 <see cref="SeedStrikeMask"/>（bit5-6）**不是**同一组：树木种子把
         /// bit3-5 让给了物种，计数改用 bit6-7（一格在同一时刻只有一个类型，互不冲突）。
         /// <see cref="TreeTrunkParticle"/> 用同一组位存生长阶段，两者不同时存在。
         /// </summary>

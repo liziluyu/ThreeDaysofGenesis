@@ -96,8 +96,8 @@ namespace TapTap2026.Game
         };
 
         [Tooltip("「单颗投放」白名单（按 DebugName 或类名匹配）：右键切到这些类型时，无论笔刷半径多大，" +
-                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认草种子、水生态种子与树木种子，将来可追加。")]
-        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle", "AquaticSeedParticle", "TreeSeedParticle" };
+                 "都只在光标中心落一颗，且两次投放之间共享 500ms 冷却。默认草种子与树木种子，将来可追加。")]
+        [SerializeField] private string[] _singlePlacementTypes = { "GrassSeedParticle", "TreeSeedParticle" };
 
         [Tooltip("可手动投放的 Gas 类型白名单（按 DebugName 或类名匹配）：Gas 默认一律不可投放" +
                  "（蒸汽 / 云 / 大气是水循环的中间态，只能由相变产生），火是当前唯一可手刷的例外。")]

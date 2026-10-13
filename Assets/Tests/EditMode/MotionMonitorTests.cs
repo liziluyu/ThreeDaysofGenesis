@@ -96,7 +96,7 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 带 <see cref="ParticleTags.Organic"/> 的固体（草种子那类）：它**确实在下落**，
+        /// 带 <see cref="ParticleTags.Organic"/> 的固体（树木种子那类）：它**确实在下落**，
         /// 但被 excludedTags 排除，固体那条恒为 0。
         /// </summary>
         [Test]
@@ -317,7 +317,7 @@ namespace TapTap2026.Tests
             return world;
         }
 
-        /// <summary>测试专用的「带 Organic 的固体」：像草种子那样会下落，但应被固体运动观察者排除。</summary>
+        /// <summary>测试专用的「带 Organic 的固体」：像树木种子那样会下落，但应被固体运动观察者排除。</summary>
         private sealed class TestOrganicSolidParticle : IParticleType
         {
             private static readonly Color32[] Palette = { new Color32(120, 200, 60, 255) };

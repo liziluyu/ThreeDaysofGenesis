@@ -19,8 +19,9 @@ namespace TapTap2026.Game
     /// 这是本驱动比水的流动声简单的原因。</para>
     /// <para><b>口径</b>：读的是 <see cref="ParticleWorld.SolidMotion"/>——带 <see cref="ParticleTags.Solid"/>
     /// 且**不带** <see cref="ParticleTags.Organic"/> 的类型，即会下落的粉末 / 石：石、沙、土、湿土、腐殖质、
-    /// 腐殖土、湿润腐殖土、水生态种子。树叶 / 草种子 / 树木种子带 <see cref="ParticleTags.Organic"/>，
-    /// 连同草 / 花 / 树干一起被排除，故树叶飘落、种子下沉**不会**触发落沙声。</para>
+    /// 腐殖土、湿润腐殖土、草种子（草种子不带 Organic——合并水生态种子后它必须能沉水发芽，见
+    /// <see cref="GrassSeedParticle"/> 的文件头）。树叶 / 树木种子 / 草 / 花 / 树干带 <see cref="ParticleTags.Organic"/>，
+    /// 被排除，故树叶飘落、树木种子下沉**不会**触发落沙声。</para>
     /// <para><b>不重播</b>：本组件只做「读计数 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
     /// 每帧都推、推几次都一样；起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里这条循环声床。</para>
     /// <para><b>先清账再判开关</b>：<c>_enabled == false</c> 期间也**无条件**读掉并重置运动计数，

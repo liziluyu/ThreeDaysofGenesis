@@ -48,7 +48,6 @@ namespace TapTap2026.Simulation
                     new GrassParticle(),
                     new HumusParticle(),
                     new HumusSoilParticle(),
-                    new AquaticSeedParticle(),
                     new AquaticPlantParticle(),
                     new FireParticle(),
                     new TreeSeedParticle(),
@@ -69,15 +68,14 @@ namespace TapTap2026.Simulation
                 ParticleIds.Grass = ids[7];
                 ParticleIds.Humus = ids[8];
                 ParticleIds.HumusSoil = ids[9];
-                ParticleIds.AquaticSeed = ids[10];
-                ParticleIds.AquaticPlant = ids[11];
-                ParticleIds.Fire = ids[12];
-                ParticleIds.TreeSeed = ids[13];
-                ParticleIds.TreeTrunk = ids[14];
-                ParticleIds.TreeLeaf = ids[15];
-                ParticleIds.Flower = ids[16];
-                ParticleIds.WetHumusSoil = ids[17];
-                ParticleIds.Lightning = ids[18];
+                ParticleIds.AquaticPlant = ids[10];
+                ParticleIds.Fire = ids[11];
+                ParticleIds.TreeSeed = ids[12];
+                ParticleIds.TreeTrunk = ids[13];
+                ParticleIds.TreeLeaf = ids[14];
+                ParticleIds.Flower = ids[15];
+                ParticleIds.WetHumusSoil = ids[16];
+                ParticleIds.Lightning = ids[17];
                 _registered = true;
             }
             catch (Exception exception)
