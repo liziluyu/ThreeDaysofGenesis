@@ -5,8 +5,10 @@ namespace TapTap2026.Simulation
     // WaterParticle —— 水（液体标签，摩擦度/粘性不读，填 0；热容 6.5，约为固体的 7~10 倍）
     //
     // flags 私有位：无（bit3-7 全部空闲）
-    // 邻居查询范围：正下、左下/右下、同行左右邻格、左右各 MaxFlowSpread 格（落差视野扫描）
-    // 交互的 ParticleIds：无 —— 蒸发把水汽交给湿度场（HumidityField），水汽不以粒子形式存在
+    // 邻居查询范围：正下、左下/右下、同行左右邻格、左右各 MaxFlowSpread 格（落差视野扫描）、
+    //               正下连续最多 CanopyPassMaxDepth 格（穿冠扫描，见行为第 0 段）
+    // 交互的 ParticleIds：TreeLeaf（穿冠判据——正下方连续叶柱；失活落叶同样算）——
+    //                    蒸发把水汽交给湿度场（HumidityField），水汽不以粒子形式存在
     //
     // 行为：开头先查温度做相变，然后才是液体运动。相变分两条路：
     //         · 沸腾（T ≥ 沸点）：把 1 份水汽**集中**在原地一小片 → 每格浓度高 → 渲染成可见的白色汽团；
@@ -17,7 +19,14 @@ namespace TapTap2026.Simulation
     //       这就是"水蒸气只在沸腾时出现"：可见的水汽只由沸腾产生，慢蒸发是隐形的。
     //       潜热：蒸发（沸腾与慢蒸发）从水里**带走** HumidityField.LatentHeat(T)（随温度线性）的热量，
     //       海面因此被蒸发冷却；这份潜热由湿度单位携带、随降雨按凝结温度归还（见 HumidityField.LatentHeat）。
-    //       运动为四段固定优先级，成功即 return：
+    //       运动为「一道穿冠门 + 四段固定优先级」，任一成功即 return：
+    //         0. 穿冠（雨水穿冠）：正下方一格是树叶（ParticleIds.TreeLeaf）时，沿本列竖直向下扫过
+    //            **连续**叶柱（最多 CanopyPassMaxDepth = 8 格，覆盖最大连续叶柱；超限放弃），
+    //            停在第一格非树叶；该格在界内且是气体 / 空 → Swap 本格与它：水落到冠下、
+    //            被顶开的气体换上冠顶（质量守恒，Swap 自带候选唤醒与气体绝热结算）。
+    //            叶柱下方是干 / 土 / 水 / 越界等一律放弃，随即回到下面四段——水从冠沿横流走掉是
+    //            既有行为，保持不变。失活叶（下落中 / 已落地的树叶）同样可穿：水从落叶堆上渗下去，
+    //            无需特判。纯确定性扫描，**零随机流消耗**（运动路径铁律）、零分配；
     //         1. TryFall：正下能进（空气 / 气体）就下落一格；同类水与固体都挡住；
     //         2. TryDiagonalFall（clearance 1）：正下被挡就沿坡斜滑——液体无安息角；
     //         3. TryFlow：每 tick 只横移 1 格（60 Hz 下足够快，不像多格瞬移那样刺眼），
@@ -80,6 +89,13 @@ namespace TapTap2026.Simulation
         private const uint FlowSalt = 6u;
 
         /// <summary>
+        /// 穿冠扫描的最大深度：正下方**连续**树叶超过这么多格就不传送。
+        /// 取 8 覆盖最大的连续叶柱——杨树冠 dx = 0 那一列是 7 格叶，留一格余量。
+        /// 同时决定运动阅读盒的下探距离（<c>down = 1 + 本值</c>）。
+        /// </summary>
+        public const int CanopyPassMaxDepth = 8;
+
+        /// <summary>
         /// 液体热对流的温度死区：本格比正上方的水暖超过它，本格才上浮（对流搅动）。
         /// 取 0.5：水的导热极好（σ = 0.95）、水体内部本就接近等温，格间残留温差往往只有零点几度；
         /// 阈值偏大（如 2）会让柱内积起逆温层、翻转迟滞，深处的热迟迟回不到表面；
@@ -101,8 +117,9 @@ namespace TapTap2026.Simulation
             palette: Palette,
             debugName: nameof(WaterParticle),
             // 运动阅读盒：TryFlowSide 的「落差视野」逐格扫到 x ± MaxFlowSpread(= 5) 并读 (scanX, y−1)
-            // 是否有气体；TryLiquidConvect 读 (x, y+1) 是否也是液体 ⇒ (5, 1, 1)。
-            motionReadReach: new MotionReadBox(x: 5, up: 1, down: 1),
+            // 是否有气体；TryLiquidConvect 读 (x, y+1) 是否也是液体；穿冠扫描沿正下扫过连续叶柱、
+            // 并读叶柱下的第一格 ⇒ 向下 = 1（正下）+ CanopyPassMaxDepth(= 8) = 9。
+            motionReadReach: new MotionReadBox(x: 5, up: 1, down: 1 + CanopyPassMaxDepth),
             hasSurfaceHighlight: true); // 渲染提亮液面：正上方不是液体的水格向浅蓝白插值
 
         /// <summary>
@@ -232,6 +249,18 @@ namespace TapTap2026.Simulation
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
+            // 穿冠门：水落在树叶上时先试穿过整个叶柱（雨水穿冠），成功即 return。
+            // 失败就回到下面的四段固定优先级——水从冠沿横流走掉是既有行为，不变。
+            // 「不是空气」的前置判据同 WetSoilParticle.IsDrySoil：隔离类型表里 ParticleIds.TreeLeaf 是 0
+            // （= 空气的 typeId），只比 id 会把空气当成树叶、把水送穿整根空气柱。
+            ushort belowId = world.GetCell(x, y - 1).typeId;
+            if (belowId != ParticleRegistry.AirTypeId
+                && belowId == ParticleIds.TreeLeaf
+                && TryPassThroughCanopy(world, x, y))
+            {
+                return;
+            }
+
             if (ParticleRules.TryFall(world, x, y))
             {
                 return;
@@ -249,6 +278,41 @@ namespace TapTap2026.Simulation
             {
                 return;
             }
+        }
+
+        /// <summary>
+        /// 穿冠：自 (x, y−1) 起竖直向下扫过**连续**的树叶格（最多 <see cref="CanopyPassMaxDepth"/> 格），
+        /// 停在第一格非树叶；该格在界内且是气体 / 空时把水与它 <see cref="ParticleWorld.Swap"/>——
+        /// 水穿到叶柱下方、被顶开的气体换上冠顶（质量守恒；Swap 自带候选唤醒与气体绝热结算）。
+        /// <para>叶柱下方是固体 / 液体 / 越界，或连续树叶超过深度上限时返回 false，水留在冠上
+        /// （调用方随即回到下落 / 斜滑 / 横流 / 对流四段）。</para>
+        /// <para>失活叶（下落中 / 已落地的树叶）同样可穿——水从落叶堆上渗下去，无需特判。</para>
+        /// <para>纯确定性扫描：零随机流消耗（运动路径铁律）、零分配。</para>
+        /// </summary>
+        /// <remarks>只应在 (x, y−1) 确为树叶时调用（调用方的穿冠门已判定，含「非空气」的隔离表保护）。</remarks>
+        private static bool TryPassThroughCanopy(ParticleWorld world, int x, int y)
+        {
+            int targetY = y - 1;
+            int depth = 0;
+            while (world.GetCell(x, targetY).typeId == ParticleIds.TreeLeaf)
+            {
+                depth++;
+                if (depth > CanopyPassMaxDepth)
+                {
+                    return false; // 连续叶柱超过上限：不传送（叶柱下有什么都不管）
+                }
+
+                targetY--;
+            }
+
+            // 叶柱一直长到世界底行（越界）与固体 / 液体都挡下，只有气体 / 空能让水落进去。
+            if (!world.IsInBounds(x, targetY) || !ParticleRules.IsGasOrEmpty(world, x, targetY))
+            {
+                return false;
+            }
+
+            world.Swap(x, y, x, targetY);
+            return true;
         }
 
         /// <summary>

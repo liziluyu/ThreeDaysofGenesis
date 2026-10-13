@@ -8,6 +8,7 @@ namespace TapTap2026.Tests
     /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿（下落的固体在运动中，照旧可排开液体；静止固体则不能——见地下水规则）、确定性、
     /// 孤立水滴静止不抖动（平地 / 世界底行）、
     /// 液体热对流（暖水换位 / 死区 / 不抢下落 / 夜间海面反超陆面的涌现回归），
+    /// 穿冠（水穿叶柱落到冠下 / 叶柱下是固体不穿 / 超过深度上限不穿 / 零随机流消耗），
     /// 以及蒸发（慢蒸发不可见 / 沸腾可见 / 潜热吸热）与生产注册路径的回填与标签。
     /// </summary>
     /// <remarks>
@@ -773,5 +774,179 @@ namespace TapTap2026.Tests
             Assert.AreEqual(WaterBaseColorAt(world, 2, 0), pixels[world.Index(2, 0)], "正上方是固体的水不是液面");
         }
 
+        // ============================== 穿冠（雨水穿冠） ==============================
+
+        /// <summary>
+        /// 穿冠测试走 <see cref="ParticleRegistration.RegisterAll"/> 的**生产表**：穿冠门比较
+        /// <see cref="ParticleIds.TreeLeaf"/>，隔离表里它是 0（= 空气的 typeId，与
+        /// <c>WetSoilParticle.IsDrySoil</c> 同一取舍），只有回填后才有意义。
+        /// </summary>
+        private static ParticleWorld CreateCanopyWorld(int width, int height, uint seed = 20261012u)
+        {
+            ParticleRegistration.RegisterAll();
+            return new ParticleWorld(width, height, seed);
+        }
+
+        /// <summary>
+        /// 雨水穿冠：水正下方是 1~3 格连续树叶、叶柱下方是空气时，**一个运动帧**后水出现在
+        /// 叶柱下方的第一格，被顶开的气体换上水的原格（冠顶正上方）——逐格断言这次交换。
+        /// </summary>
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        public void Water_PassesThroughCanopy_ToCellBelowLeaves(int leafDepth)
+        {
+            const int x = 2;
+            const int waterY = 8;
+            ParticleWorld world = CreateCanopyWorld(5, 12);
+
+            for (int i = 0; i < leafDepth; i++)
+            {
+                Assert.IsTrue(world.Set(x, waterY - 1 - i, ParticleIds.TreeLeaf), "铺树叶");
+            }
+
+            world.Set(x, waterY, ParticleIds.Water);
+
+            world.StepMotion();
+
+            int targetY = waterY - 1 - leafDepth;
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(x, targetY).typeId,
+                $"{leafDepth} 格叶柱：水应穿到叶柱下方第一格");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(x, targetY - 1).typeId,
+                "叶柱下方再下一格不该被动到（水只穿到叶柱下第一格）");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(x, waterY).typeId,
+                "被顶开的气体换上水的原格（冠顶正上方）——质量守恒");
+            for (int i = 0; i < leafDepth; i++)
+            {
+                Assert.AreEqual(ParticleIds.TreeLeaf, world.GetCell(x, waterY - 1 - i).typeId,
+                    "叶柱逐格不动");
+            }
+
+            Assert.AreEqual(1, CountType(world, ParticleIds.Water), "水量守恒");
+            Assert.AreEqual(leafDepth, CountType(world, ParticleIds.TreeLeaf), "叶量守恒");
+        }
+
+        /// <summary>
+        /// 叶柱下方是**固体**（石头 / 干土）时水不穿冠、也不离开冠顶：
+        /// 一格宽竖井把水关住（斜滑 / 横流都无路可走），于是水原地不动——穿冠失败不产生任何位移。
+        /// </summary>
+        [Test]
+        public void Water_DoesNotPassCanopy_WhenSolidBelow()
+        {
+            foreach (ushort blockId in new[] { ParticleIds.Stone, ParticleIds.Soil })
+            {
+                const int x = 1;
+                const int waterY = 9;
+                ParticleWorld world = CreateCanopyWorld(3, 14);
+
+                // 两壁 + 一整列基质（底部托住、不会下沉）把水彻底关在一格宽的竖井里。
+                for (int y = 0; y < world.Height; y++)
+                {
+                    world.Set(0, y, ParticleIds.Stone);
+                    world.Set(2, y, ParticleIds.Stone);
+                }
+
+                for (int y = 0; y <= 6; y++)
+                {
+                    world.Set(x, y, blockId);
+                }
+
+                world.Set(x, 7, ParticleIds.TreeLeaf);
+                world.Set(x, 8, ParticleIds.TreeLeaf);
+                world.Set(x, waterY, ParticleIds.Water);
+
+                for (int i = 0; i < 5; i++)
+                {
+                    world.StepMotion();
+                }
+
+                Assert.AreEqual(ParticleIds.Water, world.GetCell(x, waterY).typeId,
+                    $"{blockId}：叶柱下方是固体，水不穿冠、留在冠顶");
+                Assert.AreEqual(ParticleIds.TreeLeaf, world.GetCell(x, 8).typeId, "叶柱没被动到");
+                Assert.AreEqual(ParticleIds.TreeLeaf, world.GetCell(x, 7).typeId, "叶柱没被动到");
+                Assert.AreEqual(blockId, world.GetCell(x, 6).typeId, "叶柱下的固体没被换走");
+                Assert.AreEqual(1, CountType(world, ParticleIds.Water), "水量守恒");
+            }
+        }
+
+        /// <summary>
+        /// 深度上限的边界：恰好 <see cref="WaterParticle.CanopyPassMaxDepth"/> 格连续树叶仍能穿过，
+        /// 再多一格就不传送（水留在冠顶，且既有四段也走不通——竖井封死）。
+        /// 两个场景除叶柱深度外完全同构。
+        /// </summary>
+        [Test]
+        public void Water_PassesCanopy_AtMaxDepth_ButNotDeeper()
+        {
+            const int x = 1;
+            const int leafTopY = 12;
+            int maxDepth = WaterParticle.CanopyPassMaxDepth;
+
+            ParticleWorld shallow = CreateCanopyShaft(maxDepth, out int bottomY);
+            shallow.StepMotion();
+            Assert.AreEqual(ParticleIds.Water, shallow.GetCell(x, bottomY).typeId,
+                $"{maxDepth} 格叶柱（= 上限）：水应穿过去，落在叶柱下方第一格");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, shallow.GetCell(x, leafTopY + 1).typeId,
+                "水原格被换上气体");
+
+            ParticleWorld deep = CreateCanopyShaft(maxDepth + 1, out _);
+            for (int i = 0; i < 5; i++)
+            {
+                deep.StepMotion();
+            }
+
+            Assert.AreEqual(ParticleIds.Water, deep.GetCell(x, leafTopY + 1).typeId,
+                $"{maxDepth + 1} 格叶柱（超限）：不传送，水留在冠顶");
+            Assert.AreEqual(1, CountType(deep, ParticleIds.Water), "水量守恒");
+        }
+
+        /// <summary>
+        /// 一格宽竖井里的穿冠场景：水直接坐在 <paramref name="leafDepth"/> 格连续树叶上、
+        /// 叶柱下方是空气。两壁填满整列（斜滑 / 横流无路可走），故穿冠失败时水只能待在冠顶。
+        /// </summary>
+        /// <param name="bottomY">叶柱下方第一格的 y（穿冠成功时水应到达的位置）。</param>
+        private static ParticleWorld CreateCanopyShaft(int leafDepth, out int bottomY)
+        {
+            const int x = 1;
+            const int leafTopY = 12;
+            ParticleWorld world = CreateCanopyWorld(3, 24);
+
+            for (int y = 0; y < world.Height; y++)
+            {
+                world.Set(0, y, ParticleIds.Stone);
+                world.Set(2, y, ParticleIds.Stone);
+            }
+
+            for (int i = 0; i < leafDepth; i++)
+            {
+                world.Set(x, leafTopY - i, ParticleIds.TreeLeaf);
+            }
+
+            world.Set(x, leafTopY + 1, ParticleIds.Water);
+            bottomY = leafTopY - leafDepth;
+            return world;
+        }
+
+        /// <summary>
+        /// 穿冠是纯确定性扫描：**零随机流消耗**（运动路径铁律）。两个同种子、同布局的世界，
+        /// 只对一个跑一帧运动，之后两世界的下一个随机数必须相同。
+        /// </summary>
+        [Test]
+        public void CanopyPass_DoesNotConsumeRandomStream()
+        {
+            ParticleWorld triggered = CreateCanopyWorld(5, 12);
+            ParticleWorld control = CreateCanopyWorld(5, 12);
+            foreach (ParticleWorld world in new[] { triggered, control })
+            {
+                world.Set(2, 7, ParticleIds.TreeLeaf);
+                world.Set(2, 6, ParticleIds.TreeLeaf);
+                world.Set(2, 8, ParticleIds.Water);
+            }
+
+            triggered.StepMotion();
+
+            Assert.AreEqual(ParticleIds.Water, triggered.GetCell(2, 5).typeId, "前置：穿冠确实发生了");
+            Assert.AreEqual(control.NextUInt(), triggered.NextUInt(),
+                "穿冠不得消耗世界随机流（运动路径铁律）");
+        }
     }
 }
