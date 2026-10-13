@@ -73,6 +73,7 @@ namespace TapTap2026.Simulation
             }
 
             ParticleType[] types = world.Types;
+            TypeRenderFlags[] flags = GetTypeRenderFlags(types);
             HeatMap heat = world.Heat;
             HumidityField humidity = world.Humidity;
 
@@ -104,30 +105,25 @@ namespace TapTap2026.Simulation
                 // 按 OutlineFactor 调暗。在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
                 // painted 恒为真（底色已画出实物），描边格因此照常参与昼夜变暗。
                 // 液面高光：带 HasSurfaceHighlight 的格，正上方无实物（液面）时向浅蓝白插值（同一轮判定，不另开 pass）。
+                // 两个标志与邻居判据都查 types 的派生标志表（见 GetTypeRenderFlags），不再逐格拷贝 ParticleTypeInfo。
                 if (painted)
                 {
+                    // painted ⇒ BaseColor 已确认 id < types.Length 且该槽位非空；flags.Length == types.Length，不再重复判越界。
                     ushort id = cells[i].typeId;
-                    if (id < types.Length)
+                    TypeRenderFlags flag = flags[id];
+                    if (flag.HasOutline
+                        && NeighbourTriggersOutline(cells, flags, width, height, x, y, i))
                     {
-                        ParticleType type = types[id];
-                        if (type != null)
-                        {
-                            ParticleTypeInfo info = type.Info;
-                            if (info.HasOutline
-                                && NeighbourTriggersOutline(cells, types, width, height, x, y))
-                            {
-                                color = new Color32(
-                                    (byte)(color.r * OutlineFactor),
-                                    (byte)(color.g * OutlineFactor),
-                                    (byte)(color.b * OutlineFactor),
-                                    color.a);
-                            }
-                            else if (info.HasSurfaceHighlight
-                                && IsOpenSurface(cells, types, width, height, x, y))
-                            {
-                                color = Color32.Lerp(color, SurfaceHighlightColor, SurfaceHighlightFactor);
-                            }
-                        }
+                        color = new Color32(
+                            (byte)(color.r * OutlineFactor),
+                            (byte)(color.g * OutlineFactor),
+                            (byte)(color.b * OutlineFactor),
+                            color.a);
+                    }
+                    else if (flag.HasSurfaceHighlight
+                        && IsOpenSurface(cells, flags, width, height, y, i))
+                    {
+                        color = Color32.Lerp(color, SurfaceHighlightColor, SurfaceHighlightFactor);
                     }
                 }
 
@@ -167,47 +163,156 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>描边判据：四邻（上下左右）中是否至少有一格触发描边（<see cref="TriggersOutline"/>）。</summary>
-        private static bool NeighbourTriggersOutline(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        /// <summary>
+        /// 类型表派生的一次性渲染标志：把 <see cref="Fill"/> 逐格要读的几个类型属性摊平成按 typeId 直接寻址的小表——
+        /// <see cref="ParticleTypeInfo"/> 是大结构体，逐格整体拷贝（原实现每格最多 5 次）代价可观。
+        /// </summary>
+        private struct TypeRenderFlags
         {
-            return TriggersOutline(cells, types, width, height, x - 1, y)
-                || TriggersOutline(cells, types, width, height, x + 1, y)
-                || TriggersOutline(cells, types, width, height, x, y - 1)
-                || TriggersOutline(cells, types, width, height, x, y + 1);
+            /// <summary>本格是否参与描边（<see cref="ParticleTypeInfo.HasOutline"/>）。</summary>
+            public bool HasOutline;
+
+            /// <summary>本格是否参与液面高光（<see cref="ParticleTypeInfo.HasSurfaceHighlight"/>）。</summary>
+            public bool HasSurfaceHighlight;
+
+            /// <summary>挡住液面（带 Solid 或 Liquid 标签）。空气 / 未注册槽位为 false。</summary>
+            public bool BlocksSurface;
+
+            /// <summary>作为邻居是否触发描边：<see cref="TriggerNever"/> / <see cref="TriggerByShade"/> / <see cref="TriggerAlways"/>。</summary>
+            public byte TriggerKind;
+
+            /// <summary>调色板。只有 <see cref="TriggerByShade"/> 会读到（其余两种取值已提前判定完）。</summary>
+            public Color32[] Palette;
+        }
+
+        /// <summary>触发描边判定 · 恒不触发：调色板整条不透明（绝大多数实物）。</summary>
+        private const byte TriggerNever = 0;
+
+        /// <summary>触发描边判定 · 看 shade：调色板里既有透明档又有不透明档。</summary>
+        private const byte TriggerByShade = 1;
+
+        /// <summary>触发描边判定 · 恒触发：带 Liquid 标签、空气 / 未注册槽位，或调色板整条透明。</summary>
+        private const byte TriggerAlways = 2;
+
+        /// <summary>标志表对应的类型表引用（键）。引用变了才重建——世界重建 / 隔离类型表都走这条路径。</summary>
+        private static ParticleType[] _flagTypes;
+
+        /// <summary><see cref="_flagTypes"/> 对应的标志表。</summary>
+        private static TypeRenderFlags[] _flags;
+
+        /// <summary>
+        /// 取给定类型表的渲染标志表。按**类型表数组引用**失效重建：多世界（生产表 / 测试隔离表）交替调用也正确，
+        /// 且只在换表那一次分配，同表连续 Fill 零分配。单线程访问（与 <see cref="ParticleRegistry"/> 同一约定）。
+        /// </summary>
+        private static TypeRenderFlags[] GetTypeRenderFlags(ParticleType[] types)
+        {
+            if (ReferenceEquals(_flagTypes, types))
+            {
+                return _flags;
+            }
+
+            var flags = new TypeRenderFlags[types.Length];
+            for (int id = 0; id < types.Length; id++)
+            {
+                ParticleType type = types[id];
+                if (id == ParticleRegistry.AirTypeId || type == null)
+                {
+                    // 空气与未注册槽位：画不出实物（Fill 主体不看它），但作为邻居触发描边
+                    // （原实现的空气 / `type == null` 分支 → true）。其余标志保持 false。
+                    flags[id].TriggerKind = TriggerAlways;
+                    continue;
+                }
+
+                ParticleTypeInfo info = type.Info;   // 建表时整体读一次，运行期不再逐格拷贝
+                flags[id].HasOutline = info.HasOutline;
+                flags[id].HasSurfaceHighlight = info.HasSurfaceHighlight;
+                flags[id].BlocksSurface = (info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0;
+
+                Color32[] palette = info.Palette;
+                flags[id].Palette = palette;
+
+                if ((info.Tags & ParticleTags.Liquid) != 0)
+                {
+                    flags[id].TriggerKind = TriggerAlways;   // 固液交界也描边
+                    continue;
+                }
+
+                // 调色板里有没有 / 是不是全是透明档（alpha == 0 ⇒ 显示为背景 ⇒ 触发邻格描边）：
+                // 两个极端摊成常量，只有「半透明调色板」才逐格查 shade。
+                bool anyTransparent = false;
+                bool allTransparent = true;
+                for (int k = 0; k < palette.Length; k++)
+                {
+                    bool transparent = palette[k].a == 0;
+                    anyTransparent |= transparent;
+                    allTransparent &= transparent;
+                }
+
+                flags[id].TriggerKind = !anyTransparent ? TriggerNever
+                    : allTransparent ? TriggerAlways
+                    : TriggerByShade;
+            }
+
+            _flags = flags;
+            _flagTypes = types;
+            return flags;
+        }
+
+        /// <summary>描边判据：四邻（上下左右）中是否至少有一格触发描边（<see cref="TriggersOutline"/>）。</summary>
+        private static bool NeighbourTriggersOutline(Cell[] cells, TypeRenderFlags[] flags, int width, int height, int x, int y, int index)
+        {
+            // 内部格：四邻都在网格内，用下标加减代替 y*width+x，并省掉每个邻居一次的越界判定。
+            if (x != 0 && x != width - 1 && y != 0 && y != height - 1)
+            {
+                return TriggersOutlineAt(cells, flags, index - 1)
+                    || TriggersOutlineAt(cells, flags, index + 1)
+                    || TriggersOutlineAt(cells, flags, index - width)
+                    || TriggersOutlineAt(cells, flags, index + width);
+            }
+
+            return TriggersOutline(cells, flags, width, height, x - 1, y)
+                || TriggersOutline(cells, flags, width, height, x + 1, y)
+                || TriggersOutline(cells, flags, width, height, x, y - 1)
+                || TriggersOutline(cells, flags, width, height, x, y + 1);
         }
 
         /// <summary>
         /// 该格是否触发邻格的描边：「显示为背景」（与 <see cref="BaseColor"/> 同一套语义——空气 / 未注册 /
         /// 空槽位 / 透明调色板，越界视同空气）或**带 Liquid 标签**（固液交界也描边）。
         /// </summary>
-        private static bool TriggersOutline(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        private static bool TriggersOutline(Cell[] cells, TypeRenderFlags[] flags, int width, int height, int x, int y)
         {
             if ((uint)x >= (uint)width || (uint)y >= (uint)height)
             {
                 return true;
             }
 
-            Cell cell = cells[y * width + x];
-            ushort id = cell.typeId;
-            if (id == ParticleRegistry.AirTypeId || id >= types.Length)
+            return TriggersOutlineAt(cells, flags, y * width + x);
+        }
+
+        /// <summary><see cref="TriggersOutline"/> 的主判定：调用方保证 <paramref name="index"/> 在网格内。</summary>
+        private static bool TriggersOutlineAt(Cell[] cells, TypeRenderFlags[] flags, int index)
+        {
+            ushort id = cells[index].typeId;
+            if (id >= flags.Length)
             {
                 return true;
             }
 
-            ParticleType type = types[id];
-            if (type == null)
+            byte kind = flags[id].TriggerKind;
+            if (kind == TriggerNever)
+            {
+                return false;   // 绝大多数实物：调色板整条不透明，不必看 shade
+            }
+
+            if (kind == TriggerAlways)
             {
                 return true;
             }
 
-            ParticleTypeInfo info = type.Info;
-            if ((info.Tags & ParticleTags.Liquid) != 0)
-            {
-                return true;
-            }
-
-            Color32[] palette = info.Palette;
-            int shade = cell.shade;
+            // 半透明调色板：按 shade 查色，与 BaseColor 同一套语义（越界 shade 取第 0 档）。
+            Color32[] palette = flags[id].Palette;
+            int shade = cells[index].shade;
             return (shade < palette.Length ? palette[shade] : palette[0]).a == 0;
         }
 
@@ -216,23 +321,21 @@ namespace TapTap2026.Simulation
         /// 被固体盖住或被另一格液体压住都不算；越界顶行算（水漫到顶也有液面）。
         /// 只被带 <see cref="ParticleTypeInfo.HasSurfaceHighlight"/> 的类型使用。
         /// </summary>
-        private static bool IsOpenSurface(Cell[] cells, ParticleType[] types, int width, int height, int x, int y)
+        private static bool IsOpenSurface(Cell[] cells, TypeRenderFlags[] flags, int width, int height, int y, int index)
         {
-            int ny = y + 1;
-            if (ny >= height)
+            if (y + 1 >= height)
             {
                 return true;
             }
 
-            Cell above = cells[ny * width + x];
-            ushort id = above.typeId;
-            if (id == ParticleRegistry.AirTypeId || id >= types.Length)
+            // 空气 / 未注册槽位的 BlocksSurface 恒为 false ⇒ 与原来的「空气 → 液面」分支同结果。
+            ushort id = cells[index + width].typeId;
+            if (id >= flags.Length)
             {
                 return true;
             }
 
-            ParticleType type = types[id];
-            return type == null || (type.Info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) == 0;
+            return !flags[id].BlocksSurface;
         }
 
         /// <summary>单格的静态颜色：空气 / 未注册 id / 空槽位 → 背景色，否则查该类型调色板。
