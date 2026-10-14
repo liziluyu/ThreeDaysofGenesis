@@ -21,6 +21,9 @@ namespace TapTap2026.Game
         /// <summary>对话注册表里的对话 id；null / 空 = 本阶段无对话。</summary>
         public string dialogueId;
 
+        /// <summary>重复进入本阶段时播放的对话 id（注册表 id）；null / 空 = 重复进入时不播对话。</summary>
+        public string repeatDialogueId;
+
         /// <summary>下一阶段 id；null / 空 = 最终阶段（过关后不再启动新阶段）。</summary>
         public string nextPhaseId;
 
@@ -38,6 +41,15 @@ namespace TapTap2026.Game
 
         /// <summary>胜利条件；null = 本阶段没有胜利条件（高速模式结算后判为失败并重来）。</summary>
         public VictoryCondition victory;
+
+        /// <summary>
+        /// 选本阶段开场要播的对话 id：首次进入（<paramref name="isRepeat"/> = false）用 <see cref="dialogueId"/>；
+        /// 重复进入（true）用 <see cref="repeatDialogueId"/>。返回值 null / 空 = **不播对话**。
+        /// </summary>
+        public string ResolveOpeningDialogueId(bool isRepeat)
+        {
+            return isRepeat ? repeatDialogueId : dialogueId;
+        }
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 {
   "dialogueId": "phase_01_intro",
+  "repeatDialogueId": "phase_01_retry",
   "nextPhaseId": "phase_02",
   "sandboxWidth": 160,
   "sandboxHeight": 90,

@@ -4971,6 +4971,8 @@ MonoBehaviour:
     asset: {fileID: 4900000, guid: 4535881f3ae84a108729f02ab48e32ce, type: 3}
   - id: phase_01_intro
     asset: {fileID: 4900000, guid: 858caa35be9cd0ee51217f240938c526, type: 3}
+  - id: phase_01_retry
+    asset: {fileID: 4900000, guid: 5ef37d173bf64b78a8050f6e4d462d7c, type: 3}
   _debugDialogue: {fileID: 0}
   _portraitFolder: Characters/Portraits
   _avatarFolder: Characters/Avatars
