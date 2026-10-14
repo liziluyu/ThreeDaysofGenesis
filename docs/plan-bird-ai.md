@@ -1,0 +1,87 @@
+# 鸟（第三物种）AI 设计与实施计划
+
+> 2026-10-14 用户批准开工。决策记录：**a = 接受「1 源像素 = 1 格」惯例**（鸟视觉上是大型动物，与兔/鱼同风格，不上按物种像素尺度）；**b = 栖息面含树叶 / 树干**（选 2：地形从「挡/穿」二元变三态，见 §3）；**c = v1 不进食**（选 1：无饥饿、不饿死）；**d = 帧序由实现时读图自判**（选 1）。
+
+## 1. 目标与非目标
+
+鸟是第一个**飞行动物**，验证「同一套运动层 + 静态 Brain」架构对空中物种的可扩展性：三态（栖息 / 飞行 / 逃命）、可被火吓飞、落水能自救飞走、死亡走既有物质化管线（`CreatureArtData.Bird` 已由生成器备产：pivot 0 / 行 0..13 / 高 14 / 61 格）。
+
+**v1 非目标**：不进食、不繁殖、不筑巢、不与雨 / 雷互动、不做全局寻路；不做按物种像素尺度（§a 决策）；不做「撞树叶减速」等细节。
+
+## 2. 美术现状（已实测）
+
+`Assets/Images/Animals/bird/1/bird.png` = 64×32，切片 7 片 16×16（`bird_0..6`），pivot (0.5, 0)。下排 3 帧 + 上排 4 帧（下排第 4 格为空位）；帧 0 不透明行 1..9，全表并集行 0..13。帧语义（哪几帧是扑翼循环）**实现时读图自判**（§d 决策），接线时把切片按名序全部接进 `_birdIdleFrames`，渲染循环播放；朝向约定（眼 / 喙在不透明包围盒哪半）同样实现时从 PNG 实测并写进 `CreatureSpriteFacingTests`。
+
+## 3. 地形三态（b2 的核心改动）
+
+现状 `CreatureTerrain.IsSolid` 白名单（沙 / 石 / 土家族）同时服务「竖直支撑」「水平阻挡」「掩埋判定」「尸体可覆盖」四个口径。鸟要「**水平飞穿树冠、但能落在叶顶**」，因此拆出一个新口径：
+
+- 新增 `CreatureTerrain.IsPerchable(x, y)` = `IsSolid ∪ {TreeLeaf, TreeTrunk}`。**只**服务「竖直支撑」（向下扫描的落脚面）。
+- `Creature` 新增虚门 `protected virtual bool PerchesOnFoliage => false`（鸟返回 true）。`StepPhysics` 的**向下**支撑扫描在它为真时改用 `IsPerchable`；**向上**顶头扫描、水平扫描、掩埋判定（`IsFullyBuried`）、尸体覆盖（`CanCorpseOccupy`）**全部保持 `IsSolid` 不变**——叶子永不挡上升、永不挡水平、不会把鸟「压死」、尸体依旧直接覆盖树叶。
+- 兔 / 鱼的位移逐位不变（它们该门为 false，`IsPerchable` 路径不参与）。回归由既有全套动物测试 + 新增「兔照旧穿过树叶」对照保证。
+
+## 4. 物理与运动层（`Creature` 改动面）
+
+| 改动 | 内容 |
+|---|---|
+| 新虚门 `FliesInAir`（默认 false，鸟 true） | `ApplyLocomotion` ① 段的竖直意图逼近条件从「仅 `IsSubmerged`」泛化为「`IsSubmerged`（鱼，`SwimAccel`）‖ `FliesInAir && !IsSubmerged`（鸟，`FlyAccel`）」。**含贴地时**——栖息中的鸟把 `IntentVy` 抬正即垂直起飞（不需要 `WantHop` 脉冲） |
+| 飞行时重力挂起 | `StepPhysics` 里 `FliesInAir && !IsSubmerged` 的个体不累加重力（等同鱼在水中的中性浮力：净竖直驱动只有意图）；**落地 / 入水即恢复常规则**。鸟因此可以悬停，不会被动坠落——v1 的「降落」一律是主动意图 |
+| 离水自救 | 鸟 `Buoyancy = 0.30 > Gravity 0.24`（正浮力 ⇒ 水中自动上浮到中心格出水）+ `SwimAccel = 0.1`（水中竖直意图可用）；出水即进入飞行挂起。`DrownsInWater = true` 作兜底（连续淹没 160 帧溺死，正常几帧内就出水） |
+
+`BirdCreature`：碰撞盒 **1×1**；`Gravity 0.24` / `MaxFallSpeed 2.4`（入水与坠落用）；`WaterDrag 0.5`；`MoveAccel 0.02`；`CanStepUp false`（飞行不需要跨坎）；`DiesWhenBeached false`；`StarvesWithoutFood false`（c1）。
+
+## 5. 状态机（`BirdBrain`，静态无状态）
+
+`AiState`：**0 = Perched（栖息）、1 = Fly（巡航）、2 = Flee（逃命）**。思考 2 Hz，RNG 只在思考帧消耗（`creatures.NextInt`）。
+
+- **Perched**：`IntentVx = IntentVy = 0`。思考帧：威胁检查 → 否则 `StateTicksLeft` 归零时起飞（置 Fly、巡航计时 `200 + NextInt(400)` ≈ 10~30 秒、随机水平方向、`IntentVy = +FlyVSpeed`）。栖息计时在落地时摇 `100 + NextInt(200)` ≈ 5~15 秒。
+- **Fly**：
+  - 水平：沿用鱼的**墙感知换向**（前方 3 格体高行内畅通 ⇒ 保持方向不摇骰；受阻才 1/3 摇骰换向）。
+  - 竖直高度带：探「正下方第一个固体或水格」（`CreatureSensors` 新增 `ProbeSurfaceBelow`，固定序、只读、越界视为到底）——距该面 < `MinAltitudeCells`（6）⇒ 上抬意图；`Y > Height − CeilingMarginCells`（12）⇒ 下压意图；带内 ⇒ `IntentVy = 0` 悬停。
+  - 降落：巡航计时归零且正下方 `LandProbeCells`（12）格内有 `IsPerchable` 面（其上方一格非地形固体）⇒ `IntentVy = −FlyVSpeed` 直到 `IsGrounded` → Perched。计时归零但下方没有合格面 ⇒ 重置一个短计时（40 帧）继续巡航找落点。
+- **Flee**：`CreatureSensors.FindNearestFire`（半径沿用 `Creature.ThreatRadius` = 16）命中 → 进入：水平取**远离火**的方向（火与鸟同列时随机选一侧一次）、`IntentVy = +FleeClimbSpeed`；退出用滞回（`ThreatRadius + FleeExitMargin`）+ 最短逃命时长 `FleeMinTicks`——模式照抄兔子，常数鸟自有一份。
+- **落水**：`IsSubmerged` ⇒ `IntentVy = +SwimAccel` 上限幅的强起飞意图直到离水（不进 Stranded，鸟没有扑腾态）。
+
+**参数初值**（集中在 `BirdBrain`，实测后调）：`FlySpeed`（水平）0.06、`FlyVSpeed` 0.08、`FlyAccel` 0.05、`FleeSpeed` 0.12、`FleeClimbSpeed` 0.10、`MinAltitudeCells` 6、`CeilingMarginCells` 12、`LandProbeCells` 12、`AheadProbeCells` 3。
+
+## 6. 渲染与编辑器接线
+
+- `CreatureRenderer`：加 `[SerializeField] Sprite[] _birdIdleFrames` + 物种分支（编译器会逼着补）；占位色给一个鸟的调试色。
+- **场景接线工具**：新增 Editor 菜单 `Tools/Animals/Wire Bird Sprites`（静态方法，兼作 `-executeMethod` 入口）：按切片名序加载 `bird.png` 全部 7 片 → 赋给 SampleScene 里 `CreatureRenderer._birdIdleFrames` → 标脏保存场景。美术更新后重跑即可。
+- `ParticleEditor`：`CreatureFactories` 末尾加 `() => new BirdCreature()`（右键循环 兔 → 鱼 → 鸟）；不做地形校验（与兔 / 鱼同一已知限制）。
+- 朝向：实现时从 PNG 实测眼 / 喙在不透明包围盒的哪一半，据实设置 `_spriteFacesLeft` 并加 `CreatureSpriteFacingTests` 用例。
+
+## 7. 尸体
+
+`BiomassProfile.For` 加 `BirdCreature` 案 → `CreatureArtData.Bird`（已生成，pivot 0 ⇒ `baseY = floor(Y)` 直接对齐）。四种死因复用；空中死亡就地物质化，生物质粒子随后自然下落（无需尸体坠落特例）。
+
+## 8. 测试清单（EditMode，全部新写于 `BirdCreatureTests.cs`；朝向用例进 `CreatureSpriteFacingTests.cs`）
+
+物理：① 空中悬停 300 帧 `|ΔY| ≤ 0.5`；② 出生在天花板上方的鸟被压回高度带内；③ 落水 → 自动上浮出水 → 起飞（`SubmergedTicks` 会清零、不死）；④ 巡航计时到点 + 下方有树冠 ⇒ 停在**叶顶**（`IsGrounded`、不再下掉）；⑤ 水平飞穿树冠不受阻；⑥ 贴地起飞（Perched → Fly 竖直离地）；⑦ 同 seed 重放逐位一致；⑧ 世界随机流隔离（有鸟 / 无鸟逐位一致）。
+AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 Flee（方向远离火）、滞回退出、最短逃命时长；⑫ 思考帧外零 RNG 消耗。
+尸体：⑬ 鸟死亡物质化格数 == `CreatureArtData.Bird` 非空格数（61）且竖直锚在 `floor(Y)` 起。
+回归：⑭ 兔 / 鱼全套既有测试保持绿（尤其「兔子穿过草 / 树叶」对照）。
+
+## 9. 改动面汇总
+
+| 文件 | 动作 |
+|---|---|
+| `Simulation/Creatures/BirdCreature.cs` | 新建（物种常量 + 虚门） |
+| `Simulation/Creatures/AI/BirdBrain.cs` | 新建（三态状态机） |
+| `Simulation/Creatures/Creature.cs` | 加 `FliesInAir` / `PerchesOnFoliage` 虚门 + ① 段竖直条件泛化 + `StepPhysics` 向下支撑口径 |
+| `Simulation/Creatures/CreatureTerrain.cs` | 加 `IsPerchable` |
+| `Simulation/Creatures/CreatureSensors.cs` | 加 `ProbeSurfaceBelow`（含合格栖息面判定） |
+| `Simulation/Creatures/BiomassProfile.cs` | `For` 加鸟案 |
+| `Rendering/CreatureRenderer.cs` | `_birdIdleFrames` + 分支 + 占位色 |
+| `Driver/ParticleEditor.cs` | `CreatureFactories` 加鸟 |
+| `Editor/BirdSpriteWiring.cs` | 新建（菜单 + `-executeMethod` 布线工具） |
+| `Assets/Scenes/SampleScene.unity` | 由布线工具写入 `_birdIdleFrames`（不手改 YAML） |
+| `Tests/EditMode/BirdCreatureTests.cs` | 新建（§8） |
+| `Tests/EditMode/CreatureSpriteFacingTests.cs` | 加鸟朝向用例 |
+
+## 10. 风险与开放项
+
+- **视觉穿帮**：b2 让鸟能站树冠，但「图案 7 格宽 / 碰撞盒 1 格宽」意味着栖在叶顶时图案会盖住两侧树冠——与 §22 第 3 条同一类已知风格，接受。
+- **帧语义**：上排 4 帧的语义实现时若判不出来，v1 只用能判明的扑翼循环，其余帧留在切片里不接。
+- **Play 模式观感**（飞行速度 / 高度带 / 栖歇节奏）只能人眼验收，测试只钉确定性与不变量。
+- 高速模式 / 存档 / 对话系统与鸟零交互，无需改动。
