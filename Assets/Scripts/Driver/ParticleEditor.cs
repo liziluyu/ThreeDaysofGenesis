@@ -8,7 +8,10 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：
+    /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：**输入与读数生成**归本类、**上屏**归场景里的
+    /// <see cref="SandboxHud"/>——本类不画任何 IMGUI，每帧只把算好的字符串推给 HUD（见 <see cref="PushHud"/>）；
+    /// 因此所有屏幕元素（鼠标旁色块、左上角读数、左下角高速读数与结算面板、右上角光照面板）
+    /// 都是可在编辑器里摆放的场景对象。
     /// **按住左键**用当前选中项填满鼠标处半径 <see cref="BrushRadius"/> 的圆（选中动物物种时改为**在鼠标格放置一只实体**）；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
     /// **右键**在可投放项间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷；
     /// **末尾接动物物种**兔子 / 鱼，见 <see cref="CreatureFactories"/>）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
@@ -41,8 +44,8 @@ namespace TapTap2026.Game
     /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
     /// <para>阶段限制：<see cref="SetPlacementFilter"/> 由 <see cref="GameController"/> 在阶段启动时按 JSON 调用，
     /// 与 Inspector 白名单取交集（只缩小、不放开）；清空（null / 空数组）即恢复默认白名单。</para>
-    /// <para>光照面板写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：该组件每帧把字段写回世界，
-    /// 写世界会被下一帧覆盖。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
+    /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：
+    /// 该组件每帧把字段写回世界，写世界会被下一帧覆盖。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleEditor : MonoBehaviour
@@ -54,9 +57,9 @@ namespace TapTap2026.Game
                  "仍找不到就只不显示胜负行（不报错）。")]
         [SerializeField] private GameController _gameController;
 
-        [Tooltip("可选：右上角光照面板（强度 / 亮相位刻数 / 暗相位刻数三个输入框）的写入口。留空则 Awake 里 " +
-                 "GetComponent → FindObjectOfType 兜底；仍找不到就不画光照面板（不报错）。")]
-        [SerializeField] private ParticleLightDriver _lightDriver;
+        [Tooltip("场景里的 HUD（左上角读数 / 鼠标跟随色块 / 高速读数与结算面板 / 光照面板的显示层）。留空则 Awake 里 " +
+                 "GetComponent → FindObjectOfType 兜底；仍找不到就所有 HUD 推送整段跳过（不报错——输入照常工作）。")]
+        [SerializeField] private SandboxHud _hud;
 
         [Tooltip("留空则回退到 Camera.main。")]
         [SerializeField] private Camera _camera;
@@ -164,39 +167,6 @@ namespace TapTap2026.Game
 
         private float _lastSinglePlacementTime = float.NegativeInfinity;
 
-        /// <summary>光照面板三个输入框的当前文本（草稿）。失焦时与驱动器同步，聚焦时原样保留用户敲的内容。</summary>
-        private string _lightIntensityText;
-        private string _lightLitTicksText;
-        private string _lightDarkTicksText;
-
-        /// <summary>正在接收键盘的光照输入框控件名（空 = 没有）。<see cref="OnGUI"/> 里更新，
-        /// <see cref="Update"/> 据此把键盘热键整段让给输入框。</summary>
-        private string _focusedLightControl = string.Empty;
-
-        /// <summary>结算面板胜负行的绿色（过关）。</summary>
-        private static readonly Color PassColor = new Color(0.25f, 0.9f, 0.35f);
-
-        /// <summary>结算面板胜负行的红色（未过关）。</summary>
-        private static readonly Color FailColor = new Color(1f, 0.35f, 0.35f);
-
-        /// <summary>光照输入框解析不出合法值时的文本色（不提交，见 <see cref="DrawLightPanel"/>）。</summary>
-        private static readonly Color InvalidLightColor = new Color(1f, 0.45f, 0.45f);
-
-        /// <summary>光照面板三个输入框的 IMGUI 控件名（用焦点区分「正在输入」与键盘热键）。</summary>
-        private const string LightIntensityControl = "TapTap2026.Light.Intensity";
-        private const string LightLitTicksControl = "TapTap2026.Light.LitTicks";
-        private const string LightDarkTicksControl = "TapTap2026.Light.DarkTicks";
-
-        /// <summary>光照面板尺寸（屏幕像素）。绘制与命中测试共用，改这里两边一起动。</summary>
-        private const float LightPanelWidth = 240f;
-        private const float LightPanelHeight = 96f;
-
-        /// <summary>光照面板的屏幕矩形（IMGUI 坐标，原点左上）。</summary>
-        private Rect LightPanelRect
-        {
-            get { return new Rect(Screen.width - LightPanelWidth - 6f, 4f, LightPanelWidth, LightPanelHeight); }
-        }
-
         /// <summary>当前树木物种（Shift+滚轮切换；仅选中树木种子时参与投放与 HUD，见 <see cref="CycleTreeSpecies"/>）。</summary>
         private int _treeSpecies;
 
@@ -267,15 +237,15 @@ namespace TapTap2026.Game
                 _gameController = FindObjectOfType<GameController>();
             }
 
-            // 右上角光照面板的写入口；找不到就整块不画（可选依赖，不报错）。
-            if (_lightDriver == null)
+            // HUD 的写入点；找不到就不推任何 HUD（可选依赖，不报错——输入与读数生成照常）。
+            if (_hud == null)
             {
-                _lightDriver = GetComponent<ParticleLightDriver>();
+                _hud = GetComponent<SandboxHud>();
             }
 
-            if (_lightDriver == null)
+            if (_hud == null)
             {
-                _lightDriver = FindObjectOfType<ParticleLightDriver>();
+                _hud = FindObjectOfType<SandboxHud>();
             }
 
             // 注册表由 ParticleRegistration 的 BeforeSceneLoad 钩子填充，因此这里读得到全部类型。
@@ -315,6 +285,43 @@ namespace TapTap2026.Game
             UpdateEditing();
 
             ApplyBrushOutline();
+            PushHud();
+        }
+
+        /// <summary>
+        /// 把这一帧算好的显示内容推给场景里的 <see cref="SandboxHud"/>（每帧无条件推一次，让它自己按状态去重）：
+        /// 可见性、光标格读数、鼠标跟随组、高速读数与结算面板、光照面板的可用性。
+        /// 未接线 HUD 时整段跳过——本类照常处理输入、只是没人显示。
+        /// </summary>
+        /// <remarks>
+        /// 高速读数与结算面板都以驱动的**实时**状态兜底（同旧 IMGUI）：任何结束会话的路径
+        /// （确认退出、世界重建丢掉会话）都会立刻把它们隐藏掉，不留一帧残影。
+        /// </remarks>
+        private void PushHud()
+        {
+            if (_hud == null)
+            {
+                return;
+            }
+
+            bool highSpeedActive = _driver != null && _driver.HighSpeedActive;
+
+            _hud.SetHudVisible(_drawHud);
+            _hud.SetProbeText(_drawHud ? _probeText : null);
+            _hud.SetCursorHint(_hudText, _hudColor);
+            _hud.SetHighSpeedStatus(_drawHud && highSpeedActive ? _highSpeedHudText : null);
+
+            if (_drawHud && highSpeedActive && _highSpeedReportLines != null)
+            {
+                _hud.ShowHighSpeedReport(_highSpeedReportLines, _highSpeedReportHasVerdict, _highSpeedVerdictPass);
+            }
+            else
+            {
+                _hud.HideHighSpeedReport();
+            }
+
+            // 对话激活（本组件完全不响应输入）与高速模式进行中都把光照面板变灰——两者的会话结果都依赖光照输入。
+            _hud.SetLightPanelInteractable(!SuppressInput && !highSpeedActive);
         }
 
         /// <summary>编辑输入：热键、相机平移、光标读数、切类型 / 调半径 / 投放 / 擦除。</summary>
@@ -338,7 +345,7 @@ namespace TapTap2026.Game
 
             // 光照输入框正拿着键盘时，按键属于输入框（数字之外空格 / H / A / D / 回车也都是能敲进去的字符）——
             // 暂停、高速模式、相机平移三条键盘热键整段让位；否则敲个空格就暂停、敲个 H 就跑一整场高速。
-            bool typingInLightPanel = _focusedLightControl.Length != 0;
+            bool typingInLightPanel = _hud != null && _hud.LightFieldFocused;
 
             // 高速模式热键：不在模式中时按 H 进入；结算完成后按 Enter（或 H）确认退出。
             if (!typingInLightPanel)
@@ -418,8 +425,9 @@ namespace TapTap2026.Game
             // 光照面板（输入框）正在被使用时**屏蔽放置**：左键点进输入框时指针同时也在网格上，
             // 不挡就会既改光照值又在底下画一笔。判据两条：
             // ① 某个光照输入框仍持有键盘焦点——点进去后把指针拖到面板外也继续挡（按住左键拖动同理）；
-            // ② 指针当前就在面板矩形内——点进来的那一帧 IMGUI 还没跑、焦点仍是空的，靠这条兜底。
-            bool editingLightValue = _focusedLightControl.Length != 0 || IsPointerOverLightPanel(Input.mousePosition);
+            // ② 指针当前就在面板矩形内——点进来的那一帧 uGUI 还没把焦点交给输入框，靠这条兜底。
+            bool editingLightValue = typingInLightPanel
+                || (_hud != null && _hud.IsPointerOverLightPanel(Input.mousePosition));
 
             if (!editingLightValue
                 && Input.GetMouseButton(0)
@@ -619,7 +627,7 @@ namespace TapTap2026.Game
         /// 全零类型过滤掉。空气（typeId 0）不显示——它只是被抹除留下的真空，不是「产生」。
         /// 若 <see cref="GameController.HasVerdict"/> 为真（本会话已求过胜负），末尾追加一行结论：
         /// 过关 <c>过关！</c> / 未过关 <c>未过关：&lt;理由&gt;</c>，并把过关与否记进
-        /// <see cref="_highSpeedVerdictPass"/> 供 <see cref="DrawHighSpeedReport"/> 上色。
+        /// <see cref="_highSpeedVerdictPass"/> 供 <see cref="SandboxHud.ShowHighSpeedReport"/> 上色。
         /// </summary>
         private string[] BuildHighSpeedReport(HighSpeedSession session)
         {
@@ -659,146 +667,6 @@ namespace TapTap2026.Game
             return lines.ToArray();
         }
 
-        /// <summary>结算面板：屏幕中央的 <see cref="GUI.Box"/> + 逐行统计 + 胜负行（末行，绿 / 红）+ 确认提示。</summary>
-        private void DrawHighSpeedReport()
-        {
-            const float width = 360f;
-            const float lineHeight = 20f;
-            float height = (_highSpeedReportLines.Length + 2) * lineHeight + 16f;
-            var box = new Rect(
-                (Screen.width - width) * 0.5f,
-                (Screen.height - height) * 0.5f,
-                width,
-                height);
-
-            GUI.Box(box, "高速模式结算");
-
-            float y = box.y + 8f + lineHeight;
-            for (int i = 0; i < _highSpeedReportLines.Length; i++)
-            {
-                var line = new Rect(box.x + 12f, y, width - 24f, lineHeight);
-                if (_highSpeedReportHasVerdict && i == _highSpeedReportLines.Length - 1)
-                {
-                    GUI.color = _highSpeedVerdictPass ? PassColor : FailColor;
-                    GUI.Label(line, _highSpeedReportLines[i]);
-                    GUI.color = Color.white;
-                }
-                else
-                {
-                    GUI.Label(line, _highSpeedReportLines[i]);
-                }
-
-                y += lineHeight;
-            }
-
-            GUI.Label(new Rect(box.x + 12f, y, width - 24f, lineHeight), "按 Enter 或 H 确认退出");
-        }
-
-        /// <summary>
-        /// 右上角**光照面板**：三个输入框直接写 <see cref="ParticleLightDriver"/> 的字段——光照强度、亮相位刻数、暗相位刻数。
-        /// 写驱动器而不是 <c>world.Light</c>：驱动器每帧把字段写回世界，直接写世界会被下一帧覆盖。
-        /// 输入非法（相位刻数不是非负整数 / 强度不是有限浮点）时文本标红且**不提交**，失焦后自动弹回真值。
-        /// 高速模式进行中与 <see cref="SuppressInput"/>（对话激活）时整块变灰不可编辑——前者会话结果依赖光照输入，
-        /// 与画笔一样封锁；后者是本组件「完全不响应输入」的既有语义。
-        /// <para>面板被使用期间**也屏蔽左键放置**（判据见 <see cref="Update"/> 的 <c>editingLightValue</c>）：
-        /// 输入框与网格重叠在同一块屏幕上，点输入框若同时落笔就会既改值又画出粒子。</para>
-        /// </summary>
-        private void DrawLightPanel()
-        {
-            if (_lightDriver == null)
-            {
-                _focusedLightControl = string.Empty;
-                return;
-            }
-
-            _focusedLightControl = GUI.GetNameOfFocusedControl() ?? string.Empty;
-            SyncLightTexts();
-
-            bool previousEnabled = GUI.enabled;
-            GUI.enabled = previousEnabled && !SuppressInput && !(_driver != null && _driver.HighSpeedActive);
-
-            Rect box = LightPanelRect;
-            GUI.Box(box, "光照");
-
-            // 强度：任意有限浮点（负值 = 制冷，与 LightController 一致）。
-            bool intensityValid = TryParseLightScalar(_lightIntensityText, out float intensity);
-            DrawLightRow(box, 0, "强度", LightIntensityControl, ref _lightIntensityText, intensityValid);
-            if (intensityValid)
-            {
-                _lightDriver.Intensity = intensity;
-            }
-
-            bool litValid = TryParseLightTicks(_lightLitTicksText, out int litTicks);
-            DrawLightRow(box, 1, "亮刻", LightLitTicksControl, ref _lightLitTicksText, litValid);
-            if (litValid)
-            {
-                _lightDriver.LitTicks = litTicks;
-            }
-
-            bool darkValid = TryParseLightTicks(_lightDarkTicksText, out int darkTicks);
-            DrawLightRow(box, 2, "暗刻", LightDarkTicksControl, ref _lightDarkTicksText, darkValid);
-            if (darkValid)
-            {
-                _lightDriver.DarkTicks = darkTicks;
-            }
-
-            GUI.enabled = previousEnabled;
-        }
-
-        /// <summary>画一行「标签 + 输入框」；<paramref name="valid"/> 为 false 时文本标红（值不会被提交）。</summary>
-        private static void DrawLightRow(Rect box, int index, string label, string controlName, ref string text, bool valid)
-        {
-            float y = box.y + 26f + 22f * index;
-            GUI.Label(new Rect(box.x + 10f, y, 40f, 20f), label);
-
-            // SetNextControlName 必须紧邻输入框：Label 也是控件，会先把名字吃掉。
-            GUI.SetNextControlName(controlName);
-            GUI.contentColor = valid ? Color.white : InvalidLightColor;
-            text = GUI.TextField(new Rect(box.x + 52f, y, box.width - 62f, 19f), text);
-            GUI.contentColor = Color.white;
-        }
-
-        /// <summary>光照强度文本 → 有限浮点（NaN / 无穷非法，与 <see cref="LightController.Intensity"/> 的钳制一致）。</summary>
-        private static bool TryParseLightScalar(string text, out float value)
-        {
-            return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
-                   && !float.IsNaN(value) && !float.IsInfinity(value);
-        }
-
-        /// <summary>相位刻数文本 → 非负整数（与 <see cref="LightController.LitTicks"/> 的钳制语义一致）。</summary>
-        private static bool TryParseLightTicks(string text, out int value)
-        {
-            return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value) && value >= 0;
-        }
-
-        /// <summary>
-        /// 把**失焦**的输入框文本同步回驱动器当前值——运行期在 Inspector 改值 / 世界重建后仍显示真值。
-        /// 文本已等值时不动它（稳态不重新格式化、零分配）；聚焦中的那个框不碰，免得吃掉正在敲的草稿。
-        /// </summary>
-        private void SyncLightTexts()
-        {
-            if (_focusedLightControl != LightIntensityControl
-                && !(float.TryParse(_lightIntensityText, NumberStyles.Float, CultureInfo.InvariantCulture, out float intensity)
-                     && intensity == _lightDriver.Intensity))
-            {
-                _lightIntensityText = _lightDriver.Intensity.ToString("0.###", CultureInfo.InvariantCulture);
-            }
-
-            if (_focusedLightControl != LightLitTicksControl
-                && !(int.TryParse(_lightLitTicksText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int litTicks)
-                     && litTicks == _lightDriver.LitTicks))
-            {
-                _lightLitTicksText = _lightDriver.LitTicks.ToString(CultureInfo.InvariantCulture);
-            }
-
-            if (_focusedLightControl != LightDarkTicksControl
-                && !(int.TryParse(_lightDarkTicksText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int darkTicks)
-                     && darkTicks == _lightDriver.DarkTicks))
-            {
-                _lightDarkTicksText = _lightDriver.DarkTicks.ToString(CultureInfo.InvariantCulture);
-            }
-        }
-
         /// <summary>切到下一个可投放项（粒子类型之后接动物物种，到末尾回到开头）。</summary>
         public void CycleType()
         {
@@ -808,22 +676,6 @@ namespace TapTap2026.Game
             }
 
             Select((_cursor + 1) % SelectionCount);
-        }
-
-        /// <summary>
-        /// 指针是否落在光照面板矩形内。<paramref name="screenPosition"/> 用 <c>Input.mousePosition</c> 的原点（左下），
-        /// 内部换算到 IMGUI 的原点（左上）。面板没接线（<see cref="_lightDriver"/> 为空）时恒为 false——没画出来的
-        /// 东西不该挡画笔。
-        /// </summary>
-        private bool IsPointerOverLightPanel(Vector3 screenPosition)
-        {
-            if (_lightDriver == null)
-            {
-                return false;
-            }
-
-            var gui = new Vector2(screenPosition.x, Screen.height - screenPosition.y);
-            return LightPanelRect.Contains(gui);
         }
 
         /// <summary>滚轮每格调 <paramref name="steps"/> 格半径，结果夹在 [<see cref="MinBrushRadius"/>, <see cref="MaxBrushRadius"/>]。</summary>
@@ -1047,54 +899,6 @@ namespace TapTap2026.Game
             return 1;
         }
 
-        private void OnGUI()
-        {
-            if (!_drawHud)
-            {
-                // 面板没画出来就不可能有人在里面打字——清掉焦点标记，免得 Update 一直把键盘让给它。
-                _focusedLightControl = string.Empty;
-                return;
-            }
-
-            DrawLightPanel();
-
-            if (_probeText != null)
-            {
-                GUI.Label(new Rect(6f, 4f, 420f, 20f), _probeText);
-            }
-
-            // 高速模式的读数与结算面板都从缓存绘制，但用驱动的**实时**状态兜底：
-            // 任何结束会话的路径（确认退出、世界重建丢掉会话）都会立刻把两者隐藏掉，不留一帧残影。
-            if (_driver != null && _driver.HighSpeedActive)
-            {
-                // 进度读数固定在屏幕左下角（IMGUI 原点在左上，所以 y 从底部往上量）。
-                if (_highSpeedHudText != null)
-                {
-                    GUI.Label(new Rect(6f, Screen.height - 24f, 520f, 20f), _highSpeedHudText);
-                }
-
-                if (_highSpeedReportLines != null)
-                {
-                    DrawHighSpeedReport();
-                }
-            }
-
-            if (_hudText == null)
-            {
-                return;
-            }
-
-            // Input.mousePosition 原点在左下，IMGUI 原点在左上。
-            Vector3 mouse = Input.mousePosition;
-            float x = mouse.x + 18f;
-            float y = Screen.height - mouse.y - 6f;
-
-            GUI.color = _hudColor;
-            GUI.DrawTexture(new Rect(x, y, 12f, 12f), Texture2D.whiteTexture);
-            GUI.color = Color.white;
-            GUI.Label(new Rect(x + 16f, y - 3f, 200f, 20f), _hudText);
-        }
-
         /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」；按住 E（擦除修饰键）时前置提示。
         /// 末尾追加当前倍速（见 <see cref="DescribeSpeed"/>）。</summary>
         private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
@@ -1106,7 +910,7 @@ namespace TapTap2026.Game
             string line = Input.GetKey(KeyCode.E) ? "【擦除】" + reading : reading;
             _probeText = line + "  " + DescribeSpeed();
 
-            // 光标格顺手留给 OnGUI 的笔刷轮廓（与读数同一次射线，不重复投影）。
+            // 光标格顺手留给 ApplyBrushOutline 的笔刷轮廓（与读数同一次射线，不重复投影）。
             _hoverCellValid = inGrid;
             _hoverCellX = x;
             _hoverCellY = y;

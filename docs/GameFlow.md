@@ -51,6 +51,8 @@
 | `availableParticles` | string[] | 本阶段可手动投放的粒子名单（`DebugName` 或类名，匹配规则同 `ParticleEditor.ResolveTypeNames`）；**省略 / 空 = 不限制**（用编辑器的默认白名单） |
 | `victory` | object | 胜利条件，见 §3；**省略 / null = 本阶段没有胜利条件**（高速模式结算直接判**失败**，见 §3.4） |
 
+> ⚠️ **已知偏差（2026-10-14 实测）**：`JsonUtility.FromJson` 在本版本（2022.3.62f1）对**省略的嵌套可序列化类**会默认构造一个实例而不是留 null——`victory` 省略时得到的是「全哨兵（不约束）」的 `VictoryCondition`，会被 `VictoryEvaluator` 判为**通过**（与上表「判失败」相反）。字符串 / 数组字段不受影响（省略仍为 null）。现有两个阶段 JSON 都显式写了 `victory`，暂无实际影响；新增阶段时**必须显式写 `victory`**。`GameFlowTests.TryParse_MissingOptionalFields_KeepsDefaults` 因此目前是红的（断言 `victory == null`），待决策：修解析器（全哨兵归一为 null）或修测试。
+
 **解析语义**（`GamePhaseParser.TryParse`，与 `DialogueData.TryParse` 一致）：
 
 - JSON 语法坏 → 返回 `false`，`error` 描述原因，`phase` 为 null。
@@ -200,9 +202,9 @@ flowchart TD
 
 - 观察 `_driver.HighSpeed` 会话。**从「`Active` 且 `Completed`」那一帧起评估一次**胜利条件，缓存布尔结果与 `reason`（此后不再重复评估）。
 - 快照取自会话：`LatestSurfaceTemperature` / `LatestAverageHumidity` + 遍历 `ParticleRegistry.Types` 取 `GetBirths` / `GetDeaths` / `GetFinalCount`（存量取的是「跑满那一刻」的全网格盘点；评估时机固定在 `Completed` 帧、会话尚未 `Exit`，因此非 0——`Exit` 后 `GetFinalCount` 会清空返回 0）。
-- 评估结论只**缓存**在本类（`HasVerdict` / `LastResult` / `LastReason`），**不在本类上屏**：由 `ParticleEditor` 在高速模式结算面板（屏幕中央，玩家按 `Enter` / `H` 确认退出的那个面板）末尾追加一行——过关 = 绿色「过关！」，失败 = 红色「未过关：<reason>」。本类只保留「全部阶段完成」的常驻横幅。
+- 评估结论只**缓存**在本类（`HasVerdict` / `LastResult` / `LastReason`），**不在本类上屏**：由 `ParticleEditor` 在高速模式结算面板（屏幕中央，玩家按 `Enter` / `H` 确认退出的那个面板）末尾追加一行——过关 = 绿色「过关！」，失败 = 红色「未过关：<reason>」。本类只保留「全部阶段完成」的常驻横幅（场景里的 `HUD Canvas/CompletionBanner`，本类只开关它的激活态，不画 IMGUI）。
 - **之后**观察到会话**退出**（`Active` 变 `false`，即玩家在 `ParticleEditor` 按 `Enter` / `H` 确认退出）→ 按**缓存的**结果行动：
-  - 过关 → `nextPhaseId` 为空则 `OnGUI` 常驻「全部阶段完成」且不再启动新阶段；否则 `StartPhase(nextPhaseId)`；
+  - 过关 → `nextPhaseId` 为空则激活常驻横幅「全部阶段完成」且不再启动新阶段；否则 `StartPhase(nextPhaseId)`；
   - 失败 → `StartPhase(CurrentPhaseId)`（**重来** = 重播对话 + 重建空沙箱）。
 - **会话被世界重建丢弃**导致 `Active` 变 `false` 且**从未 `Completed`** → **不行动**（避免误判）。
 
@@ -234,6 +236,7 @@ public void SetPlacementFilter(string[] allowedNames);
 | 失败处理 | IO 异常 `LogError`，流程继续（存档不是流程正确性的前置） |
 | 读档时机 | `GameController.Start()`，见 §4.2 |
 
+
 存档**只记当前阶段 id**——世界状态不落盘，重启游戏回到该阶段的开头（空沙箱 + 重播对话）。
 
 ---
@@ -261,4 +264,4 @@ public void SetPlacementFilter(string[] allowedNames);
 
 `GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / 尺寸非法 / `particles[].type` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`availableParticles` 省略或空数组 = 不限制）；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、类型名解析失败、**按序报第一条失败**。
 
-MonoBehaviour 部分（读档 / `Resize` / 白名单 / OnGUI / 高速轮询）属场景 / 输入 / 协程，需 Play 模式实际观察，不进 EditMode。
+MonoBehaviour 部分（读档 / `Resize` / 白名单 / 横幅开关 / 高速轮询）属场景 / 输入 / 协程，需 Play 模式实际观察，不进 EditMode（横幅本身的场景接线由 `SceneWiringTests` 钉住）。

@@ -7,10 +7,13 @@ using UnityEngine.UI;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// **调试用**对话 UI：运行时构建 Canvas + 对话面板 + 回顾面板，实现 <see cref="IDialogueView"/>。
+    /// **调试用**对话 UI：把 <see cref="IDialogueView"/> 的数据填进场景里已经摆好的 uGUI 层级
+    /// （对话面板 + 回顾面板）。
     /// <para>它是"另一个项目真正的对话框"的替身——只要那个 UI 实现同一个 <see cref="IDialogueView"/> 接口，
     /// 用 <see cref="DialogueController.SetView"/> 交给控制器即可，本组件可以禁用/删掉。</para>
-    /// <para>面板运行时构建（不写场景文件）；本组件需与 <see cref="DialogueController"/> 挂在同一个物体上。</para>
+    /// <para><b>UI 层级是场景里的可编辑对象</b>（<c>Dialogue Canvas</c> 下）：本组件只做**接线与数据填充**，
+    /// 不在运行期建任何 UI 对象——因此整个对话框都能在编辑模式里看见、摆放、调参数。
+    /// 本组件需与 <see cref="DialogueController"/> 挂在同一个物体上（<see cref="_controller"/> 未接线时按此兜底）。</para>
     /// </summary>
     public sealed class DialogueDebugView : MonoBehaviour, IDialogueView
     {
@@ -20,20 +23,39 @@ namespace TapTap2026.Game
         [Tooltip("TMP 字体资产（中文字体）。留空 = 中文显示成豆腐块。")]
         [SerializeField] private TMP_FontAsset _font;
 
-        [Tooltip("回顾面板顶部的提示文字。")]
-        [SerializeField] private string _reviewHint = "Review  (Tab/Esc to close, scroll wheel to browse)";
+        [Tooltip("对话 UI 的根画布（overlay）。")]
+        [SerializeField] private Canvas _canvas;
 
-        private Canvas _canvas;
-        private GameObject _dialoguePanel;
-        private GameObject _reviewPanel;
-        private Image _portraitImage;
-        private Image _avatarImage;
-        private TMP_Text _nameText;
-        private TMP_Text _lineText;
-        private RectTransform _choiceRoot;
-        private TMP_Text _reviewText;
-        private ScrollRect _reviewScroll;
-        private GameObject _ownedEventSystem;
+        [Tooltip("对话面板根（运行初态隐藏；编辑时可在场景里临时激活做可视化编辑）。")]
+        [SerializeField] private GameObject _dialoguePanel;
+
+        [Tooltip("回顾面板根（运行初态隐藏）。")]
+        [SerializeField] private GameObject _reviewPanel;
+
+        [Tooltip("左侧立绘。")]
+        [SerializeField] private Image _portraitImage;
+
+        [Tooltip("小头像。")]
+        [SerializeField] private Image _avatarImage;
+
+        [Tooltip("说话人名字。")]
+        [SerializeField] private TMP_Text _nameText;
+
+        [Tooltip("台词正文（打字机逐字填充）。")]
+        [SerializeField] private TMP_Text _lineText;
+
+        [Tooltip("选项按钮的容器（右侧竖排布局）。")]
+        [SerializeField] private RectTransform _choiceRoot;
+
+        [Tooltip("选项按钮模板：每次显示选项时按它 Instantiate 一份（模板本身默认隐藏）。")]
+        [SerializeField] private Button _choiceButtonTemplate;
+
+        [Tooltip("回顾正文。")]
+        [SerializeField] private TMP_Text _reviewText;
+
+        [Tooltip("回顾正文的滚动视图。")]
+        [SerializeField] private ScrollRect _reviewScroll;
+
         private readonly List<Button> _choiceButtons = new List<Button>();
 
         private void Awake()
@@ -43,12 +65,112 @@ namespace TapTap2026.Game
                 _controller = GetComponent<DialogueController>();
             }
 
-            BuildUi();
+            LogMissingWiring();
+
+            // 场景必须自带 EventSystem：没有它按钮与滚动都收不到事件。这里只报错、**不自建**——
+            // 运行期悄悄塞一个进场景，正是这次「UI 全部改为场景可接线」要消灭的东西。
+            if (EventSystem.current == null)
+            {
+                Debug.LogError(
+                    "[DialogueDebugView] 场景里没有 EventSystem，对话 UI 的按钮与输入收不到事件。" +
+                    "请在场景里放置 EventSystem + StandaloneInputModule。");
+            }
+
+            if (_font != null && _canvas != null)
+            {
+                // 场景里摆好的 TMP 组件不会自动认字体资产，接线时统一套一遍（含隐藏面板下的那些）。
+                TMP_Text[] texts = _canvas.GetComponentsInChildren<TMP_Text>(true);
+                for (int i = 0; i < texts.Length; i++)
+                {
+                    texts[i].font = _font;
+                }
+            }
+
+            // 运行初态：两个面板与选项模板都藏起来，由控制器在合适的时机打开。
+            // 场景里因此可以临时把它们激活来做可视化编辑，运行时切回由这里保证。
+            if (_dialoguePanel != null)
+            {
+                _dialoguePanel.SetActive(false);
+            }
+
+            if (_reviewPanel != null)
+            {
+                _reviewPanel.SetActive(false);
+            }
+
+            HideChoices();
+
+            if (_choiceButtonTemplate != null)
+            {
+                _choiceButtonTemplate.gameObject.SetActive(false);
+            }
         }
 
-        private void OnDestroy()
+        /// <summary>一次性把所有未接线的引用列出来报错——缺哪个一眼看到，不用逐个字段翻 Inspector。</summary>
+        private void LogMissingWiring()
         {
-            DestroyUi();
+            var missing = new List<string>(12);
+
+            if (_canvas == null)
+            {
+                missing.Add(nameof(_canvas));
+            }
+
+            if (_dialoguePanel == null)
+            {
+                missing.Add(nameof(_dialoguePanel));
+            }
+
+            if (_reviewPanel == null)
+            {
+                missing.Add(nameof(_reviewPanel));
+            }
+
+            if (_portraitImage == null)
+            {
+                missing.Add(nameof(_portraitImage));
+            }
+
+            if (_avatarImage == null)
+            {
+                missing.Add(nameof(_avatarImage));
+            }
+
+            if (_nameText == null)
+            {
+                missing.Add(nameof(_nameText));
+            }
+
+            if (_lineText == null)
+            {
+                missing.Add(nameof(_lineText));
+            }
+
+            if (_choiceRoot == null)
+            {
+                missing.Add(nameof(_choiceRoot));
+            }
+
+            if (_choiceButtonTemplate == null)
+            {
+                missing.Add(nameof(_choiceButtonTemplate));
+            }
+
+            if (_reviewText == null)
+            {
+                missing.Add(nameof(_reviewText));
+            }
+
+            if (_reviewScroll == null)
+            {
+                missing.Add(nameof(_reviewScroll));
+            }
+
+            if (missing.Count > 0)
+            {
+                Debug.LogError(
+                    "[DialogueDebugView] 以下场景接线为空，对话 UI 无法完整显示：" + string.Join("、", missing));
+            }
         }
 
         // ============================== IDialogueView ==============================
@@ -96,7 +218,7 @@ namespace TapTap2026.Game
         public void ShowChoices(IReadOnlyList<string> labels)
         {
             HideChoices();
-            if (_choiceRoot == null || labels == null)
+            if (_choiceRoot == null || _choiceButtonTemplate == null || labels == null)
             {
                 return;
             }
@@ -104,7 +226,16 @@ namespace TapTap2026.Game
             for (int i = 0; i < labels.Count; i++)
             {
                 int captured = i;
-                Button button = NewButton("Choice" + i, _choiceRoot, labels[i]);
+
+                Button button = Instantiate(_choiceButtonTemplate, _choiceRoot);
+                button.gameObject.SetActive(true);
+
+                TMP_Text label = button.GetComponentInChildren<TMP_Text>(true);
+                if (label != null)
+                {
+                    label.text = labels[i];
+                }
+
                 button.onClick.AddListener(() =>
                 {
                     if (_controller != null)
@@ -196,223 +327,6 @@ namespace TapTap2026.Game
             }
 
             return builder.ToString();
-        }
-
-        // ============================== 运行时 UI ==============================
-
-        private void BuildUi()
-        {
-            EnsureEventSystem();
-
-            var canvasGo = new GameObject("DialogueCanvas", typeof(RectTransform));
-            canvasGo.transform.SetParent(transform, false);
-            _canvas = canvasGo.AddComponent<Canvas>();
-            _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            _canvas.sortingOrder = 1000;
-            var scaler = canvasGo.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
-            canvasGo.AddComponent<GraphicRaycaster>();
-
-            BuildDialoguePanel(canvasGo.transform);
-            BuildReviewPanel(canvasGo.transform);
-
-            _dialoguePanel.SetActive(false);
-            _reviewPanel.SetActive(false);
-        }
-
-        private void BuildDialoguePanel(Transform parent)
-        {
-            _dialoguePanel = NewRect("DialoguePanel", parent).gameObject;
-            Image bg = _dialoguePanel.AddComponent<Image>();
-            bg.color = new Color(0.05f, 0.06f, 0.09f, 0.85f);
-            RectTransform rect = (RectTransform)_dialoguePanel.transform;
-            rect.anchorMin = new Vector2(0f, 0f);
-            rect.anchorMax = new Vector2(1f, 0f);
-            rect.pivot = new Vector2(0.5f, 0f);
-            rect.anchoredPosition = new Vector2(0f, 30f);
-            rect.sizeDelta = new Vector2(-80f, 260f);
-
-            // 立绘（左）
-            _portraitImage = NewImage("Portrait", _dialoguePanel.transform, Color.white);
-            Anchor((RectTransform)_portraitImage.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(16f, 16f), new Vector2(150f, 228f));
-            _portraitImage.preserveAspect = true;
-
-            // 小头像
-            _avatarImage = NewImage("Avatar", _dialoguePanel.transform, Color.white);
-            Anchor((RectTransform)_avatarImage.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(182f, 172f), new Vector2(48f, 48f));
-            _avatarImage.preserveAspect = true;
-
-            // 名字
-            _nameText = NewText("Name", _dialoguePanel.transform, 34f);
-            Anchor((RectTransform)_nameText.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(242f, 196f), new Vector2(600f, 44f));
-            _nameText.alignment = TextAlignmentOptions.BottomLeft;
-
-            // 台词（拉伸：左让开立绘、右让开选项）
-            _lineText = NewText("Line", _dialoguePanel.transform, 30f);
-            AnchorStretch((RectTransform)_lineText.transform, Vector2.zero, Vector2.one, new Vector2(242f, 16f), new Vector2(-380f, -60f));
-            _lineText.alignment = TextAlignmentOptions.TopLeft;
-
-            // 选项容器（右侧竖排）
-            _choiceRoot = NewRect("Choices", _dialoguePanel.transform);
-            Anchor(_choiceRoot, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-16f, 16f), new Vector2(360f, 228f));
-            var layout = _choiceRoot.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.childControlHeight = true;
-            layout.childControlWidth = true;
-            layout.childForceExpandHeight = false;
-            layout.childForceExpandWidth = true;
-            layout.spacing = 8f;
-            layout.childAlignment = TextAnchor.LowerRight;
-        }
-
-        private void BuildReviewPanel(Transform parent)
-        {
-            _reviewPanel = NewRect("ReviewPanel", parent).gameObject;
-            Image bg = _reviewPanel.AddComponent<Image>();
-            bg.color = new Color(0.03f, 0.04f, 0.07f, 0.96f);
-            RectTransform rect = (RectTransform)_reviewPanel.transform;
-            rect.anchorMin = Vector2.zero;
-            rect.anchorMax = Vector2.one;
-            rect.offsetMin = new Vector2(120f, 90f);
-            rect.offsetMax = new Vector2(-120f, -90f);
-
-            TMP_Text hint = NewText("Hint", _reviewPanel.transform, 24f);
-            AnchorStretch((RectTransform)hint.transform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -56f), new Vector2(-24f, -16f));
-            hint.text = _reviewHint;
-            hint.color = new Color(0.75f, 0.8f, 0.9f, 1f);
-
-            var scrollGo = NewRect("Scroll", _reviewPanel.transform).gameObject;
-            AnchorStretch((RectTransform)scrollGo.transform, Vector2.zero, Vector2.one, new Vector2(24f, 24f), new Vector2(-24f, -70f));
-            _reviewScroll = scrollGo.AddComponent<ScrollRect>();
-            _reviewScroll.horizontal = false;
-            _reviewScroll.vertical = true;
-            _reviewScroll.movementType = ScrollRect.MovementType.Clamped;
-
-            var viewportGo = NewRect("Viewport", scrollGo.transform).gameObject;
-            RectTransform viewport = (RectTransform)viewportGo.transform;
-            viewport.anchorMin = Vector2.zero;
-            viewport.anchorMax = Vector2.one;
-            viewport.offsetMin = Vector2.zero;
-            viewport.offsetMax = Vector2.zero;
-            viewportGo.AddComponent<RectMask2D>();
-
-            _reviewText = NewText("Content", viewportGo.transform, 28f);
-            RectTransform content = (RectTransform)_reviewText.transform;
-            content.anchorMin = new Vector2(0f, 1f);
-            content.anchorMax = new Vector2(1f, 1f);
-            content.pivot = new Vector2(0.5f, 1f);
-            content.anchoredPosition = Vector2.zero;
-            content.sizeDelta = new Vector2(0f, 0f);
-            _reviewText.alignment = TextAlignmentOptions.TopLeft;
-            var fitter = _reviewText.gameObject.AddComponent<ContentSizeFitter>();
-            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-            _reviewScroll.viewport = viewport;
-            _reviewScroll.content = content;
-        }
-
-        private void EnsureEventSystem()
-        {
-            if (EventSystem.current != null)
-            {
-                return;
-            }
-
-            _ownedEventSystem = new GameObject("DialogueEventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
-            _ownedEventSystem.transform.SetParent(transform, false);
-        }
-
-        private void DestroyUi()
-        {
-            if (_canvas != null)
-            {
-                Destroy(_canvas.gameObject);
-                _canvas = null;
-            }
-
-            if (_ownedEventSystem != null)
-            {
-                Destroy(_ownedEventSystem);
-                _ownedEventSystem = null;
-            }
-
-            _choiceButtons.Clear();
-        }
-
-        // ---- UI 小工具 ----
-
-        private static RectTransform NewRect(string name, Transform parent)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            return (RectTransform)go.transform;
-        }
-
-        private Image NewImage(string name, Transform parent, Color color)
-        {
-            RectTransform rect = NewRect(name, parent);
-            var image = rect.gameObject.AddComponent<Image>();
-            image.color = color;
-            return image;
-        }
-
-        private TMP_Text NewText(string name, Transform parent, float size)
-        {
-            RectTransform rect = NewRect(name, parent);
-            var text = rect.gameObject.AddComponent<TextMeshProUGUI>();
-            text.fontSize = size;
-            text.color = Color.white;
-            text.enableWordWrapping = true;
-            text.raycastTarget = false;
-            if (_font != null)
-            {
-                text.font = _font;
-            }
-
-            return text;
-        }
-
-        private Button NewButton(string name, Transform parent, string label)
-        {
-            RectTransform rect = NewRect(name, parent);
-            var image = rect.gameObject.AddComponent<Image>();
-            image.color = new Color(0.16f, 0.2f, 0.28f, 0.95f);
-            var button = rect.gameObject.AddComponent<Button>();
-            button.targetGraphic = image;
-
-            TMP_Text text = NewText("Label", rect, 28f);
-            RectTransform textRect = (RectTransform)text.transform;
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = new Vector2(12f, 4f);
-            textRect.offsetMax = new Vector2(-12f, -4f);
-            text.alignment = TextAlignmentOptions.Center;
-            text.text = label;
-
-            var element = rect.gameObject.AddComponent<LayoutElement>();
-            element.minHeight = 48f;
-            element.preferredHeight = 48f;
-
-            return button;
-        }
-
-        private static void Anchor(RectTransform rect, Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 anchoredPosition, Vector2 sizeDelta)
-        {
-            rect.anchorMin = anchorMin;
-            rect.anchorMax = anchorMax;
-            rect.pivot = pivot;
-            rect.anchoredPosition = anchoredPosition;
-            rect.sizeDelta = sizeDelta;
-        }
-
-        /// <summary>拉伸锚点（anchorMin ≠ anchorMax 的轴）必须用 offsetMin/offsetMax 定位。</summary>
-        private static void AnchorStretch(RectTransform rect, Vector2 anchorMin, Vector2 anchorMax, Vector2 offsetMin, Vector2 offsetMax)
-        {
-            rect.anchorMin = anchorMin;
-            rect.anchorMax = anchorMax;
-            rect.pivot = new Vector2(0.5f, 0.5f);
-            rect.offsetMin = offsetMin;
-            rect.offsetMax = offsetMax;
         }
     }
 }

@@ -11,6 +11,11 @@ namespace TapTap2026.Rendering
     /// <remarks>
     /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步。
     /// 上屏时机完全由调用方（<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
+    /// <para><b>quad 与笔刷叠层都是场景对象</b>（<see cref="_meshFilter"/> / <see cref="_meshRenderer"/> /
+    /// <see cref="_brushRenderer"/> 三个字段在 Inspector 里接线）：它们在编辑模式可见、可选中、可调参数，
+    /// 方便直接看取景与叠层位置。只有编辑器里没接线时才在运行期自建（<see cref="CreateQuad"/> /
+    /// <see cref="EnsureBrushOverlay"/>）——那条路是给「无接线构造」的测试与临时脚本兜底的，
+    /// 建出来的对象一律 <see cref="HideFlags.DontSave"/>，绝不落进 .unity 文件。</para>
     /// <para>除网格 quad 外，本组件还持有**笔刷轮廓叠层**（<see cref="SetBrushOutline"/>，编辑器驱动）：
     /// 一层与格子逐格对齐的白像素圆 sprite，压在所有像素之上。</para>
     /// <para>上屏前按 <see cref="LightController.Daylight"/> 做昼夜表现：天空色在
@@ -61,12 +66,17 @@ namespace TapTap2026.Rendering
         private Texture2D _texture;
         private Mesh _mesh;
         private Material _runtimeMaterial;
-        private MeshFilter _meshFilter;
-        private MeshRenderer _meshRenderer;
         private bool _targetFailed;
 
-        /// <summary>笔刷轮廓叠层的子物体视图（懒建）；未建时为 null。</summary>
-        private SpriteRenderer _brushRenderer;
+        [Tooltip("场景接线（世界 quad 上的 MeshFilter）；留空则运行时自建（HideFlags.DontSave，测试兜底）。")]
+        [SerializeField] private MeshFilter _meshFilter;
+
+        [Tooltip("场景接线（世界 quad 上的 MeshRenderer）；留空则运行时自建（HideFlags.DontSave，测试兜底）。")]
+        [SerializeField] private MeshRenderer _meshRenderer;
+
+        /// <summary>笔刷轮廓叠层的 sprite 视图（场景接线；未接线时运行期懒建）。</summary>
+        [Tooltip("场景接线（笔刷轮廓叠层上的 SpriteRenderer）；留空则运行时自建（HideFlags.DontSave，测试兜底）。")]
+        [SerializeField] private SpriteRenderer _brushRenderer;
 
         /// <summary>叠层纹理（边长 <c>2 * _brushCapacity + 1</c>、Point 过滤）与它对应的 sprite。</summary>
         private Texture2D _brushTexture;
@@ -106,6 +116,15 @@ namespace TapTap2026.Rendering
         {
             get { return _nightBrightness; }
             set { _nightBrightness = Mathf.Clamp01(value); }
+        }
+
+        /// <summary>场景接线时套一遍 quad 的渲染设置（未接线的那条路在 <see cref="CreateQuad"/> 里套）。</summary>
+        private void Awake()
+        {
+            if (_meshRenderer != null)
+            {
+                ApplyQuadRendererSettings(_meshRenderer);
+            }
         }
 
         /// <summary>把 <paramref name="world"/> 的当前状态填进像素缓冲并上传一次。同一帧调用多次即上传多次。</summary>
@@ -179,8 +198,8 @@ namespace TapTap2026.Rendering
         }
 
         /// <summary>
-        /// 按需建 / 撑开叠层的子物体、纹理与 sprite：容量够用（<see cref="_brushCapacity"/> ≥ radius）时原样复用，
-        /// 否则重建到新半径（纹理边长 = <c>2 * radius + 1</c>）。
+        /// 按需建 / 撑开叠层的纹理与 sprite：<see cref="_brushRenderer"/> 未接线时先自建子物体，
+        /// 容量够用（<see cref="_brushCapacity"/> ≥ radius）时原样复用，否则重建到新半径（纹理边长 = <c>2 * radius + 1</c>）。
         /// </summary>
         private void EnsureBrushOverlay(int radius)
         {
@@ -191,10 +210,11 @@ namespace TapTap2026.Rendering
                 child.transform.SetParent(transform, false);
 
                 _brushRenderer = child.AddComponent<SpriteRenderer>();
-
-                // 与同层其他 sprite（动物视图，order 0）拉开先后：即使相机的透明排序不看深度，叠层也在最上。
-                _brushRenderer.sortingOrder = 1;
             }
+
+            // 与同层其他 sprite（动物视图，order 0）拉开先后：即使相机的透明排序不看深度，叠层也在最上。
+            // 场景接线的叠层也每帧补一遍——Inspector 里手改过 sortingOrder 就不会悄悄压不住世界 quad。
+            _brushRenderer.sortingOrder = 1;
 
             if (_brushCapacity >= radius && _brushSprite != null)
             {
@@ -422,14 +442,30 @@ namespace TapTap2026.Rendering
 
             _meshFilter = quad.AddComponent<MeshFilter>();
             _meshRenderer = quad.AddComponent<MeshRenderer>();
-            _meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
-            _meshRenderer.receiveShadows = false;
-            _meshRenderer.lightProbeUsage = LightProbeUsage.Off;
-            _meshRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            _meshRenderer.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+            ApplyQuadRendererSettings(_meshRenderer);
         }
 
-        private static Mesh BuildQuadMesh(int width, int height)
+        /// <summary>
+        /// quad 的渲染设置：不投影 / 不接收阴影、不采光探针与反射探针、不生成运动矢量。
+        /// 粒子网格是一张整屏自发光像素画布——参与光照与运动矢量只会平白拖慢，还会把观感带偏。
+        /// 场景接线的 quad（<see cref="Awake"/>）与运行期自建的 quad（<see cref="CreateQuad"/>）走同一份设置，
+        /// 免得接线与兜底两条路的观感不一致。
+        /// </summary>
+        private static void ApplyQuadRendererSettings(MeshRenderer quadRenderer)
+        {
+            quadRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            quadRenderer.receiveShadows = false;
+            quadRenderer.lightProbeUsage = LightProbeUsage.Off;
+            quadRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            quadRenderer.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+        }
+
+        /// <summary>
+        /// 世界 quad 的网格：<paramref name="width"/> × <paramref name="height"/> 个 1×1 单位格的平面。
+        /// <c>public static</c> 供编辑器脚手架（<c>SceneUiScaffolder</c>）在场景里生成同一份预览网格，
+        /// 免得两处再抄一遍顶点 / UV / 三角形。<b>hideFlags 与释放由调用方负责</b>：本方法只建网格。
+        /// </summary>
+        public static Mesh BuildQuadMesh(int width, int height)
         {
             var mesh = new Mesh
             {
