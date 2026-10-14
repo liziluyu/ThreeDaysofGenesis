@@ -14,9 +14,11 @@ namespace TapTap2026.Simulation
     /// <para><b>只走世界 API：</b>写入一律 <see cref="ParticleWorld.SetWithShade"/>（原子、语义 = <c>Set</c>，
     /// 但带调用方给出的颜色索引）；挪水一律 <see cref="ParticleWorld.Swap"/>——它自己负责换格 + 热量 + 湿度
     /// 跟着物质走 + 绝热直减 + 写入版本 + 运动休眠唤醒；绝不直接写 <c>_cells</c>。</para>
-    /// <para><b>定位映射</b>（与 <c>CreatureRenderer</c> 既有摆放公式一致——sprite 底边 = 碰撞盒底边 = <c>Y</c>、
-    /// 水平中心 = <c>X</c>、1 源像素 = 1 格）：<c>世界 x = floor(creature.X) - 8 + dx</c>、
-    /// <c>世界 y = floor(creature.Y) + dy</c>。其中 <c>dx = pxX</c>、<c>dy = 15 - pxY</c>。</para>
+    /// <para><b>定位映射</b>（与 <c>CreatureRenderer</c> 的摆放公式逐格对齐——sprite 的 pivot 点落在
+    /// <c>(X, Y)</c>、水平居中原点 = <c>X</c>、1 源像素 = 1 格）：<c>世界 x = floor(creature.X) - 8 + dx</c>、
+    /// <c>世界 y = floor(creature.Y) - PivotRowCells + dy</c>。其中 <c>dy 0 = 精灵画布底边</c>，
+    /// <c>PivotRowCells</c> = 切片 pivot 距底边的像素行（<see cref="BiomassProfile.PivotRowCells"/>）——
+    /// 减掉它后尸体与渲染身体**逐格对齐**（鱼 pivot = 底边上 5px ⇒ 尸体不再高 5 格，见 docs §22）。</para>
     /// <para><b>遍历顺序 = 契约：</b>两趟（先挪水、后写生物质）都固定按 <c>dy</c> 升序、同行 <c>dx</c> 升序
     /// 逐格处理，零随机数。同 seed 重放只有顺序一致才能逐格复现；<c>shade</c> 直接用 profile 索引，
     /// 不重抽（重抽会把尸体打散成随机噪点）。</para>
@@ -72,11 +74,12 @@ namespace TapTap2026.Simulation
                 return 0;
             }
 
-            sbyte[] cells = BiomassProfile.For(creature).Cells;
+            BiomassProfile profile = BiomassProfile.For(creature);
+            sbyte[] cells = profile.Cells;
 
-            // 精灵左列 → 世界列 floor(X) - Size/2；dy 0 = 精灵底边 = 世界行 floor(Y)。
+            // 精灵左列 → 世界列 floor(X) - Size/2；dy 0 = 精灵画布底边 ⇒ 世界行 floor(Y) - PivotRowCells。
             int baseX = (int)Mathf.Floor(creature.X) - BiomassProfile.Size / 2;
-            int baseY = (int)Mathf.Floor(creature.Y);
+            int baseY = (int)Mathf.Floor(creature.Y) - profile.PivotRowCells;
 
             // 第一趟：把落在轮廓格上的水挪到合格空位（dy 升序、同行 dx 升序）。挪不动的保持原样——
             // 第二趟会因它仍是水而自然跳过（水原样保留，绝不删水）。

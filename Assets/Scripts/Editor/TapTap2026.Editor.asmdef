@@ -1,7 +1,9 @@
 {
     "name": "TapTap2026.Editor",
     "rootNamespace": "TapTap2026.Editor",
-    "references": [],
+    "references": [
+        "TapTap2026.Simulation"
+    ],
     "includePlatforms": [
         "Editor"
     ],

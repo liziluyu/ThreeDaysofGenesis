@@ -49,8 +49,9 @@ namespace TapTap2026.Simulation
         /// <summary>
         /// 6 档灰阶调色板（由兔子 / 鱼精灵的灰阶按 0.78 变暗而来）。
         /// **顺序即死亡轮廓的颜色索引（<see cref="Cell.shade"/>），不得重排**。
+        /// 开发期生成器与测试对拍用，勿改。
         /// </summary>
-        private static readonly Color32[] Palette =
+        public static readonly Color32[] Palette =
         {
             new Color32(23, 23, 23, 255),   // 0 最深（眼 / 耳）
             new Color32(45, 45, 45, 255),   // 1

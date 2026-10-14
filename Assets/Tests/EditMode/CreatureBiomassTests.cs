@@ -1,3 +1,4 @@
+using System.IO;
 using NUnit.Framework;
 using TapTap2026.Simulation;
 using UnityEngine;
@@ -22,6 +23,19 @@ namespace TapTap2026.Tests
         private const int W = 32;
         private const int H = 32;
         private const uint SeedValue = 20261011u;
+
+        /// <summary>单帧边长（源像素）。</summary>
+        private const int FrameSize = 16;
+
+        /// <summary>兔子美术相对 <see cref="Application.dataPath"/> 的路径。</summary>
+        private const string RabbitSpriteFile = "/Images/Animals/rabbit/1/rabbit.png";
+
+        /// <summary>鱼美术相对 <see cref="Application.dataPath"/> 的路径。</summary>
+        private const string FishSpriteFile = "/Images/Animals/fish/1/fish.png";
+
+        /// <summary>从 PNG 现场推导的期望轮廓缓存（避免每条用例重复解码）。</summary>
+        private static sbyte[] _rabbitCells;
+        private static sbyte[] _fishCells;
 
         private static ushort Stone
         {
@@ -137,11 +151,95 @@ namespace TapTap2026.Tests
             return count;
         }
 
-        /// <summary>按轮廓统计「落在界内」的格数（越界格本就不写），用于断言返回的写入数。</summary>
-        private static int NonEmptyInBounds(BiomassProfile profile, int baseX, int baseY, int width, int height)
+        /// <summary>兔子帧 0 的期望轮廓，现场从真实 PNG 推导（与生成物同源同算法，不依赖手写常量）。</summary>
+        private static sbyte[] RabbitOutline()
+        {
+            if (_rabbitCells == null)
+            {
+                _rabbitCells = LoadFrame0Cells(RabbitSpriteFile);
+            }
+
+            return _rabbitCells;
+        }
+
+        /// <summary>鱼帧 0 的期望轮廓，现场从真实 PNG 推导。</summary>
+        private static sbyte[] FishOutline()
+        {
+            if (_fishCells == null)
+            {
+                _fishCells = LoadFrame0Cells(FishSpriteFile);
+            }
+
+            return _fishCells;
+        }
+
+        /// <summary>读盘解码 PNG 并取帧 0（左下 16×16 块，自底行序），交给 Builder 生成期望轮廓。</summary>
+        private static sbyte[] LoadFrame0Cells(string relativePath)
+        {
+            string path = Application.dataPath + relativePath;
+            Assert.IsTrue(File.Exists(path), "美术资源缺失，无法推导期望轮廓：" + path);
+
+            var texture = new Texture2D(2, 2);
+            Color32[] pixels;
+            int width;
+            try
+            {
+                Assert.IsTrue(texture.LoadImage(File.ReadAllBytes(path)), "PNG 解码失败：" + path);
+                pixels = texture.GetPixels32();
+                width = texture.width;
+            }
+            finally
+            {
+                Object.DestroyImmediate(texture);
+            }
+
+            var frame0 = new Color32[FrameSize * FrameSize];
+            for (int dy = 0; dy < FrameSize; dy++)
+            {
+                int rowStart = dy * width;
+                for (int dx = 0; dx < FrameSize; dx++)
+                {
+                    frame0[(dy * FrameSize) + dx] = pixels[rowStart + dx];
+                }
+            }
+
+            return BiomassProfileBuilder.BuildCells(frame0, BiomassParticle.Palette);
+        }
+
+        /// <summary>轮廓非空格总数。</summary>
+        private static int NonEmptyCount(sbyte[] cells)
         {
             int count = 0;
-            sbyte[] cells = profile.Cells;
+            for (int i = 0; i < cells.Length; i++)
+            {
+                if (cells[i] >= 0)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>轮廓某列（<paramref name="dx"/>）上的非空格数。</summary>
+        private static int ColumnCount(sbyte[] cells, int dx)
+        {
+            int count = 0;
+            for (int dy = 0; dy < BiomassProfile.Size; dy++)
+            {
+                if (cells[(dy * BiomassProfile.Size) + dx] >= 0)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>按轮廓统计「落在界内」的格数（越界格本就不写），用于断言返回的写入数。</summary>
+        private static int NonEmptyInBounds(sbyte[] cells, int baseX, int baseY, int width, int height)
+        {
+            int count = 0;
             for (int dy = 0; dy < BiomassProfile.Size; dy++)
             {
                 for (int dx = 0; dx < BiomassProfile.Size; dx++)
@@ -174,8 +272,8 @@ namespace TapTap2026.Tests
         // ============================== 测试 ==============================
 
         /// <summary>
-        /// 在已知位置杀死一只兔子：生物质格集合**恰等于**兔子 profile 映射到世界的坐标集合（逐一断言），
-        /// 且每格的 <c>shade</c> 等于 profile 该格的颜色索引。
+        /// 在已知位置杀死一只兔子：生物质格集合**恰等于**从真实 PNG 现场推导的轮廓映射到世界的坐标集合
+        /// （逐一断言），且每格的 <c>shade</c> 等于该轮廓格的颜色索引。
         /// </summary>
         [Test]
         public void Materialize_WritesProfileAlignedToSprite()
@@ -184,17 +282,20 @@ namespace TapTap2026.Tests
             CreatureWorld creatures = new CreatureWorld(SeedValue);
             KillRabbitAt(world, creatures, 16f, 20f, CreatureDeathCause.Unknown);
 
-            // 死前被跳过推进（②不再跑它），因此位置仍是生成坐标：floor(16) - 8 = 8，floor(20) = 20。
-            int baseX = Mathf.FloorToInt(16f) - BiomassProfile.Size / 2;
-            int baseY = Mathf.FloorToInt(20f);
+            // 期望由 PNG 现场推导（与生成物同源同算法），不依赖手写常量。
+            sbyte[] cells = RabbitOutline();
 
-            sbyte[] cells = BiomassProfile.Rabbit.Cells;
+            // 死前被跳过推进（②不再跑它），因此位置仍是生成坐标：
+            // baseX = floor(16) - 8 = 8，baseY = floor(20) - Rabbit.PivotRowCells。
+            int baseX = Mathf.FloorToInt(16f) - BiomassProfile.Size / 2;
+            int baseY = Mathf.FloorToInt(20f) - BiomassProfile.Rabbit.PivotRowCells;
+
             int expected = 0;
             for (int dy = 0; dy < BiomassProfile.Size; dy++)
             {
                 for (int dx = 0; dx < BiomassProfile.Size; dx++)
                 {
-                    sbyte index = cells[dy * BiomassProfile.Size + dx];
+                    sbyte index = cells[(dy * BiomassProfile.Size) + dx];
                     if (index < 0)
                     {
                         continue;
@@ -206,16 +307,16 @@ namespace TapTap2026.Tests
 
                     Cell cell = world.GetCell(x, y);
                     Assert.AreEqual(Biomass, cell.typeId, $"轮廓格 ({dx},{dy}) 应写成生物质");
-                    Assert.AreEqual((byte)index, cell.shade, $"轮廓格 ({dx},{dy}) 的 shade 应等于 profile 索引");
+                    Assert.AreEqual((byte)index, cell.shade, $"轮廓格 ({dx},{dy}) 的 shade 应等于 PNG 推导索引");
                     expected++;
                 }
             }
 
-            Assert.AreEqual(48, expected, "兔子轮廓应有 48 个非空格（plan Task 3 逐字数据）");
+            Assert.AreEqual(NonEmptyCount(cells), expected, "每个非空轮廓格都应写入");
             Assert.AreEqual(expected, CountType(world, Biomass), "场上生物质格数应恰等于轮廓格数（无多余写入）");
         }
 
-        /// <summary>鱼死亡用鱼 profile：坐标集合与颜色索引逐格对齐，且格数为 51。</summary>
+        /// <summary>鱼死亡用鱼 profile：坐标集合与颜色索引逐格对齐（期望由真实 PNG 现场推导）。</summary>
         [Test]
         public void Materialize_Fish_UsesFishProfile()
         {
@@ -225,16 +326,17 @@ namespace TapTap2026.Tests
             fish.Kill(CreatureDeathCause.Unknown);
             StepCreatures(world, creatures);
 
-            int baseX = Mathf.FloorToInt(16f) - BiomassProfile.Size / 2;
-            int baseY = Mathf.FloorToInt(20f);
+            sbyte[] cells = FishOutline();
 
-            sbyte[] cells = BiomassProfile.Fish.Cells;
+            int baseX = Mathf.FloorToInt(16f) - BiomassProfile.Size / 2;
+            int baseY = Mathf.FloorToInt(20f) - BiomassProfile.Fish.PivotRowCells;
+
             int expected = 0;
             for (int dy = 0; dy < BiomassProfile.Size; dy++)
             {
                 for (int dx = 0; dx < BiomassProfile.Size; dx++)
                 {
-                    sbyte index = cells[dy * BiomassProfile.Size + dx];
+                    sbyte index = cells[(dy * BiomassProfile.Size) + dx];
                     if (index < 0)
                     {
                         continue;
@@ -246,13 +348,66 @@ namespace TapTap2026.Tests
 
                     Cell cell = world.GetCell(x, y);
                     Assert.AreEqual(Biomass, cell.typeId, $"鱼轮廓格 ({dx},{dy}) 应写成生物质");
-                    Assert.AreEqual((byte)index, cell.shade, $"鱼轮廓格 ({dx},{dy}) 的 shade 应等于 profile 索引");
+                    Assert.AreEqual((byte)index, cell.shade, $"鱼轮廓格 ({dx},{dy}) 的 shade 应等于 PNG 推导索引");
                     expected++;
                 }
             }
 
-            Assert.AreEqual(51, expected, "鱼轮廓应有 51 个非空格（plan Task 3 逐字数据）");
+            Assert.AreEqual(NonEmptyCount(cells), expected, "每个非空鱼轮廓格都应写入");
             Assert.AreEqual(expected, CountType(world, Biomass), "场上生物质格数应恰等于鱼轮廓格数");
+        }
+
+        /// <summary>
+        /// pivot 回归（修掉 docs §22 的已知不一致）：鱼切片 pivot = 底边上 5px，物质化按
+        /// <c>floor(Y) − PivotRowCells</c> 对齐 ⇒ 鱼尸体竖直占据
+        /// <c>[floor(Y) + MinOpaqueRow − PivotRowPixels, floor(Y) + MaxOpaqueRow − PivotRowPixels] = floor(Y)+0..3</c>，
+        /// 即**贴着渲染身体**，不再比可见身体高 5 格。
+        /// </summary>
+        [Test]
+        public void Materialize_Fish_CorpseAlignsWithRenderedBody()
+        {
+            ParticleWorld world = NewWorld();
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 20f);
+            fish.Kill(CreatureDeathCause.Unknown);
+            StepCreatures(world, creatures);
+
+            int minY = int.MaxValue;
+            int maxY = int.MinValue;
+            for (int y = 0; y < world.Height; y++)
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    if (world.GetCell(x, y).typeId != Biomass)
+                    {
+                        continue;
+                    }
+
+                    if (y < minY)
+                    {
+                        minY = y;
+                    }
+
+                    if (y > maxY)
+                    {
+                        maxY = y;
+                    }
+                }
+            }
+
+            Assert.AreNotEqual(int.MaxValue, minY, "鱼死后应出现生物质");
+
+            int floorY = Mathf.FloorToInt(20f);
+            Assert.AreEqual(
+                floorY + CreatureArtData.Fish.MinOpaqueRow - CreatureArtData.Fish.PivotRowPixels,
+                minY,
+                "鱼尸体底行应为 floor(Y) + MinOpaqueRow - PivotRowPixels");
+            Assert.AreEqual(
+                floorY + CreatureArtData.Fish.MaxOpaqueRow - CreatureArtData.Fish.PivotRowPixels,
+                maxY,
+                "鱼尸体顶行应为 floor(Y) + MaxOpaqueRow - PivotRowPixels");
+            Assert.AreEqual(20, minY, "鱼尸体应贴合渲染身体底边（不再高 5 格）");
+            Assert.AreEqual(23, maxY, "鱼尸体顶应到 floor(Y)+3");
         }
 
         /// <summary>
@@ -262,12 +417,14 @@ namespace TapTap2026.Tests
         [Test]
         public void Materialize_CoversSolidsAndRelocatesWater()
         {
-            // 场景 A：轮廓内三格分别放石头 / 水 / 石头（都落在非空的轮廓格上）。
+            sbyte[] cells = RabbitOutline();
+
+            // 场景 A：轮廓内三格分别放石头 / 水 / 石头（都落在非空的轮廓格上；baseX=8,baseY=20）。
             ParticleWorld world = NewWorld();
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            world.Set(15, 20, Stone);   // baseX=8,baseY=20 ⇒ dx=7,dy=0（profile 值 1）
-            world.Set(13, 22, Water);   // dx=5,dy=2（profile 值 2）
-            world.Set(12, 23, Stone);   // dx=4,dy=3（profile 值 2）
+            world.Set(16, 20, Stone);   // dx=8,dy=0（非空轮廓格）
+            world.Set(15, 21, Water);   // dx=7,dy=1（非空轮廓格）
+            world.Set(14, 23, Stone);   // dx=6,dy=3（非空轮廓格）
 
             int waterBefore = CountType(world, Water);
             Assert.AreEqual(1, waterBefore, "摆放后场上恰有一格水");
@@ -275,16 +432,16 @@ namespace TapTap2026.Tests
             KillRabbitAt(world, creatures, 16f, 20f, CreatureDeathCause.Unknown);
 
             // 地形固体（石）直写：压死的尸体必须可见。
-            Assert.AreEqual(Biomass, world.GetCell(15, 20).typeId, "地形固体（石）应被尸体直接覆盖");
-            Assert.AreEqual(Biomass, world.GetCell(12, 23).typeId, "地形固体（石）应被尸体直接覆盖");
+            Assert.AreEqual(Biomass, world.GetCell(16, 20).typeId, "地形固体（石）应被尸体直接覆盖");
+            Assert.AreEqual(Biomass, world.GetCell(14, 23).typeId, "地形固体（石）应被尸体直接覆盖");
             // 水格先腾空再写。
-            Assert.AreEqual(Biomass, world.GetCell(13, 22).typeId, "水格应先把水挪走后被尸体覆盖");
+            Assert.AreEqual(Biomass, world.GetCell(15, 21).typeId, "水格应先把水挪走后被尸体覆盖");
 
-            // 水挪到「按候选顺序第一格」：从 (13,22) 起，候选 (0,+1)=(13,23)、(0,+2)=(13,24) 都落在
-            // 轮廓非空格上（稍后要被生物质覆盖，不作合格目标），下一个 (-1,0)=(12,22) 是界内空气且非轮廓格 ⇒ 落这里。
-            Assert.AreEqual(Water, world.GetCell(12, 22).typeId, "水应按候选顺序挪到具体格 (12,22)");
+            // 水挪到「按候选顺序第一格」：从 (15,21) 起，(0,+1)/(0,+2)/(-1,0)/(1,0) 都落在轮廓非空格上
+            // （稍后要被生物质覆盖，不作合格目标），下一个 (-2,0)=(13,21) 是界内空气且非轮廓格 ⇒ 落这里。
+            Assert.AreEqual(Water, world.GetCell(13, 21).typeId, "水应按候选顺序挪到具体格 (13,21)");
             Assert.AreEqual(waterBefore, CountType(world, Water), "水必须先挪后写：总量守恒（一格不少）");
-            Assert.AreEqual(48, CountType(world, Biomass), "三档下轮廓在界内全部 48 格都应写成生物质");
+            Assert.AreEqual(NonEmptyCount(cells), CountType(world, Biomass), "三档下轮廓在界内全部非空格都应写成生物质");
 
             // 场景 B：把兔子贴到左边界，轮廓左半越界。
             ParticleWorld edgeWorld = NewWorld();
@@ -295,13 +452,12 @@ namespace TapTap2026.Tests
 
             // floor(0.75) - 8 = -8 ⇒ dx 0..7 全部越界。
             int baseX = Mathf.FloorToInt(0.75f) - BiomassProfile.Size / 2;
-            int baseY = Mathf.FloorToInt(0f);
-            int expected = NonEmptyInBounds(BiomassProfile.Rabbit, baseX, baseY, edgeWorld.Width, edgeWorld.Height);
+            int baseY = Mathf.FloorToInt(0f) - BiomassProfile.Rabbit.PivotRowCells;
+            int expected = NonEmptyInBounds(cells, baseX, baseY, edgeWorld.Width, edgeWorld.Height);
 
-            Assert.AreEqual(29, expected, "兔子轮廓在左边界外应只剩 29 格落界内");
             Assert.AreEqual(expected, CountType(edgeWorld, Biomass), "越界格跳过，其余照常写入");
 
-            // 轮廓左半（dx 0..7）越界被跳过：界内最小列 x=0 对应轮廓 dx=8，该列应恰有 9 格落地。
+            // 轮廓左半（dx 0..7）越界被跳过：界内最小列 x=0 对应轮廓 dx=8，该列应恰有它的非空格数落地。
             int columnZero = 0;
             for (int y = 0; y < edgeWorld.Height; y++)
             {
@@ -311,12 +467,12 @@ namespace TapTap2026.Tests
                 }
             }
 
-            Assert.AreEqual(9, columnZero, "越界跳过：界内最小列（x=0）应恰为轮廓 dx=8 的 9 格");
+            Assert.AreEqual(ColumnCount(cells, 8), columnZero, "越界跳过：界内最小列（x=0）应恰为轮廓 dx=8 的非空格数");
         }
 
         /// <summary>
         /// 「密闭水囊」：把尸体轮廓上的一格水在**半径 2 内**用石头围死 ⇒ 水无处可挪，该格保留水、不写生物质
-        /// （写入数 = 48 − 被围住格数）；水总量不变（绝不删水）；且全程不抛异常。
+        /// （写入数 = 轮廓非空格数 − 被围住格数）；水总量不变（绝不删水）；且全程不抛异常。
         /// </summary>
         [Test]
         public void Materialize_SealedWaterPocket_KeepsWaterAndSkipsCell()
@@ -324,9 +480,9 @@ namespace TapTap2026.Tests
             ParticleWorld world = NewWorld();
             CreatureWorld creatures = new CreatureWorld(SeedValue);
 
-            // 选一处轮廓非空格放水：(16,28) ⇔ baseX=8,baseY=20 ⇒ dx=8,dy=8（profile 值 2）。
+            // 选一处轮廓非空格放水：(16,24) ⇔ baseX=8,baseY=20 ⇒ dx=8,dy=4（非空轮廓格）。
             const int waterX = 16;
-            const int waterY = 28;
+            const int waterY = 24;
             world.Set(waterX, waterY, Water);
 
             // 半径 2（含斜角）内除水自己那格外全填石头：任何候选空位都是石头 ⇒ 挪不动、原地保留。
@@ -350,7 +506,7 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(Water, world.GetCell(waterX, waterY).typeId, "被围死的水格仍应是水（挪不动就跳过，绝不删水）");
             Assert.AreEqual(waterBefore, CountType(world, Water), "水袋围死时水总量不变");
-            Assert.AreEqual(48 - 1, CountType(world, Biomass), "被围住的一格未写成生物质，其余 47 格照常写入");
+            Assert.AreEqual(NonEmptyCount(RabbitOutline()) - 1, CountType(world, Biomass), "被围住的一格未写成生物质，其余非空格照常写入");
         }
 
         /// <summary>
@@ -389,7 +545,13 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, creatures.Count, "死亡实体应已被清扫");
 
             Assert.Greater(CountType(world, Biomass), 0, "压死后应出现生物质");
-            Assert.AreEqual(48, CountType(world, Biomass), "轮廓在界内全部 48 格都应写成生物质");
+            int expected = NonEmptyInBounds(
+                RabbitOutline(),
+                Mathf.FloorToInt(rabbit.X) - BiomassProfile.Size / 2,
+                Mathf.FloorToInt(rabbit.Y) - BiomassProfile.Rabbit.PivotRowCells,
+                world.Width,
+                world.Height);
+            Assert.AreEqual(expected, CountType(world, Biomass), "轮廓在界内全部非空格都应写成生物质");
 
             // 原覆盖身体的那几格现在是生物质（而不是沙）——地形固体直写使尸体可见。
             // 位置取死亡后的实机坐标（清扫不清零 X/Y），保证与物质化映射同源。
@@ -412,16 +574,21 @@ namespace TapTap2026.Tests
         {
             ParticleWorld world = NewWorld();
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            world.Set(15, 20, Fire);       // baseX=8,baseY=20 ⇒ dx=7,dy=0（profile 值 1）
-            world.Set(14, 21, TreeTrunk);  // dx=6,dy=1（profile 值 2）
-            world.Set(17, 26, Biomass);    // dx=9,dy=6（profile 值 1）
+            world.Set(16, 20, Fire);       // baseX=8,baseY=20 ⇒ dx=8,dy=0（非空轮廓格）
+            world.Set(15, 21, TreeTrunk);  // dx=7,dy=1（非空轮廓格）
+            world.Set(14, 23, Biomass);    // dx=6,dy=3（非空轮廓格）
 
             KillRabbitAt(world, creatures, 16f, 20f, CreatureDeathCause.Unknown);
 
-            Assert.AreEqual(Fire, world.GetCell(15, 20).typeId, "火不应被尸体覆盖（跳过档）");
-            Assert.AreEqual(TreeTrunk, world.GetCell(14, 21).typeId, "树干不应被尸体覆盖（跳过档）");
-            Assert.AreEqual(Biomass, world.GetCell(17, 26).typeId, "已有生物质不应被尸体覆盖（保持原格、不重抽颜色）");
-            Assert.AreEqual(48 - 3 + 1, CountType(world, Biomass), "跳过火 / 树干 / 已有生物质：新写 45 格 + 原有 1 格 = 46");
+            Assert.AreEqual(Fire, world.GetCell(16, 20).typeId, "火不应被尸体覆盖（跳过档）");
+            Assert.AreEqual(TreeTrunk, world.GetCell(15, 21).typeId, "树干不应被尸体覆盖（跳过档）");
+            Assert.AreEqual(Biomass, world.GetCell(14, 23).typeId, "已有生物质不应被尸体覆盖（保持原格、不重抽颜色）");
+
+            sbyte[] cells = RabbitOutline();
+            Assert.AreEqual(
+                NonEmptyCount(cells) - 3 + 1,
+                CountType(world, Biomass),
+                "跳过火 / 树干 / 已有生物质：新写（非空格 − 3）格 + 原有 1 格");
         }
 
         /// <summary>
@@ -463,7 +630,7 @@ namespace TapTap2026.Tests
                 Assert.AreSame(rabbit, reported, $"{cause}：死亡事件应携带该实体");
                 Assert.AreEqual(cause, reportedCause, $"{cause}：死亡事件应携带原死因");
                 Assert.AreEqual(0, creatures.Count, $"{cause}：清扫后实体表应为空");
-                Assert.AreEqual(48, CountType(world, Biomass), $"{cause}：尸体应已按轮廓物质化（死因不参与轮廓选择）");
+                Assert.AreEqual(NonEmptyCount(RabbitOutline()), CountType(world, Biomass), $"{cause}：尸体应已按轮廓物质化（死因不参与轮廓选择）");
             }
         }
 
@@ -503,7 +670,7 @@ namespace TapTap2026.Tests
             rabbit.Kill(CreatureDeathCause.Starved);
             StepFrame(world, creatures);
 
-            Assert.AreEqual(48, CountType(world, Biomass), "死亡帧应先完成物质化");
+            Assert.AreEqual(NonEmptyCount(RabbitOutline()), CountType(world, Biomass), "死亡帧应先完成物质化");
 
             // 落稳 31 帧 + 每格 1/200 的腐败门：6000 帧后每格未腐败概率 ≈ (199/200)^6000 ≈ e^-30。
             for (int i = 0; i < 6000; i++)

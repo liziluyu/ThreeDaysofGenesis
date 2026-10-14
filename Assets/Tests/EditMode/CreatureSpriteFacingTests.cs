@@ -1,7 +1,6 @@
 using System.IO;
 using NUnit.Framework;
 using TapTap2026.Rendering;
-using TapTap2026.Simulation;
 using UnityEngine;
 
 namespace TapTap2026.Tests
@@ -81,77 +80,8 @@ namespace TapTap2026.Tests
             AssertEveryFrameFacesLeft(FishSpriteFile);
         }
 
-        /// <summary>
-        /// 美术尺度守卫：鱼 PNG 各切片的不透明像素行数最大值应等于 <see cref="FishBrain.ArtHeightCells"/>。
-        /// 1 源像素 = 1 格 ⇒ 该值就是「图形底边之上多少格是可见身体」，也是鱼下潜判定带
-        /// （<see cref="FishBrain.SurfaceClearanceCells"/>）的依据。换了美术 / 改了图案高度必须同步改该常量。
-        /// </summary>
-        [Test]
-        public void FishArtHeight_MatchesBrainClearance()
-        {
-            string path = Application.dataPath + FishSpriteFile;
-            if (!File.Exists(path))
-            {
-                Assert.Fail("美术资源缺失，无法核对图案高度：" + path);
-            }
-
-            var texture = new Texture2D(2, 2);
-            try
-            {
-                if (!texture.LoadImage(File.ReadAllBytes(path)))
-                {
-                    Assert.Fail("PNG 解码失败（LoadImage 返回 false）：" + path);
-                }
-
-                Assert.AreEqual(FrameSize, texture.height, "纹理高度不是单帧边长：" + path);
-                Assert.AreEqual(0, texture.width % FrameSize, "纹理宽度不是帧宽的整数倍：" + path);
-                Assert.AreEqual(FrameCount, texture.width / FrameSize, "帧数与预期不符：" + path);
-
-                Color32[] pixels = texture.GetPixels32();
-                int maxRows = 0;
-                for (int frame = 0; frame < FrameCount; frame++)
-                {
-                    int rows = OpaqueRowCount(pixels, texture.width, texture.height, frame);
-                    if (rows > maxRows)
-                    {
-                        maxRows = rows;
-                    }
-                }
-
-                Assert.AreEqual(
-                    FishBrain.ArtHeightCells,
-                    maxRows,
-                    "鱼图案实测高度与 FishBrain.ArtHeightCells 不符：" + path +
-                        "（若换了美术或改了图案尺度，请同步改该常量）。");
-            }
-            finally
-            {
-                Object.DestroyImmediate(texture);
-            }
-        }
-
-        /// <summary>统计某一帧里含不透明像素的行数（GetPixels32 以左下为原点，行距即图案高度）。</summary>
-        private static int OpaqueRowCount(Color32[] pixels, int width, int height, int frame)
-        {
-            int frameLeft = frame * FrameSize;
-            int frameRight = frameLeft + FrameSize;
-
-            int rows = 0;
-            for (int y = 0; y < height; y++)
-            {
-                int row = y * width;
-                for (int x = frameLeft; x < frameRight; x++)
-                {
-                    if (pixels[row + x].a != 0)
-                    {
-                        rows++;
-                        break;
-                    }
-                }
-            }
-
-            return rows;
-        }
+        // 原 FishArtHeight_MatchesBrainClearance（美术↔常量同步）已删除：其漂移守卫职责由
+        // CreatureArtDataTests 接替（现场从 PNG 复算 CreatureArtData 并对拍）。
 
         /// <summary>默认配置与美术约定一致：头朝左 ⇒ <see cref="CreatureRenderer.SpriteFacesLeft"/> 默认 true。</summary>
         [Test]
