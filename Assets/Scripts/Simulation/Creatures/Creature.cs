@@ -124,6 +124,13 @@ namespace TapTap2026.Simulation
         /// <summary>目标竖直速度（格 / 逻辑帧）；仅对 <see cref="SwimAccel"/> 非零的水生物种生效，离水后自动失效。</summary>
         public float IntentVy;
 
+        /// <summary>竖直带记忆槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
+        /// 鱼用它把「已进入下潜带」锁存成 Schmitt 滞回（<see cref="FishBrain.ThinkSwim"/>），使浅水里
+        /// 「触底 / 触面」不会逐思考帧来回切换；基类只在 <see cref="ApplyLocomotion"/> 第 ⓪b 段把它当作
+        /// 「本个体已锁潜」这一事实的门控位消费（锁潜 + 贴地 ⇒ 停住水平意图，浅水伏底）。
+        /// 不写它的物种恒为 false ⇒ 零行为差异、零开销。</summary>
+        public bool VerticalDiveLatched;
+
         /// <summary>起跳请求：运动层在 <see cref="IsGrounded"/> 时消费成 <see cref="VelocityY"/> 脉冲并清零。</summary>
         public bool WantHop;
 
@@ -297,7 +304,7 @@ namespace TapTap2026.Simulation
         /// <remarks>
         /// <para>与 Brain.Think 的分工：Think 是低频「决策」（2 Hz），这里是无条件的高频「反射」（20 Hz）。
         /// 除状态计时器递减与朝向迟滞外，全部条目都对世界只读、零分配、无随机数、无时间。</para>
-        /// <para>顺序即语义：先逼近意图 → 再按 <see cref="IntentVx"/> 定朝向 → 悬崖守卫可能在探到前方无支撑时
+        /// <para>顺序即语义：**先消费「锁潜 + 贴地」的伏底门控**（⓪b）→ 再逼近意图 → 再按 <see cref="IntentVx"/> 定朝向 → 悬崖守卫可能在探到前方无支撑时
         /// 反转意图 → 若**上一步物理的横向积分确实被挡住**则按墙探针三态分流（一格高的坎 → 贴地跨上去；
         /// 不可翻越 → 反转意图；探针答「无墙」→ 不动），若被**世界边界**夹住则掉头（边界处探针必答「无墙」，
         /// 不能与开阔地混同，否则永远顶着边界） → 消费起跳脉冲 → 最后统一做环境致死判定（⑥ 火 / ⑦ 掩埋属
@@ -310,6 +317,17 @@ namespace TapTap2026.Simulation
             if (StateTicksLeft > 0)
             {
                 StateTicksLeft--;
+            }
+
+            // ⓪b 浅水伏底：Brain 把「本个体已锁潜」记在 VerticalDiveLatched 上，本帧又确实贴地 ⇒ 停住水平意图。
+            //     为什么放在 ① 之前：水平意图归零后 ① 让速度按 MoveAccel 收到 0、② 因此不再翻朝向、
+            //     ③ 悬崖守卫与 ④ 撞墙掉头都因 |IntentVx| = 0 而不触发——「伏底」是一个整体行为，不是逐段打补丁。
+            //     语义（鱼）：浅水里贴底的鱼伏底不动，不再沿坑洼池底爬行，自然也不会撞上每一个一格坎掉头
+            //     （鱼 CanStepUp = false，旧行为在浅池里就是「爬 → 撞坎 → 掉头」来回抽，见 FishShallowWaterTests）。
+            //     基类不解释该位的含义，只把它当作 Brain 写下的一个门控位（同 AiState）；不写它的物种恒 false。
+            if (VerticalDiveLatched && IsGrounded)
+            {
+                IntentVx = 0f;
             }
 
             // ① 意图逼近：水平恒做；竖直仅在水里、且只有水生物种的 SwimAccel 非零才生效（离水交给重力）。

@@ -1034,30 +1034,35 @@ namespace TapTap2026.Tests
 
         // ============================== 11. 鱼的竖直行为（中性浮力） ==============================
 
-        /// <summary>水中的鱼跑 200 帧，身体中心格始终不越出水面之上 1 格——
-        /// 中性浮力下中段 <c>IntentVy = 0</c>、鱼保持入水深度，既不上浮出水也不沉底。</summary>
+        /// <summary>巡游中的鱼跑 200 帧，**可见身体始终整条没入水面之下**——身体 = 世界行
+        /// <c>floor(Y) + 0 .. floor(Y) + BodyTopOffsetCells</c>（生成美术数据：切片 pivot 贴脚底、共 4 格高），
+        /// 水面判定探的就是「体顶之上那一格」，因此「不出水面」与「体顶之上是水」是同一件事。
+        /// 中性浮力下中段 <c>IntentVy = 0</c>、鱼保持出生深度，既不上浮出水也不沉底。</summary>
         [Test]
-        public void FishCruise_CenterNeverRisesMoreThanOneCellAboveSurface()
+        public void FishCruise_BodyStaysUnderWater_AndHoldsDepth()
         {
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 15, Water);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
             FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 8f);
 
-            int surfaceRow = 15; // 水占 0..15 行，水面上方第一格是第 16 行
+            int lastWaterRow = 15; // 水占 0..15 行，水面上方第一格是第 16 行
             for (int i = 0; i < 200; i++)
             {
                 creatures.Step(world);
-                int centerRow = (int)(fish.Y + fish.Height * 0.5f);
-                Assert.LessOrEqual(centerRow, surfaceRow + 1, "鱼中心格不应越出水面之上 1 格");
+                Assert.LessOrEqual(
+                    Mathf.FloorToInt(fish.Y) + FishBrain.BodyTopOffsetCells,
+                    lastWaterRow,
+                    "鱼体顶不应越出水面（第 " + i + " 帧）");
             }
 
+            Assert.LessOrEqual(Mathf.Abs(fish.Y - 8f), 1f, "中段的鱼应保持出生深度（净竖直加速度为 0）");
             Assert.AreEqual(1, creatures.Count, "巡游中的鱼不应被清扫");
         }
 
         /// <summary>水体中段的鱼（中性浮力）：跑 300 帧只靠意图保持深度，不因残余浮力上浮到水面。
-        /// 新规则下真正的「中段」是中心格上方 8 格都为水：水占 0..15 行，spawn Y = 5 ⇒ cy = 5，
-        /// cy+8 = 13 仍在水里，不触发下潜。</summary>
+        /// 新规则下「中段」= 体顶之上那一格是水、且体顶之上连续 3 格也全是水：水占 0..15 行，
+        /// spawn Y = 5 ⇒ 体顶行 = 8、探针行 9 → 12 全在水里，既不锁潜也不上浮。</summary>
         [Test]
         public void Fish_MidWater_HoldsDepth_AndDoesNotRiseToSurface()
         {
@@ -1072,13 +1077,15 @@ namespace TapTap2026.Tests
                 "中段的鱼应保持入水深度（净竖直加速度为 0），不该浮向水面");
             Assert.LessOrEqual(fish.Y, 6f,
                 "中段的鱼不应升到接近水面（旧浮力常数会一路浮到 ≈15.75）");
+            Assert.IsFalse(fish.VerticalDiveLatched, "体顶之上水量充足时不该锁潜");
             Assert.LessOrEqual(fish.Y + FishBrain.ArtHeightCells, 16f,
-                "整条鱼图案应留在水下（底边 + 图案高度 7 ≤ 水面行之下）");
+                "整条鱼身体应留在水下（底边 + 身体高度 4 ≤ 水面行之下）");
             Assert.IsTrue(fish.Alive, "保持深度的鱼不应被清扫");
         }
 
-        /// <summary>近水面的鱼应主动深潜到「中心格上方 8 格全为水」的深度带后停住——不再停在近水面，
-        /// 也不一路沉底。带内即 cy ≤ 7（Y &lt; 7.75），故稳态 Y 落在约 [7, 7.75)。</summary>
+        /// <summary>近水面的鱼应主动深潜到「体顶之上连续 3 格全为水」的休息带后停住——不再停在近水面，
+        /// 也不一路沉底。解锁带即 <c>floor(Y) + BodyTopOffsetCells + DiveUnlockMarginCells ≤ 15</c> ⇔
+        /// <c>floor(Y) ≤ 9</c>，故稳态 Y ∈ [9, 10)（思考周期 10 帧 × 0.04 格/帧 ⇒ 最多多降 0.36 格，实测 ≈9.6）。</summary>
         [Test]
         public void Fish_NearSurface_DivesInsteadOfRising()
         {
@@ -1089,10 +1096,11 @@ namespace TapTap2026.Tests
 
             RunSteps(world, creatures, 400);
 
-            Assert.LessOrEqual(fish.Y, 9f, "近水面的鱼应真的深潜到新判定带内，而不是停在近水面");
-            Assert.GreaterOrEqual(fish.Y, 7f, "鱼应停在判定带内，而不是一路沉底");
+            Assert.LessOrEqual(fish.Y, 10f, "近水面的鱼应真的深潜到休息带内（Y < 10），而不是停在近水面");
+            Assert.GreaterOrEqual(fish.Y, 9f, "鱼应停在休息带内，而不是一路沉底");
+            Assert.IsFalse(fish.VerticalDiveLatched, "降到休息带后应解锁，改由中性浮力保持深度");
             Assert.LessOrEqual(fish.Y + FishBrain.ArtHeightCells, 16f,
-                "整条鱼图案应留在水下（底边 + 图案高度 7 ≤ 水面行之下）");
+                "整条鱼身体应留在水下（底边 + 身体高度 4 ≤ 水面行之下）");
             Assert.IsTrue(fish.Alive, "下潜中的鱼不应被清扫");
 
             float settledY = fish.Y;
@@ -1103,7 +1111,8 @@ namespace TapTap2026.Tests
 
         /// <summary>贴底的鱼应主动上浮离开水底（从 spawn Y = 0.2 抬到 ≈1.79），离开后停在停机带内而不升到水面。
         /// 停机带即 <c>nearBottom</c> 消失处：水占 0..15 行、<c>cy = floor(Y + 0.25)</c>，
-        /// <c>cy ≥ 2</c>（⇔ Y ≥ 1.75）时 <c>cy−1 / cy−2</c> 都在水里，上浮意图归零 ⇒ 稳态 Y ∈ [1.75, 2.75)。</summary>
+        /// <c>cy ≥ 2</c>（⇔ Y ≥ 1.75）时 <c>cy−1 / cy−2</c> 都在水里，上浮意图归零 ⇒ 稳态 Y ∈ [1.75, 2.75)；
+        /// 这里体顶之上水量充足（既不锁潜也不会触面），与上浮互不干扰。</summary>
         [Test]
         public void Fish_NearBottom_RisesAwayFromFloor()
         {
@@ -1116,11 +1125,12 @@ namespace TapTap2026.Tests
 
             Assert.GreaterOrEqual(fish.Y, 1.7f, "贴底的鱼应上浮离开水底（从 0.2 抬到停机带 ≥1.75）");
             Assert.LessOrEqual(fish.Y, 3f, "上浮后应停在停机带内，而不是一路升到水面");
+            Assert.IsFalse(fish.VerticalDiveLatched, "池底处体顶之上水量充足（3 格全水）⇒ 不该锁潜");
             Assert.IsTrue(fish.Alive, "上浮中的鱼不应被清扫");
         }
 
-        /// <summary>用户的原始场景：鱼从空中投放，落水后应停在新判定带（中心格上方 8 格全为水），
-        /// 使整条 7 格高的图案没入水下，而不是像旧规则那样停在中心格 ≈8、半条身体露在水面之上。</summary>
+        /// <summary>用户的原始场景：鱼从空中投放，落水后应先锁潜再深潜到「体顶之上连续 3 格全为水」的休息带，
+        /// 使整条 4 格高的身体没入水下，而不是像旧规则那样停在近水面。实测稳态 Y ≈9.6~10。</summary>
         [Test]
         public void Fish_DroppedFromAir_SettlesFullySubmerged()
         {
@@ -1133,8 +1143,9 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(fish.Alive, "落水后应存活，不该搁浅或溺死");
             Assert.LessOrEqual(fish.Y + FishBrain.ArtHeightCells, 16f,
-                "落水后整条鱼图案应没入水下（底边 + 图案高度 7 ≤ 水面行之下）");
-            Assert.LessOrEqual(fish.Y, 10f, "落水后应停在新判定带内，而不是悬在近水面");
+                "落水后整条鱼身体应没入水下（底边 + 身体高度 4 ≤ 水面行之下）");
+            Assert.LessOrEqual(fish.Y, 10f, "落水后应停在休息带内（Y < 10），而不是悬在近水面");
+            Assert.GreaterOrEqual(fish.Y, 9f, "落水后应停住，而不是一路沉到池底");
         }
 
         // ============================== 12. Flee 退出 ==============================

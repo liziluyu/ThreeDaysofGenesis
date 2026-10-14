@@ -6,12 +6,22 @@ namespace TapTap2026.Simulation
     /// <remarks>
     /// <para><b>状态（<see cref="Creature.AiState"/>）：</b>0=Swim（水中巡游）、1=Stranded（离水搁浅，只能扑腾）。</para>
     /// <para><b>节奏：</b>只应被 <see cref="Creature.ShouldThink"/> 放行后以 2 Hz 调用；RNG 只在思考帧消耗。</para>
-    /// <para><b>竖直行为：</b>中心格上方 <see cref="SurfaceClearanceCells"/> 格内有非水（含越界）就下潜，
-    /// 否则离底 ≤ 2 格上浮，再否则 <c>IntentVy = 0</c>——鱼是
-    /// **中性浮力**（浮力 == 重力，净竖直加速度为 0），意图为 0 时竖直速度被水阻衰减并**保持当前深度**，
-    /// 鱼因此停在水体中段。下潜带 = 图案高度 + 1 格余量：上方水量不足 8 格就下潜 ⇒ 鱼稳定停在
-    /// 「中心格 ≤ 单面下 7 格」，图案（<see cref="ArtHeightCells"/> = 7 格）整条没入水下。
-    /// 代价：水深 &lt; 8 格时它会贴底（那时图案必然出水，无解），且它再也不会主动靠到水面。</para>
+    /// <para><b>竖直行为（体顶单格探测 + 下潜锁存）：</b>可见身体铺在世界行 <c>floor(Y) + 0 .. floor(Y) + BodyTopOffsetCells</c>
+    /// （偏移由生成美术数据给出）。体顶之上**那一格**不是水（含越界）即视为触面 → 置
+    /// <see cref="Creature.VerticalDiveLatched"/> 并下潜；体顶之上**连续 <see cref="DiveUnlockMarginCells"/> 格全是水** → 解锁。
+    /// 解锁后离开池底 ≤ 2 格才上浮，再否则 <c>IntentVy = 0</c>——鱼是**中性浮力**
+    /// （浮力 == 重力，净竖直加速度为 0），意图为 0 时竖直速度被水阻衰减并**保持当前深度**，鱼因此停在水体中段。
+    /// 两条阈值之间因此有 <see cref="DiveUnlockMarginCells"/> 格宽的滞回窗口，水深够的开阔池里鱼会一路下潜到
+    /// 「体顶之上仍有 3 格水」的深度停住；水深 d ≤ 6 的池连身体加余量都摆不下，鱼触面后永久锁潜贴底（那时图案
+    /// 出水无解），并由运动层把它钉成「浅水伏底」不再爬行。</para>
+    /// <para><b>为什么必须是锁存（2026-10-14 修复）：</b>旧实现每个思考帧都拿「盒中心上方 8 格内有没有非水」实时比较，
+    /// 于是「下潜带」与「近底上浮带」在浅水里重叠或紧邻：水深 d ≤ 8 时下潜恒真（贴底趴着），d ∈ {9,10} 时两条带
+    /// 只差一格 ⇒ 逐思考帧在「上浮 / 下潜」之间交替（实测 600 帧换号 50~52 次）。锁存把下潜变成有记忆的状态，
+    /// 只剩「锁潜 → 解锁」一条单向通道，交替消失。</para>
+    /// <para><b>水平行为（墙体感知换向）：</b>先探当前方向前方 <see cref="AheadProbeCells"/> 格（体高行内）是否全水：
+    /// 畅通就保持原方向（**不摇骰**，顺带为刚出生 / 刚停下的个体起步），只有前方受阻才照旧 1/3 摇骰换向。
+    /// 旧实现无条件摇骰，开阔水域里 600 帧抽 12 次（纯骰子，与池形无关）；叠加基类的「锁潜 + 贴地 ⇒ 停住水平意图」
+    /// 后，浅水贴底的鱼不再沿坑洼池底爬行撞坎掉头（实测狭池带坎 600 帧 21 次 → 0 次）。</para>
     /// <para><b>搁浅：</b>离水后只能每隔 15~35 帧扑腾一跳；连续离水超过 <see cref="Creature.BeachedTicksLimit"/>
     /// 帧由运动层判搁浅而死。</para>
     /// <para><b>v1 非目标：</b>不吃草、不繁殖、不寻路。</para>
@@ -46,14 +56,34 @@ namespace TapTap2026.Simulation
         /// （≈0.8 格/秒 @20 逻辑帧/秒，与水平巡游同量级）。</summary>
         public const float VerticalSpeed = 0.1f;
 
-        /// <summary>鱼图案身高（格）：`Assets/Images/Animals/fish/1/fish.png` 的 4 帧切片都是 11×7 px，
-        /// 且 1 源像素 = 1 格 ⇒ 图形底边（= 碰撞盒底边）之上 7 格都是可见身体。
-        /// **改美术尺度或换图时要同步本值**：<c>CreatureSpriteFacingTests</c> 有一条从 PNG 实测的守卫
-        /// （取各切片不透明像素行数最大值断言等于本值）。</summary>
-        public const int ArtHeightCells = 7;
+        /// <summary>鱼可见身体的顶行相对碰撞盒底边的偏移（格）：由**生成美术数据**算出
+        /// （<c>MaxOpaqueRow − PivotRowPixels</c> ＝ 8 − 5 ＝ 3）。切片 pivot 贴碰撞盒底边（脚底），
+        /// 因此身体铺在世界行 <c>floor(Y) + 0 .. floor(Y) + 本值</c>（尸体物质化同口径）。
+        /// 「水面判定 = 体顶 + 1」与「整条身体没入水下 ⇔ 体顶之上那一格是水」于是是同一件事。</summary>
+        public const int BodyTopOffsetCells = CreatureArtData.Fish.MaxOpaqueRow - CreatureArtData.Fish.PivotRowPixels;
 
-        /// <summary>下潜判定带（格）= 图案高度 + 1 格余量。中心格上方这么多格内只要有一格不是水就下潜。</summary>
-        public const int SurfaceClearanceCells = ArtHeightCells + 1;
+        /// <summary>鱼图案身高（格）：**生成数据**（<see cref="CreatureArtData.Fish"/>），不是手写常量——
+        /// 美术变更后跑 <c>Tools/Animals/Regenerate Creature Art Data</c> 重生成即可
+        /// （<c>CreatureArtDataTests</c> 会现场从 PNG 复算并对拍，忘重跑即红）。
+        /// 保留这个名字是为了给「图案高度」一个语义化的引用点。</summary>
+        public const int ArtHeightCells = CreatureArtData.Fish.HeightCells;
+
+        /// <summary>下潜锁存的**解锁余量**（格）：体顶之上连续这么多格全是水才解除锁潜；
+        /// 反过来，锁潜的海拔带 = 体顶之上水量 &lt; 本值。两条阈值之间因此有本值格宽的滞回窗口。
+        /// <para><b>选型（3）依据</b>：设池底固体行 = <c>b−1</c>、最上一格水 = <c>b+d−1</c>（水深 <c>d</c>），
+        /// 则贴底（<c>floor(Y) = b</c>）时解锁的条件是 <c>d ≥ BodyTopOffsetCells + 本值 + 1 = 本值 + 4</c>：
+        /// 本值 3 ⇒ <c>d ≥ 7</c>（池至少要给得起「4 格身体 + 3 格余量」），于是 <c>d ≤ 6</c> 的池触面即永久贴底
+        /// （那时图案出水本来也无解），<c>d ≥ 7</c> 才有稳态休息区。<b>实测（FishShallowWaterTests 各档 600 帧轨迹）</b>：
+        /// 本值 2 ⇒ <c>d ≤ 5</c> 贴底、<c>d ≥ 7</c> 休息，但 <b><c>d = 6</c> 反而抖起来</b>——上浮终点（<c>Y ≈ b+1.79</c>）
+        /// 正好落进只差 1 格的滞回窗口，鱼在池底与近水面之间来回（竖直意图 19 次换号 / 600 帧，其中后 300 帧 10 次，
+        /// 全程从未贴地）；本值 4 ⇒ 连 <c>d = 7</c> 这种明明给得起身体 + 3 格余量的池也被推进永久贴底档
+        /// （<c>groundedFrames = 516</c>、<c>endY = 3.0</c>、锁存恒真）。
+        /// 3 是三者中唯一「无任何抖动、且不牺牲最浅可休息池」的值：滞回窗口 3 格宽，贴底阈正好是
+        /// 「池给不给得起身体 + 3 格余量」这条物理上自洽的界线。</para></summary>
+        public const int DiveUnlockMarginCells = 3;
+
+        /// <summary>墙感知换向的前探格数：当前方向前方这么多格的**体高行内**全是水才认为畅通、保持原方向不摇骰。</summary>
+        public const int AheadProbeCells = 3;
 
         /// <summary>一次思考：在水里就巡游，离水就搁浅扑腾。</summary>
         /// <param name="creature">思考的鱼。</param>
@@ -71,46 +101,104 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>水中巡游：1/3 概率换向；按上方余量 / 离底距离决定下潜 / 上浮 / 自由漂。</summary>
+        /// <summary>水中巡游：前方畅通就保持当前方向、受阻才 1/3 摇骰换向；竖直按体顶单格探测 + 下潜锁存决定
+        /// 下潜 / 上浮 / 自由漂。</summary>
         private static void ThinkSwim(Creature creature, CreatureWorld creatures, ParticleWorld world)
         {
             creature.AiState = StateSwim;
 
-            // 水平：1/3 概率换向，其余思考帧保持当前方向（转向前先减速，因此不会瞬间镜像）。
-            if (creatures.NextInt(3) == 0)
+            int cx = FloorToInt(creature.X);
+            int footRow = FloorToInt(creature.Y);
+            int bodyTopRow = footRow + BodyTopOffsetCells;
+
+            // 水平：墙感知换向——先探当前方向前方 AheadProbeCells 格（体高行内）是不是全水。
+            // 畅通 ⇒ 保持原方向（顺带把刚出生 / 刚停住的 IntentVx = 0 起步成 SwimSpeed，方向取 Facing）；
+            // 受阻（坎 / 墙 / 岸 / 世界边界——越界一律记为受阻）⇒ 才回到 1/3 摇骰换向。
+            // **随机流变化点**：畅通路径不再消耗 RNG（旧实现每个思考帧无条件摇一次 NextInt(3)、命中再摇 NextInt(2)）；
+            // 换向路径的两次摇骰与旧实现逐字相同。鱼的方向因此与池形相关而与骰子无关——开阔水域不再左右抽。
+            int dir = creature.IntentVx > 0f ? 1 : (creature.IntentVx < 0f ? -1 : (creature.Facing >= 0 ? 1 : -1));
+            if (IsOpenAhead(world, cx, footRow, bodyTopRow, dir))
             {
-                int dir = creatures.NextInt(2) == 0 ? -1 : 1;
                 creature.IntentVx = dir * SwimSpeed;
             }
-
-            // 竖直：向上探 SurfaceClearanceCells 格（含越界，越界视为非水）。
-            int cx = FloorToInt(creature.X);
-            int cy = FloorToInt(creature.Y + creature.Height * 0.5f);
-            bool nearSurface = false;
-            for (int k = 1; k <= SurfaceClearanceCells; k++)
+            else if (creatures.NextInt(3) == 0)
             {
-                if (!CreatureTerrain.IsWater(world, cx, cy + k))
-                {
-                    nearSurface = true;
-                    break;
-                }
+                int newDir = creatures.NextInt(2) == 0 ? -1 : 1;
+                creature.IntentVx = newDir * SwimSpeed;
             }
 
-            bool nearBottom = !CreatureTerrain.IsWater(world, cx, cy - 1)
-                || !CreatureTerrain.IsWater(world, cx, cy - 2);
-
-            if (nearSurface)
+            // 竖直：体顶之上那一格不是水（含越界）即「触面」——锁存下潜；体顶之上连续 DiveUnlockMarginCells
+            // 格全是水才解锁。两条判据都在思考帧上读写同一个锁存位 ⇒ 天然是 Schmitt 滞回，中间那段海拔
+            // 保持上一次的结论（旧的实时比较在这里没有记忆，于是浅水里逐思考帧来回切，见类 remarks）。
+            if (!CreatureTerrain.IsWater(world, cx, bodyTopRow + 1))
             {
-                creature.IntentVy = -VerticalSpeed; // 上方余量不足 → 下潜（浅于 8 格时会一路贴底）
+                creature.VerticalDiveLatched = true;
+            }
+            else if (HasWaterAbove(world, cx, bodyTopRow + 1))
+            {
+                creature.VerticalDiveLatched = false;
+            }
+
+            int centerRow = FloorToInt(creature.Y + creature.Height * 0.5f);
+            bool nearBottom = !CreatureTerrain.IsWater(world, cx, centerRow - 1)
+                || !CreatureTerrain.IsWater(world, cx, centerRow - 2);
+
+            if (creature.VerticalDiveLatched)
+            {
+                creature.IntentVy = -VerticalSpeed; // 锁潜：一路下潜（浅到摆不下余量的池 ⇒ 永久贴底，运动层再让它伏底不动）
             }
             else if (nearBottom)
             {
-                creature.IntentVy = VerticalSpeed; // 近底 → 上浮
+                creature.IntentVy = VerticalSpeed; // 未锁潜且近底 → 抬离池底
             }
             else
             {
-                creature.IntentVy = 0f; // 中段 → 保持当前深度（中性浮力 ⇒ 无竖直驱动）
+                creature.IntentVy = 0f; // 自由漂：中性浮力保持当前深度
             }
+        }
+
+        /// <summary>当前方向前方 <see cref="AheadProbeCells"/> 格是否一路畅通：体高行（脚底行 .. 体顶行）内
+        /// 每一格都是水才算畅通；越界格探针一律回答「非水」，因此世界边界 / 岸边等价于受阻。</summary>
+        /// <param name="world">粒子世界（只读）。</param>
+        /// <param name="cx">脚底中点所在格 x。</param>
+        /// <param name="footRow">脚底行（<c>floor(Y)</c>）。</param>
+        /// <param name="bodyTopRow">体顶行（<c>footRow + BodyTopOffsetCells</c>）。</param>
+        /// <param name="dir">当前前进方向（+1 右 / −1 左）。</param>
+        /// <returns>前方 AheadProbeCells 格的体高行内全为水时 true。</returns>
+        private static bool IsOpenAhead(ParticleWorld world, int cx, int footRow, int bodyTopRow, int dir)
+        {
+            for (int k = 1; k <= AheadProbeCells; k++)
+            {
+                int x = cx + dir * k;
+                for (int row = footRow; row <= bodyTopRow; row++)
+                {
+                    if (!CreatureTerrain.IsWater(world, x, row))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>自 <paramref name="firstRow"/> 起连续 <see cref="DiveUnlockMarginCells"/> 格是否全是水
+        /// （解锁下潜锁存的判据）。</summary>
+        /// <param name="world">粒子世界（只读）。</param>
+        /// <param name="cx">脚底中点所在格 x。</param>
+        /// <param name="firstRow">起算行（体顶之上第一格）。</param>
+        /// <returns>连续 DiveUnlockMarginCells 格全为水时 true。</returns>
+        private static bool HasWaterAbove(ParticleWorld world, int cx, int firstRow)
+        {
+            for (int k = 0; k < DiveUnlockMarginCells; k++)
+            {
+                if (!CreatureTerrain.IsWater(world, cx, firstRow + k))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>搁浅：停住水平移动，按 15~35 帧的间隔扑腾一跳。</summary>
