@@ -124,6 +124,13 @@ namespace TapTap2026.Simulation
         /// <summary>目标竖直速度（格 / 逻辑帧）；仅对 <see cref="SwimAccel"/> 非零的水生物种生效，离水后自动失效。</summary>
         public float IntentVy;
 
+        /// <summary>竖直带记忆槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
+        /// 鱼用它把「已进入下潜带」锁存成 Schmitt 滞回（<see cref="FishBrain.ThinkSwim"/>），使浅水里
+        /// 「触底 / 触面」不会逐思考帧来回切换；基类只在 <see cref="ApplyLocomotion"/> 第 ⓪b 段把它当作
+        /// 「本个体已锁潜」这一事实的门控位消费（锁潜 + 贴地 ⇒ 停住水平意图，浅水伏底）。
+        /// 不写它的物种恒为 false ⇒ 零行为差异、零开销。</summary>
+        public bool VerticalDiveLatched;
+
         /// <summary>起跳请求：运动层在 <see cref="IsGrounded"/> 时消费成 <see cref="VelocityY"/> 脉冲并清零。</summary>
         public bool WantHop;
 
@@ -209,6 +216,14 @@ namespace TapTap2026.Simulation
             get { return 0f; }
         }
 
+        /// <summary>空中（非淹没）竖直加速度（格 / 逻辑帧²），<see cref="IntentVy"/> 的逼近速率；
+        /// 0 表示不主动飞（默认）。只有 <see cref="FliesInAir"/> 的物种在空中才会走它——
+        /// 与 <see cref="SwimAccel"/> 分管「水里 / 空中」两套竖直意图推进。</summary>
+        protected virtual float FlyAccel
+        {
+            get { return 0f; }
+        }
+
         /// <summary>起跳脉冲的竖直速度（格 / 逻辑帧）。</summary>
         protected virtual float HopVelocity
         {
@@ -221,6 +236,28 @@ namespace TapTap2026.Simulation
         /// 默认 false（多数物种不具备跨越能力）；兔子打开，鱼（搁浅时）不打开。
         /// </summary>
         protected virtual bool CanStepUp
+        {
+            get { return false; }
+        }
+
+        /// <summary>
+        /// 是否是**飞行物种**（鸟 true、默认 false）。打开后两处泛化：
+        /// ① <see cref="ApplyLocomotion"/> 的竖直意图逼近在空中（非淹没）也生效，走 <see cref="FlyAccel"/>；
+        /// ② <see cref="StepPhysics"/> 在空中**挂起重力**（净竖直驱动只有意图——同鱼在水里的中性浮力，
+        /// 因此鸟可悬停、不会被动坠落，落地 / 入水即恢复常规则）。
+        /// </summary>
+        protected virtual bool FliesInAir
+        {
+            get { return false; }
+        }
+
+        /// <summary>
+        /// 向下支撑扫描是否把**树叶 / 树干**也算作可栖面（鸟 true、默认 false）。
+        /// 打开时 <see cref="StepPhysics"/> 的**向下**积分与 <see cref="IsGrounded"/> 收尾改用
+        /// <see cref="CreatureTerrain.IsPerchable"/>；向上顶头、水平阻挡、掩埋、尸体覆盖一律仍走
+        /// <see cref="CreatureTerrain.IsSolid"/>（叶子只服务「站上去」，不挡上升 / 水平 / 不压死）。
+        /// </summary>
+        protected virtual bool PerchesOnFoliage
         {
             get { return false; }
         }
@@ -297,7 +334,7 @@ namespace TapTap2026.Simulation
         /// <remarks>
         /// <para>与 Brain.Think 的分工：Think 是低频「决策」（2 Hz），这里是无条件的高频「反射」（20 Hz）。
         /// 除状态计时器递减与朝向迟滞外，全部条目都对世界只读、零分配、无随机数、无时间。</para>
-        /// <para>顺序即语义：先逼近意图 → 再按 <see cref="IntentVx"/> 定朝向 → 悬崖守卫可能在探到前方无支撑时
+        /// <para>顺序即语义：**先消费「锁潜 + 贴地」的伏底门控**（⓪b）→ 再逼近意图 → 再按 <see cref="IntentVx"/> 定朝向 → 悬崖守卫可能在探到前方无支撑时
         /// 反转意图 → 若**上一步物理的横向积分确实被挡住**则按墙探针三态分流（一格高的坎 → 贴地跨上去；
         /// 不可翻越 → 反转意图；探针答「无墙」→ 不动），若被**世界边界**夹住则掉头（边界处探针必答「无墙」，
         /// 不能与开阔地混同，否则永远顶着边界） → 消费起跳脉冲 → 最后统一做环境致死判定（⑥ 火 / ⑦ 掩埋属
@@ -312,11 +349,27 @@ namespace TapTap2026.Simulation
                 StateTicksLeft--;
             }
 
-            // ① 意图逼近：水平恒做；竖直仅在水里、且只有水生物种的 SwimAccel 非零才生效（离水交给重力）。
+            // ⓪b 浅水伏底：Brain 把「本个体已锁潜」记在 VerticalDiveLatched 上，本帧又确实贴地 ⇒ 停住水平意图。
+            //     为什么放在 ① 之前：水平意图归零后 ① 让速度按 MoveAccel 收到 0、② 因此不再翻朝向、
+            //     ③ 悬崖守卫与 ④ 撞墙掉头都因 |IntentVx| = 0 而不触发——「伏底」是一个整体行为，不是逐段打补丁。
+            //     语义（鱼）：浅水里贴底的鱼伏底不动，不再沿坑洼池底爬行，自然也不会撞上每一个一格坎掉头
+            //     （鱼 CanStepUp = false，旧行为在浅池里就是「爬 → 撞坎 → 掉头」来回抽，见 FishShallowWaterTests）。
+            //     基类不解释该位的含义，只把它当作 Brain 写下的一个门控位（同 AiState）；不写它的物种恒 false。
+            if (VerticalDiveLatched && IsGrounded)
+            {
+                IntentVx = 0f;
+            }
+
+            // ① 意图逼近：水平恒做；竖直在水里走 SwimAccel（鱼），在空中走 FlyAccel（飞行物种鸟）。
+            //    两者都只对相应物种生效：兔子 SwimAccel / FlyAccel 皆 0 ⇒ 竖直完全交给浮力 / 重力。
             VelocityX = MoveTowards(VelocityX, IntentVx, MoveAccel);
             if (IsSubmerged)
             {
                 VelocityY = MoveTowards(VelocityY, IntentVy, SwimAccel);
+            }
+            else if (FliesInAir)
+            {
+                VelocityY = MoveTowards(VelocityY, IntentVy, FlyAccel);
             }
 
             // ② 朝向迟滞：只有意图幅度过阈值才翻面，渲染无脑读 Facing 因而永不抖动。
@@ -519,12 +572,19 @@ namespace TapTap2026.Simulation
 
             // —— ① 流体作用：用**旧位置**的中心格判断是否在水中，再积分竖直速度 ——
             int oldCenterRow = FloorToInt(Y + Height * 0.5f);
-            if (CreatureTerrain.IsWater(world, FloorToInt(X), oldCenterRow))
+            bool inWaterHere = CreatureTerrain.IsWater(world, FloorToInt(X), oldCenterRow);
+            if (inWaterHere)
             {
                 VelocityY = VelocityY * (1f - WaterDrag) + Buoyancy;
             }
 
-            VelocityY -= Gravity;
+            // 飞行挂起重力：FliesInAir 的物种在空中（非淹没）不累加重力，净竖直驱动只有意图
+            // （同鱼在水里的中性浮力，鸟因此可悬停、不会被动坠落）；入水 / 落地即恢复常规则。
+            if (!(FliesInAir && !inWaterHere))
+            {
+                VelocityY -= Gravity;
+            }
+
             if (VelocityY < -MaxFallSpeed)
             {
                 VelocityY = -MaxFallSpeed;
@@ -547,7 +607,7 @@ namespace TapTap2026.Simulation
                 int rowLast = FloorToInt(targetY);
                 for (int row = rowFirst; row >= rowLast; row--)
                 {
-                    if (AnySolidInRow(world, row, colMin, colMax))
+                    if (AnySupportInRow(world, row, colMin, colMax))
                     {
                         targetY = row + 1;
                         VelocityY = 0f;
@@ -699,7 +759,7 @@ namespace TapTap2026.Simulation
                 int groundColMax = FloorToInt(X + Width * 0.5f - Epsilon);
                 for (int col = groundColMin; col <= groundColMax; col++)
                 {
-                    if (CreatureTerrain.IsSolid(world, col, groundRow))
+                    if (IsSupportCell(world, col, groundRow))
                     {
                         IsGrounded = true;
                         break;
@@ -740,6 +800,29 @@ namespace TapTap2026.Simulation
             }
 
             return true;
+        }
+
+        /// <summary>本格是否算作本物种的**向下支撑面**：默认同 <see cref="CreatureTerrain.IsSolid"/>；
+        /// <see cref="PerchesOnFoliage"/> 的物种（鸟）额外把树叶 / 树干算进来（只服务向下支撑口径）。</summary>
+        private bool IsSupportCell(ParticleWorld world, int col, int row)
+        {
+            return PerchesOnFoliage
+                ? CreatureTerrain.IsPerchable(world, col, row)
+                : CreatureTerrain.IsSolid(world, col, row);
+        }
+
+        /// <summary>行内任一覆盖列是本物种的向下支撑面（<see cref="IsSupportCell"/>）。</summary>
+        private bool AnySupportInRow(ParticleWorld world, int row, int colMin, int colMax)
+        {
+            for (int col = colMin; col <= colMax; col++)
+            {
+                if (IsSupportCell(world, col, row))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>行内任一覆盖列是固体。</summary>

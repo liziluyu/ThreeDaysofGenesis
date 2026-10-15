@@ -1,0 +1,292 @@
+namespace TapTap2026.Simulation
+{
+    /// <summary>
+    /// 鸟的行为状态机：**静态无状态**——决策状态写在 <see cref="Creature"/> 的黑板槽位上。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>状态（<see cref="Creature.AiState"/>）：</b>0 = Perched（栖息）、1 = Fly（空中巡航）、
+    /// 2 = Flee（逃命）。</para>
+    /// <para><b>节奏：</b>只应被 <see cref="Creature.ShouldThink"/> 放行后以 2 Hz 调用；RNG
+    /// （<see cref="CreatureWorld.NextInt"/>）只在思考帧消耗。</para>
+    /// <para><b>落水自救（最高优先级）：</b><see cref="Creature.IsSubmerged"/> 时只把 <c>IntentVy</c> 抬成
+    /// <see cref="SwimAccel"/> 的强起飞意图、不再进别的状态（鸟没有扑腾态）——配合基类的正浮力
+    /// （Buoyancy 0.30 &gt; Gravity 0.24）自动上浮，出水后自然回到 Perched / Fly。</para>
+    /// <para><b>威胁（火焰）：</b>照抄 <see cref="RabbitBrain"/> 的逃命模式——进入用
+    /// <see cref="Creature.ThreatRadius"/>、脱离用 <c>+ <see cref="FleeExitMargin"/></c> 的滞回半径，
+    /// 远离最近那团火、同列时只摇一次骰选边，进入时写最短逃命时长 <see cref="FleeMinTicks"/>；
+    /// 最短时长走完且火出圈才回 <see cref="StateFly"/>。竖直一律向上冲（<see cref="FleeClimbSpeed"/>）。</para>
+    /// <para><b>Fly（巡航）：</b>水平沿用鱼的**墙感知换向**（前方 <see cref="AheadProbeCells"/> 格的体高行内
+    /// 全是非固体才保持方向、**不摇骰**；受阻才 1/3 摇骰换向）。竖直走**高度带**：
+    /// <see cref="CreatureSensors.ProbeSurfaceBelow"/> 探正下方第一个可栖面 / 水——距该面 &lt;
+    /// <see cref="MinAltitudeCells"/> 就上抬、<c>Y &gt; 世界高 − <see cref="CeilingMarginCells"/></c> 就下压、
+    /// 带内 <c>IntentVy = 0</c> 悬停。巡航计时归零且正下方 <see cref="LandProbeCells"/> 格内有**合格栖息面**
+    /// ⇒ 下压 <c>IntentVy</c> 直到 <see cref="Creature.IsGrounded"/>（转 Perched）；下方无可栖面则重置一个
+    /// <see cref="LandRetryTicks"/> 短计时继续找落点。</para>
+    /// <para><b>Perched（栖息）：</b><c>IntentVx = IntentVy = 0</c>；计时（<see cref="PerchTicksMin"/> +
+    /// [0, <see cref="PerchTicksRange"/>]）归零即起飞（随机水平方向 + <c>IntentVy = FlyVSpeed</c>）。</para>
+    /// <para><b>v1 非目标：</b>不进食、不繁殖、不筑巢、不做全局寻路。</para>
+    /// </remarks>
+    public static class BirdBrain
+    {
+        /// <summary>状态：栖息（停在可栖面上或悬停等待起飞）。</summary>
+        public const byte StatePerched = 0;
+
+        /// <summary>状态：空中巡航（高度带 + 墙感知换向；可转降落）。</summary>
+        public const byte StateFly = 1;
+
+        /// <summary>状态：逃命（背向火、向上冲，豁免最短时长内不出圈）。</summary>
+        public const byte StateFlee = 2;
+
+        /// <summary>水平加速度（格 / 逻辑帧²）。</summary>
+        public const float Accel = 0.02f;
+
+        /// <summary>水中竖直加速度（格 / 逻辑帧²）：落水强起飞意图的逼近步长（同时也是意图上限幅值）。</summary>
+        public const float SwimAccel = 0.1f;
+
+        /// <summary>空中竖直加速度（格 / 逻辑帧²）：高度带 / 降落竖直意图的逼近步长。</summary>
+        public const float FlyAccel = 0.05f;
+
+        /// <summary>巡航水平速度（格 / 逻辑帧）。</summary>
+        public const float FlySpeed = 0.06f;
+
+        /// <summary>巡航竖直速度（格 / 逻辑帧）：上抬 / 下压 / 起飞的目标竖直速度。</summary>
+        public const float FlyVSpeed = 0.08f;
+
+        /// <summary>逃命水**平**速度（格 / 逻辑帧）。</summary>
+        public const float FleeSpeed = 0.12f;
+
+        /// <summary>逃命上冲速度（格 / 逻辑帧）。</summary>
+        public const float FleeClimbSpeed = 0.10f;
+
+        /// <summary>巡航时维持的最小离面高度（格）：正下方可栖面 / 水面距此以内即上抬，避免贴面飞行。</summary>
+        public const int MinAltitudeCells = 6;
+
+        /// <summary>天花板余量（格）：<c>Y &gt; 世界高 − 本值</c> 即下压，避免顶到世界上界。</summary>
+        public const int CeilingMarginCells = 12;
+
+        /// <summary>降落探测距离（格）：正下方这么多格内出现合格栖息面才下压降落。</summary>
+        public const int LandProbeCells = 12;
+
+        /// <summary>墙感知换向的前探格数：当前方向前方这么多格的体高行内全是非固体才认为畅通、保持原方向。</summary>
+        public const int AheadProbeCells = 3;
+
+        /// <summary>逃命脱离的半径滞回余量（格）：已在 Flee 时把威胁扫描半径放大这么多（进入用
+        /// <see cref="Creature.ThreatRadius"/>，脱离用 <c>+ 本值</c>）。</summary>
+        public const int FleeExitMargin = 3;
+
+        /// <summary>最短逃命时长（逻辑帧 ≈ 2 秒）：进入逃命时写进 <see cref="Creature.StateTicksLeft"/>，
+        /// 期间即使火已出圈也保持飞行，避免刚出圈就被随机方向带回。</summary>
+        public const int FleeMinTicks = 40;
+
+        /// <summary>栖息计时下限（逻辑帧 ≈ 5 秒）。</summary>
+        public const int PerchTicksMin = 100;
+
+        /// <summary>栖息计时随机幅度（逻辑帧）：实际计时 = <see cref="PerchTicksMin"/> + [0, 本值] ≈ 5~15 秒。</summary>
+        public const int PerchTicksRange = 200;
+
+        /// <summary>巡航计时下限（逻辑帧 ≈ 10 秒）。</summary>
+        public const int CruiseTicksMin = 200;
+
+        /// <summary>巡航计时随机幅度（逻辑帧）：实际计时 = <see cref="CruiseTicksMin"/> + [0, 本值] ≈ 10~30 秒。</summary>
+        public const int CruiseTicksRange = 400;
+
+        /// <summary>降落未找到落点时的短巡航计时（逻辑帧 ≈ 2 秒）。</summary>
+        public const int LandRetryTicks = 40;
+
+        /// <summary>
+        /// 鸟可见身体的顶行相对碰撞盒底边的偏移（格）：由**生成美术数据**算出
+        /// （<c>MaxOpaqueRow − PivotRowPixels</c> ＝ 13 − 0 ＝ 13）。墙探针据此探「整个可见身体」占的行，
+        /// 与 <see cref="FishBrain.BodyTopOffsetCells"/> 同一口径。
+        /// </summary>
+        public const int BodyTopOffsetCells = CreatureArtData.Bird.MaxOpaqueRow - CreatureArtData.Bird.PivotRowPixels;
+
+        /// <summary>一次思考：落水自救 &gt; 威胁逃命 &gt; Fly 巡航 &gt; Perched 栖息。</summary>
+        /// <param name="creature">思考的鸟。</param>
+        /// <param name="creatures">所属动物世界（RNG 来源）。</param>
+        /// <param name="world">粒子世界（只读感知）。</param>
+        public static void Think(Creature creature, CreatureWorld creatures, ParticleWorld world)
+        {
+            // 落水自救：最高优先级——淹没时只管向上冲（强起飞意图），不再进别的状态。
+            // 水平意图不动：出水前不摇骰、不换状态，配合基类正浮力几帧内即出水。
+            if (creature.IsSubmerged)
+            {
+                creature.IntentVy = SwimAccel;
+                return;
+            }
+
+            int cx = FloorToInt(creature.X);
+            int cy = FloorToInt(creature.Y + creature.Height * 0.5f);
+
+            bool fleeing = creature.AiState == StateFlee;
+            int radius = fleeing ? Creature.ThreatRadius + FleeExitMargin : Creature.ThreatRadius;
+            if (CreatureSensors.FindNearestFire(world, cx, cy, radius, out int fireX, out int fireY))
+            {
+                // 逃命优先：朝**最近**那团火的反方向飞（取最近而非扫描序先见者，理由同 RabbitBrain）。
+                if (fireX > cx)
+                {
+                    creature.IntentVx = -FleeSpeed;
+                }
+                else if (fireX < cx)
+                {
+                    creature.IntentVx = FleeSpeed;
+                }
+                else if (!fleeing || creature.IntentVx == 0f)
+                {
+                    // 火恰在同列：只在刚进入逃命（或当前无逃跑方向）时摇一次骰选一侧，否则保持既有方向。
+                    int dir = creatures.NextInt(2) == 0 ? -1 : 1;
+                    creature.IntentVx = -dir * FleeSpeed;
+                }
+
+                creature.IntentVy = FleeClimbSpeed;
+                creature.AiState = StateFlee;
+                if (!fleeing)
+                {
+                    creature.StateTicksLeft = FleeMinTicks;
+                }
+
+                return;
+            }
+
+            if (fleeing)
+            {
+                // 火已（暂时）出圈：最短逃命时长未走完 → 按当前方向继续飞（不改意图）；走完 → 回 Fly 巡航。
+                if (creature.StateTicksLeft > 0)
+                {
+                    return;
+                }
+
+                EnterFly(creature, creatures);
+                return;
+            }
+
+            if (creature.AiState == StateFly)
+            {
+                ThinkFly(creature, creatures, world, cx);
+                return;
+            }
+
+            ThinkPerched(creature, creatures);
+        }
+
+        /// <summary>栖息：停住；计时归零即起飞。</summary>
+        private static void ThinkPerched(Creature creature, CreatureWorld creatures)
+        {
+            creature.AiState = StatePerched;
+            creature.IntentVx = 0f;
+            creature.IntentVy = 0f;
+
+            if (creature.StateTicksLeft <= 0)
+            {
+                EnterFly(creature, creatures);
+            }
+        }
+
+        /// <summary>空中巡航：墙感知换向（水平）+ 高度带 / 降落（竖直）。</summary>
+        private static void ThinkFly(Creature creature, CreatureWorld creatures, ParticleWorld world, int cx)
+        {
+            // 已落地（主动降落完成）→ 转栖息并摇下一次起飞计时。
+            if (creature.IsGrounded)
+            {
+                EnterPerched(creature, creatures);
+                return;
+            }
+
+            int footRow = FloorToInt(creature.Y);
+            int bodyTopRow = footRow + BodyTopOffsetCells;
+
+            // 水平：墙感知换向——前方 AheadProbeCells 格（体高行内）无固体 ⇒ 保持方向（顺带把刚起飞 /
+            // 刚停住的 IntentVx = 0 起步成 FlySpeed，方向取 Facing）；受阻才 1/3 摇骰换向。
+            int dir = creature.IntentVx > 0f ? 1 : (creature.IntentVx < 0f ? -1 : (creature.Facing >= 0 ? 1 : -1));
+            if (IsOpenAhead(world, cx, footRow, bodyTopRow, dir))
+            {
+                creature.IntentVx = dir * FlySpeed;
+            }
+            else if (creatures.NextInt(3) == 0)
+            {
+                int newDir = creatures.NextInt(2) == 0 ? -1 : 1;
+                creature.IntentVx = newDir * FlySpeed;
+            }
+
+            // 降落：巡航计时归零且正下方 LandProbeCells 格内有合格栖息面 ⇒ 停止水平、下压直到落地。
+            if (creature.StateTicksLeft <= 0)
+            {
+                if (CreatureSensors.ProbeSurfaceBelow(
+                        world, cx, footRow - 1, LandProbeCells, out _, out bool perchable)
+                    && perchable)
+                {
+                    creature.IntentVx = 0f;
+                    creature.IntentVy = -FlyVSpeed;
+                    return;
+                }
+
+                // 下方没有合格落点：重置短计时继续巡航找落点（不消耗额外随机数）。
+                creature.StateTicksLeft = LandRetryTicks;
+            }
+
+            // 高度带：探正下方第一个可栖面 / 水（扫到世界底视为到底，探测范围即世界高）。
+            if (CreatureSensors.ProbeSurfaceBelow(
+                    world, cx, footRow - 1, world.Height, out int surfaceRow, out _))
+            {
+                int altitude = (footRow - 1) - surfaceRow;
+                if (altitude < MinAltitudeCells)
+                {
+                    creature.IntentVy = FlyVSpeed;
+                    return;
+                }
+            }
+
+            if (creature.Y > world.Height - CeilingMarginCells)
+            {
+                creature.IntentVy = -FlyVSpeed;
+                return;
+            }
+
+            creature.IntentVy = 0f; // 带内悬停
+        }
+
+        /// <summary>进入 Fly：随机水平方向、向上起飞、摇巡航计时（≈10~30 秒）。</summary>
+        private static void EnterFly(Creature creature, CreatureWorld creatures)
+        {
+            creature.AiState = StateFly;
+            creature.StateTicksLeft = CruiseTicksMin + creatures.NextInt(CruiseTicksRange);
+            int dir = creatures.NextInt(2) == 0 ? -1 : 1;
+            creature.IntentVx = dir * FlySpeed;
+            creature.IntentVy = FlyVSpeed;
+        }
+
+        /// <summary>进入 Perched：停住并摇下一次起飞计时（≈5~15 秒）。</summary>
+        private static void EnterPerched(Creature creature, CreatureWorld creatures)
+        {
+            creature.AiState = StatePerched;
+            creature.IntentVx = 0f;
+            creature.IntentVy = 0f;
+            creature.StateTicksLeft = PerchTicksMin + creatures.NextInt(PerchTicksRange);
+        }
+
+        /// <summary>当前方向前方 <see cref="AheadProbeCells"/> 格是否一路畅通：体高行（脚底行 .. 体顶行）内
+        /// 每一格都**不是固体**才算畅通（树叶不挡水平，因此可穿冠）。越界格一律视为非固体。</summary>
+        private static bool IsOpenAhead(ParticleWorld world, int cx, int footRow, int bodyTopRow, int dir)
+        {
+            for (int k = 1; k <= AheadProbeCells; k++)
+            {
+                int x = cx + dir * k;
+                for (int row = footRow; row <= bodyTopRow; row++)
+                {
+                    if (CreatureTerrain.IsSolid(world, x, row))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>向下取整（不走 Mathf，保持决策路径零 UnityEngine 依赖）。</summary>
+        private static int FloorToInt(float value)
+        {
+            int truncated = (int)value;
+            return value < truncated ? truncated - 1 : truncated;
+        }
+    }
+}

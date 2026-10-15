@@ -8,12 +8,17 @@ namespace TapTap2026.Simulation
     /// <para><b>数据布局：</b><see cref="Cells"/> 长 256（<c>Size × Size</c>），下标 <c>dy * 16 + dx</c>：
     /// 行序 = <c>dy</c> 升序（<c>dy 0</c> = 精灵**底边**所在行），行内 <c>dx</c> 升序（<c>dx 0</c> = 精灵左列）。
     /// 每格 <c>-1</c> = 空；否则 = <see cref="BiomassParticle"/> 调色板的颜色索引（0..5），写作 <c>Cell.shade</c>。</para>
-    /// <para><b>为什么把轮廓写成纯数据而不是运行时读 Sprite 纹理：</b>读取运行时纹理会把渲染资源依赖、
-    /// 平台差异和确定性风险引进模拟层；sprite 与 profile 必须由同一份离线轮廓数据维护，换图时同步更新本表。
+    /// <para><b>数据来源 = 生成器产物：</b>轮廓不是手写常量，而是 <see cref="CreatureArtData"/>（由
+    /// 编辑器菜单 <c>Tools/Animals/Regenerate Creature Art Data</c> 读 PNG 与切片 pivot 生成的纯数据 .cs）。
+    /// 换美术后重跑该菜单并提交生成物；<c>CreatureArtDataTests</c> 现场从 PNG 复算对拍，忘记重跑即测试红。
+    /// 运行期模拟仍**只读这份纯数据、不读纹理**——渲染资源依赖、平台差异与确定性风险都不进模拟层。
     /// 逐格颜色也只取索引（<c>Cell</c> 只有 4 字节，存不下任意 RGB），渲染再从 <see cref="BiomassParticle"/> 调色板查 <c>Color32</c>。</para>
     /// <para><b>世界定位</b>（由 <c>CreatureDeathMaterializer</c> 执行，与 <c>CreatureRenderer</c> 的摆放公式一致：
-    /// sprite 水平中心 = <c>X</c>、底边 = <c>Y</c>，1 源像素 = 1 格）：
-    /// <c>世界 x = floor(creature.X) - 8 + dx</c>、<c>世界 y = floor(creature.Y) + dy</c>。</para>
+    /// sprite pivot 点落在 <c>(X, Y)</c>、水平居中原点 = <c>X</c>、1 源像素 = 1 格）：
+    /// <c>世界 x = floor(creature.X) - 8 + dx</c>、
+    /// <c>世界 y = floor(creature.Y) - <see cref="PivotRowCells"/> + dy</c>。
+    /// 减去 <see cref="PivotRowCells"/>（切片 pivot.y，自底像素）让尸体与渲染身体的 pivot 摆放**逐格对齐**
+    /// （鱼 pivot = 底边上 5px ⇒ 尸体不再比可见身体高 5 格）。</para>
     /// </remarks>
     public sealed class BiomassProfile
     {
@@ -29,87 +34,52 @@ namespace TapTap2026.Simulation
         /// <summary>长度 <see cref="Area"/> 的轮廓数据（<c>dy * 16 + dx</c>；-1 = 空，否则 = 颜色索引）。</summary>
         public readonly sbyte[] Cells;
 
-        private BiomassProfile(sbyte[] cells)
+        /// <summary>
+        /// 切片 pivot 距精灵**底边**的像素行数（自底，= 生成物 <c>PivotRowPixels</c>）。
+        /// 物质化把 <c>dy 0</c> 对齐到 <c>floor(Y) − PivotRowCells</c>，与渲染按 pivot 摆放一致。
+        /// </summary>
+        public readonly int PivotRowCells;
+
+        private BiomassProfile(sbyte[] cells, int pivotRowCells)
         {
             Cells = cells;
+            PivotRowCells = pivotRowCells;
         }
 
-        /// <summary>按物种选轮廓：兔子用 <see cref="Rabbit"/>，其余（含 null）用 <see cref="Fish"/>。
-        /// 死因不参与选择——四种死因轮廓相同。</summary>
+        /// <summary>按物种选轮廓：兔子用 <see cref="Rabbit"/>、鸟用 <see cref="Bird"/>，
+        /// 其余（含 null）用 <see cref="Fish"/>。死因不参与选择——四种死因轮廓相同。</summary>
         /// <param name="creature">死亡的动物实体。</param>
         /// <returns>该物种的轮廓。</returns>
         public static BiomassProfile For(Creature creature)
         {
-            return creature is RabbitCreature ? Rabbit : Fish;
+            if (creature is RabbitCreature)
+            {
+                return Rabbit;
+            }
+
+            if (creature is BirdCreature)
+            {
+                return Bird;
+            }
+
+            return Fish;
         }
 
-        // ============================== 轮廓数据（逐字使用，禁止"顺手优化"） ==============================
-        // 兔子：48 格。dy 0 = 精灵底边所在行。
-        private static readonly sbyte[] RabbitCells =
-        {
-            // dy 0
-            -1, -1, -1, -1, -1, -1, -1,  1,  1,  1,  1,  1,  1, -1, -1, -1,
-            // dy 1
-            -1, -1, -1, -1, -1, -1,  2,  3,  3,  4,  3,  3,  1, -1, -1, -1,
-            // dy 2
-            -1, -1, -1, -1, -1,  2,  1,  1,  3,  3,  4,  4,  1, -1, -1, -1,
-            // dy 3
-            -1, -1, -1, -1,  2,  4,  3,  3,  1,  3,  3,  1, -1, -1, -1, -1,
-            // dy 4
-            -1, -1, -1, -1,  2,  4,  0,  3,  1,  1,  1, -1, -1, -1, -1, -1,
-            // dy 5
-            -1, -1, -1, -1, -1,  2,  2,  1,  1, -1, -1, -1, -1, -1, -1, -1,
-            // dy 6
-            -1, -1, -1, -1, -1, -1, -1,  2,  5,  1, -1, -1, -1, -1, -1, -1,
-            // dy 7
-            -1, -1, -1, -1, -1, -1, -1,  2,  5,  1, -1, -1, -1, -1, -1, -1,
-            // dy 8
-            -1, -1, -1, -1, -1, -1, -1, -1,  2,  2, -1, -1, -1, -1, -1, -1,
-            // dy 9..15 全空
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        };
-
-        // 鱼：51 格。dy 0..4 全空。
-        private static readonly sbyte[] FishCells =
-        {
-            // dy 0..4 全空
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            // dy 5
-            -1, -1, -1, -1, -1,  1,  1,  1, -1, -1, -1, -1,  2, -1, -1, -1,
-            // dy 6
-            -1, -1, -1,  1,  1,  2,  2,  2,  1,  1, -1,  1,  1, -1, -1, -1,
-            // dy 7
-            -1, -1,  1,  2,  3,  2,  3,  1,  1,  2,  1,  2,  2, -1, -1, -1,
-            // dy 8
-            -1, -1,  2,  3,  0,  2,  3,  3,  2,  2,  1,  1,  1, -1, -1, -1,
-            // dy 9
-            -1, -1, -1,  2,  2,  2,  3,  2,  1,  1, -1,  2,  2, -1, -1, -1,
-            // dy 10
-            -1, -1, -1, -1, -1,  1,  2,  1, -1, -1, -1, -1,  1, -1, -1, -1,
-            // dy 11
-            -1, -1, -1, -1, -1, -1,  1,  1,  1, -1, -1, -1, -1, -1, -1, -1,
-            // dy 12..15 全空
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        };
-
-        // 轮廓实例必须**声明在数据数组之后**：静态字段初始化按文本顺序执行，写反了会拿到 null 表。
+        // 轮廓数据来自生成物 CreatureArtData（菜单 Tools/Animals/Regenerate Creature Art Data 产出）。
+        // 物种实例必须**声明在数据之后**：静态字段初始化按文本顺序执行，写反了会拿到 null 表。
         /// <summary>兔子轮廓（陆生物种）。</summary>
-        public static readonly BiomassProfile Rabbit = new BiomassProfile(RabbitCells);
+        public static readonly BiomassProfile Rabbit = new BiomassProfile(
+            CreatureArtData.Rabbit.BiomassCells,
+            CreatureArtData.Rabbit.PivotRowPixels);
 
         /// <summary>鱼轮廓（水生物种）。</summary>
-        public static readonly BiomassProfile Fish = new BiomassProfile(FishCells);
+        public static readonly BiomassProfile Fish = new BiomassProfile(
+            CreatureArtData.Fish.BiomassCells,
+            CreatureArtData.Fish.PivotRowPixels);
+
+        /// <summary>鸟轮廓（飞行物种）。pivot = 0 ⇒ <c>baseY = floor(Y)</c> 直接对齐（死前被跳过推进，位置即生成坐标）。</summary>
+        public static readonly BiomassProfile Bird = new BiomassProfile(
+            CreatureArtData.Bird.BiomassCells,
+            CreatureArtData.Bird.PivotRowPixels);
     }
 }
