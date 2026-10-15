@@ -114,13 +114,14 @@ namespace TapTap2026.Game
         /// <remarks>
         /// 只列工厂——HUD 的名字与色块取自原型实例（<see cref="Creature.DebugName"/> /
         /// <see cref="Creature.PlaceholderColor"/>），物种元数据的唯一真源留在 <see cref="Creature"/> 派生类里，
-        /// 这里不再抄一份。兔子与鱼是**预定全集**里的两个（鸟待补）。
+        /// 这里不再抄一份。兔子 / 鱼 / 鸟是**预定全集**里的三个。
         /// 动物投放不看粒子白名单与阶段投放名单（<see cref="SetPlacementFilter"/> 只管粒子）。
         /// </remarks>
         private static readonly Func<Creature>[] CreatureFactories =
         {
             () => new RabbitCreature(),
             () => new FishCreature(),
+            () => new BirdCreature(),
         };
 
         /// <summary>各动物物种的显示名（<see cref="Awake"/> 里从原型实例取）。</summary>

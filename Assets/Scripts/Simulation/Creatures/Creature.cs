@@ -216,6 +216,14 @@ namespace TapTap2026.Simulation
             get { return 0f; }
         }
 
+        /// <summary>空中（非淹没）竖直加速度（格 / 逻辑帧²），<see cref="IntentVy"/> 的逼近速率；
+        /// 0 表示不主动飞（默认）。只有 <see cref="FliesInAir"/> 的物种在空中才会走它——
+        /// 与 <see cref="SwimAccel"/> 分管「水里 / 空中」两套竖直意图推进。</summary>
+        protected virtual float FlyAccel
+        {
+            get { return 0f; }
+        }
+
         /// <summary>起跳脉冲的竖直速度（格 / 逻辑帧）。</summary>
         protected virtual float HopVelocity
         {
@@ -228,6 +236,28 @@ namespace TapTap2026.Simulation
         /// 默认 false（多数物种不具备跨越能力）；兔子打开，鱼（搁浅时）不打开。
         /// </summary>
         protected virtual bool CanStepUp
+        {
+            get { return false; }
+        }
+
+        /// <summary>
+        /// 是否是**飞行物种**（鸟 true、默认 false）。打开后两处泛化：
+        /// ① <see cref="ApplyLocomotion"/> 的竖直意图逼近在空中（非淹没）也生效，走 <see cref="FlyAccel"/>；
+        /// ② <see cref="StepPhysics"/> 在空中**挂起重力**（净竖直驱动只有意图——同鱼在水里的中性浮力，
+        /// 因此鸟可悬停、不会被动坠落，落地 / 入水即恢复常规则）。
+        /// </summary>
+        protected virtual bool FliesInAir
+        {
+            get { return false; }
+        }
+
+        /// <summary>
+        /// 向下支撑扫描是否把**树叶 / 树干**也算作可栖面（鸟 true、默认 false）。
+        /// 打开时 <see cref="StepPhysics"/> 的**向下**积分与 <see cref="IsGrounded"/> 收尾改用
+        /// <see cref="CreatureTerrain.IsPerchable"/>；向上顶头、水平阻挡、掩埋、尸体覆盖一律仍走
+        /// <see cref="CreatureTerrain.IsSolid"/>（叶子只服务「站上去」，不挡上升 / 水平 / 不压死）。
+        /// </summary>
+        protected virtual bool PerchesOnFoliage
         {
             get { return false; }
         }
@@ -330,11 +360,16 @@ namespace TapTap2026.Simulation
                 IntentVx = 0f;
             }
 
-            // ① 意图逼近：水平恒做；竖直仅在水里、且只有水生物种的 SwimAccel 非零才生效（离水交给重力）。
+            // ① 意图逼近：水平恒做；竖直在水里走 SwimAccel（鱼），在空中走 FlyAccel（飞行物种鸟）。
+            //    两者都只对相应物种生效：兔子 SwimAccel / FlyAccel 皆 0 ⇒ 竖直完全交给浮力 / 重力。
             VelocityX = MoveTowards(VelocityX, IntentVx, MoveAccel);
             if (IsSubmerged)
             {
                 VelocityY = MoveTowards(VelocityY, IntentVy, SwimAccel);
+            }
+            else if (FliesInAir)
+            {
+                VelocityY = MoveTowards(VelocityY, IntentVy, FlyAccel);
             }
 
             // ② 朝向迟滞：只有意图幅度过阈值才翻面，渲染无脑读 Facing 因而永不抖动。
@@ -537,12 +572,19 @@ namespace TapTap2026.Simulation
 
             // —— ① 流体作用：用**旧位置**的中心格判断是否在水中，再积分竖直速度 ——
             int oldCenterRow = FloorToInt(Y + Height * 0.5f);
-            if (CreatureTerrain.IsWater(world, FloorToInt(X), oldCenterRow))
+            bool inWaterHere = CreatureTerrain.IsWater(world, FloorToInt(X), oldCenterRow);
+            if (inWaterHere)
             {
                 VelocityY = VelocityY * (1f - WaterDrag) + Buoyancy;
             }
 
-            VelocityY -= Gravity;
+            // 飞行挂起重力：FliesInAir 的物种在空中（非淹没）不累加重力，净竖直驱动只有意图
+            // （同鱼在水里的中性浮力，鸟因此可悬停、不会被动坠落）；入水 / 落地即恢复常规则。
+            if (!(FliesInAir && !inWaterHere))
+            {
+                VelocityY -= Gravity;
+            }
+
             if (VelocityY < -MaxFallSpeed)
             {
                 VelocityY = -MaxFallSpeed;
@@ -565,7 +607,7 @@ namespace TapTap2026.Simulation
                 int rowLast = FloorToInt(targetY);
                 for (int row = rowFirst; row >= rowLast; row--)
                 {
-                    if (AnySolidInRow(world, row, colMin, colMax))
+                    if (AnySupportInRow(world, row, colMin, colMax))
                     {
                         targetY = row + 1;
                         VelocityY = 0f;
@@ -717,7 +759,7 @@ namespace TapTap2026.Simulation
                 int groundColMax = FloorToInt(X + Width * 0.5f - Epsilon);
                 for (int col = groundColMin; col <= groundColMax; col++)
                 {
-                    if (CreatureTerrain.IsSolid(world, col, groundRow))
+                    if (IsSupportCell(world, col, groundRow))
                     {
                         IsGrounded = true;
                         break;
@@ -758,6 +800,29 @@ namespace TapTap2026.Simulation
             }
 
             return true;
+        }
+
+        /// <summary>本格是否算作本物种的**向下支撑面**：默认同 <see cref="CreatureTerrain.IsSolid"/>；
+        /// <see cref="PerchesOnFoliage"/> 的物种（鸟）额外把树叶 / 树干算进来（只服务向下支撑口径）。</summary>
+        private bool IsSupportCell(ParticleWorld world, int col, int row)
+        {
+            return PerchesOnFoliage
+                ? CreatureTerrain.IsPerchable(world, col, row)
+                : CreatureTerrain.IsSolid(world, col, row);
+        }
+
+        /// <summary>行内任一覆盖列是本物种的向下支撑面（<see cref="IsSupportCell"/>）。</summary>
+        private bool AnySupportInRow(ParticleWorld world, int row, int colMin, int colMax)
+        {
+            for (int col = colMin; col <= colMax; col++)
+            {
+                if (IsSupportCell(world, col, row))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>行内任一覆盖列是固体。</summary>

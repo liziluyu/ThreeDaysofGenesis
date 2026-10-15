@@ -33,6 +33,35 @@ namespace TapTap2026.Simulation
                 || id == ParticleIds.WetHumusSoil;
         }
 
+        /// <summary>
+        /// 本格是否可作为**向下支撑面**（栖息面）：<see cref="IsSolid"/> ∪ {树叶, 树干}。
+        /// </summary>
+        /// <remarks>
+        /// <b>只服务竖直支撑口径</b>——飞行 / 栖息物种（鸟）向下扫描时的落脚面唯一用这里；
+        /// **向上顶头、水平阻挡、掩埋判定、尸体覆盖一律仍走 <see cref="IsSolid"/>**：
+        /// 叶子永不挡上升、永不挡水平、不会把动物压死、尸体依旧直接覆盖树叶。
+        /// 纯查询：不写世界、不分配、不消耗随机流。
+        /// </remarks>
+        /// <param name="world">被查询的世界。</param>
+        /// <param name="x">格坐标 x。</param>
+        /// <param name="y">格坐标 y。</param>
+        /// <returns>越界或既非固体也非树叶 / 树干返回 false。</returns>
+        public static bool IsPerchable(ParticleWorld world, int x, int y)
+        {
+            if (world == null || !world.IsInBounds(x, y))
+            {
+                return false;
+            }
+
+            if (IsSolid(world, x, y))
+            {
+                return true;
+            }
+
+            ushort id = world.GetCell(x, y).typeId;
+            return id == ParticleIds.TreeLeaf || id == ParticleIds.TreeTrunk;
+        }
+
         /// <summary>本格是否是水（淹没 / 浮力判据）。</summary>
         /// <param name="world">被查询的世界。</param>
         /// <param name="x">格坐标 x。</param>

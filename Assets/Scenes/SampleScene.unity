@@ -574,6 +574,14 @@ MonoBehaviour:
   - {fileID: 1729916783, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
   - {fileID: -983619320, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
   - {fileID: 2125832360, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
+  _birdIdleFrames:
+  - {fileID: 1988199557, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: 1079763140, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: -1424763871, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: -75437789, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: 497981050, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: 2087005500, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: -1260053960, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
   _idleFps: 2
   _spriteScale: 16
   _spriteFacesLeft: 1

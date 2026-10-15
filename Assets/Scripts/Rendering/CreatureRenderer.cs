@@ -7,7 +7,7 @@ namespace TapTap2026.Rendering
 {
     /// <summary>
     /// 动物实体层渲染：每只 <see cref="Creature"/> 一个子 GameObject + <see cref="SpriteRenderer"/>。
-    /// 已接线的物种（兔子 / 鱼，见 <see cref="ResolveIdleFrames"/>）播真 sprite 帧序列；未接线的退回运行时生成的 1×1 白色占位块（染占位色、拉成碰撞盒）。
+    /// 已接线的物种（兔子 / 鱼 / 鸟，见 <see cref="ResolveIdleFrames"/>）播真 sprite 帧序列；未接线的退回运行时生成的 1×1 白色占位块（染占位色、拉成碰撞盒）。
     /// </summary>
     /// <remarks>
     /// <para>与 <see cref="ParticleRenderer"/>「整张网格一个 quad」不同：实体数量少、位置是连续浮点，
@@ -50,6 +50,9 @@ namespace TapTap2026.Rendering
 
         /// <summary>鱼 idle 动画帧（同上规格）。为空或未接线时鱼退回占位块。</summary>
         [SerializeField] private Sprite[] _fishIdleFrames;
+
+        /// <summary>鸟 idle 动画帧（同上规格，7 片按切片名序 bird_0..bird_6）。为空或未接线时鸟退回占位块。</summary>
+        [SerializeField] private Sprite[] _birdIdleFrames;
 
         /// <summary>idle 动画帧率（帧/秒）：2 = 每帧 500ms。表现层播放，不进模拟、不影响确定性。</summary>
         [SerializeField] private float _idleFps = 2f;
@@ -278,6 +281,10 @@ namespace TapTap2026.Rendering
             else if (creature is FishCreature)
             {
                 frames = _fishIdleFrames;
+            }
+            else if (creature is BirdCreature)
+            {
+                frames = _birdIdleFrames;
             }
             else
             {

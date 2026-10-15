@@ -46,13 +46,23 @@ namespace TapTap2026.Simulation
             PivotRowCells = pivotRowCells;
         }
 
-        /// <summary>按物种选轮廓：兔子用 <see cref="Rabbit"/>，其余（含 null）用 <see cref="Fish"/>。
-        /// 死因不参与选择——四种死因轮廓相同。</summary>
+        /// <summary>按物种选轮廓：兔子用 <see cref="Rabbit"/>、鸟用 <see cref="Bird"/>，
+        /// 其余（含 null）用 <see cref="Fish"/>。死因不参与选择——四种死因轮廓相同。</summary>
         /// <param name="creature">死亡的动物实体。</param>
         /// <returns>该物种的轮廓。</returns>
         public static BiomassProfile For(Creature creature)
         {
-            return creature is RabbitCreature ? Rabbit : Fish;
+            if (creature is RabbitCreature)
+            {
+                return Rabbit;
+            }
+
+            if (creature is BirdCreature)
+            {
+                return Bird;
+            }
+
+            return Fish;
         }
 
         // 轮廓数据来自生成物 CreatureArtData（菜单 Tools/Animals/Regenerate Creature Art Data 产出）。
@@ -66,5 +76,10 @@ namespace TapTap2026.Simulation
         public static readonly BiomassProfile Fish = new BiomassProfile(
             CreatureArtData.Fish.BiomassCells,
             CreatureArtData.Fish.PivotRowPixels);
+
+        /// <summary>鸟轮廓（飞行物种）。pivot = 0 ⇒ <c>baseY = floor(Y)</c> 直接对齐（死前被跳过推进，位置即生成坐标）。</summary>
+        public static readonly BiomassProfile Bird = new BiomassProfile(
+            CreatureArtData.Bird.BiomassCells,
+            CreatureArtData.Bird.PivotRowPixels);
     }
 }
