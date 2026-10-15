@@ -181,15 +181,31 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>探前方一格的脚下 2 格内是否有固体支撑（悬崖守卫用）：返回 false 即前方是悬空 / 深坑。</summary>
+        /// <remarks>
+        /// <para><b>世界底 = 地板：</b>脚下那一行（<c>floor(y) − 1</c>）越出世界底（<c>row &lt; 0</c>）时返回 true——
+        /// 物理层本就把世界底当地板：<see cref="Creature.StepPhysics"/> 把 <c>Y</c> 夹到 0，且 <c>Y ≤ 0 ⇒ IsGrounded</c>。
+        /// 「世界底之下」不存在任何可以掉下去的悬崖，探针的口径必须与物理层一致；否则贴世界底行走时两行全部越界 ⇒
+        /// <see cref="CreatureTerrain.IsSolid"/> 一律答「非固体」⇒ 悬崖守卫**每逻辑帧**反转 <c>IntentVx</c>、
+        /// <c>Facing</c> 随之每帧翻面（20 Hz 级别的左右抽搐，回归见
+        /// <c>CreatureAiTests.CliffGuard_AtWorldFloor_DoesNotFlipFacing</c>）。</para>
+        /// <para><b>左右越界不在此列：</b>前方**列**越界仍按非固体处理——世界侧壁的掉头由
+        /// <see cref="Creature.ApplyLocomotion"/> 第 ④ 段（<c>_blockedXAtWorldEdge</c> 边界夹取）负责，不经本探针。</para>
+        /// </remarks>
         /// <param name="world">被查询的世界（只读）。</param>
         /// <param name="x">脚底中点 x。</param>
         /// <param name="y">脚底中点 y。</param>
         /// <param name="facing">前进方向（+1 右 / −1 左）。</param>
-        /// <returns>前方列脚下 2 格（含）内有任一固体即 true。</returns>
+        /// <returns>前方列脚下 2 格（含）内有任一固体即 true；脚下那一行已越出世界底时也返回 true（世界底即地板）。</returns>
         public static bool ProbeGroundAhead(ParticleWorld world, float x, float y, int facing)
         {
             int aheadColumn = FloorToInt(x) + (facing >= 0 ? 1 : -1);
             int row = FloorToInt(y) - 1;
+            if (row < 0)
+            {
+                // 世界底之下不存在可坠落的悬崖：与 StepPhysics「Y ≤ 0 ⇒ IsGrounded」的口径保持一致。
+                return true;
+            }
+
             if (CreatureTerrain.IsSolid(world, aheadColumn, row))
             {
                 return true;
