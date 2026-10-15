@@ -114,7 +114,7 @@ public void CloseDialogue();                   // 强制关闭（跳过 onEnd）
 ## 6. 运行时表现（UI / 输入 / 暂停）
 
 - **显示层走接口**：控制器**不碰任何 UI 类型**，全部显示通过 `IDialogueView`（`ShowLine` / `SetRevealedText` / `ShowChoices` / `ShowReview` / `CloseView` …）。换对话框（例如接入另一个项目的 UI）只需实现该接口并 `SetView`。
-- **自带调试 UI**：`DialogueDebugView`。它的 Canvas + 对话面板 + 回顾面板**摆在场景里**（`Dialogue Canvas`，overlay、sortingOrder 1000；由编辑器菜单 `Tools/TapTap2026/Scene UI Setup` 幂等补齐与接线），两个面板与选项按钮模板在场景里默认隐藏、可直接在编辑器里可视化编辑；选项按钮运行时从场景里的 `ChoiceButtonTemplate` 实例化。运行初态（面板隐藏）由 `Awake` 强制保证。同一物体上存在它即作为默认视图；真实 UI 里禁用它并 `SetView(自己的视图)` 即可。
+- **自带调试 UI**：`DialogueDebugView`。它的 Canvas + 对话面板 + 回顾面板**摆在场景里**（`Dialogue Canvas`，overlay、sortingOrder 1000；由编辑器菜单 `Tools/TapTap2026/Scene UI Setup` 幂等补齐与接线），两个面板与选项按钮模板在场景里默认隐藏、可直接在编辑器里可视化编辑；选项按钮运行时从场景里的 `ChoiceButtonTemplate` 实例化。**整张 `Dialogue Canvas` 的显隐 = 是否在对话**：`Awake` 关掉整根画布、`ShowLine`（首句）打开、`CloseView`（对话结束）关掉；面板自己的开关只在画布内部切「哪一屏」。运行初态由 `Awake` 强制保证。同一物体上存在它即作为默认视图；真实 UI 里禁用它并 `SetView(自己的视图)` 即可。
 - **打字机**：协程按 `_charsPerSecond` 逐字输出；打字中按"下一句"→ 立即补全；纯文本（不解析 TMP 标签）。
 - **热键**（`KeyCode` 字段，可改）：`Space`/左键 = 下一句；`Tab` = 回顾；`Esc`/`Tab` = 关回顾；`T` = 调试播放示例。
 - **回顾**：独立面板，多行 `TMP_Text` + `ScrollRect`（滚轮滚动），打开时按当前 `History` 重建；回顾打开时**屏蔽下一句**。

@@ -14,6 +14,9 @@ namespace TapTap2026.Game
     /// <para><b>UI 层级是场景里的可编辑对象</b>（<c>Dialogue Canvas</c> 下）：本组件只做**接线与数据填充**，
     /// 不在运行期建任何 UI 对象——因此整个对话框都能在编辑模式里看见、摆放、调参数。
     /// 本组件需与 <see cref="DialogueController"/> 挂在同一个物体上（<see cref="_controller"/> 未接线时按此兜底）。</para>
+    /// <para><b>整张画布 = 「是否在对话」的开关</b>：<see cref="Awake"/> 关掉、<see cref="CloseView"/> 关掉、
+    /// <see cref="ShowLine"/> 打开——面板自己的开关只在画布内部切「哪一屏」。也因此本组件不能挂到画布根上
+    /// （<see cref="Awake"/> 会把组件自己一起关掉），场景里它挂在 <c>Dialogue Controller</c> 上。</para>
     /// </summary>
     public sealed class DialogueDebugView : MonoBehaviour, IDialogueView
     {
@@ -23,7 +26,7 @@ namespace TapTap2026.Game
         [Tooltip("TMP 字体资产（中文字体）。留空 = 中文显示成豆腐块。")]
         [SerializeField] private TMP_FontAsset _font;
 
-        [Tooltip("对话 UI 的根画布（overlay）。")]
+        [Tooltip("对话 UI 的根画布（overlay）。它的显隐 = 是否在对话：不在对话时整根关闭。")]
         [SerializeField] private Canvas _canvas;
 
         [Tooltip("对话面板根（运行初态隐藏；编辑时可在场景里临时激活做可视化编辑）。")]
@@ -86,8 +89,10 @@ namespace TapTap2026.Game
                 }
             }
 
-            // 运行初态：两个面板与选项模板都藏起来，由控制器在合适的时机打开。
+            // 运行初态：**整张画布先关掉**（还没在对话），两个面板与选项模板也各自收起——
             // 场景里因此可以临时把它们激活来做可视化编辑，运行时切回由这里保证。
+            SetCanvasVisible(false);
+
             if (_dialoguePanel != null)
             {
                 _dialoguePanel.SetActive(false);
@@ -103,6 +108,19 @@ namespace TapTap2026.Game
             if (_choiceButtonTemplate != null)
             {
                 _choiceButtonTemplate.gameObject.SetActive(false);
+            }
+        }
+
+        /// <summary>
+        /// <c>Dialogue Canvas</c> 整根的显隐：**「是否在对话」就是它的开关**——<see cref="Awake"/> 关掉、
+        /// <see cref="ShowLine"/> 打开、<see cref="CloseView"/> 关掉；选项与回顾都在进行中的对话里，
+        /// 不额外碰画布。面板自己的 <c>SetActive</c> 只管画布内部切哪一屏。
+        /// </summary>
+        private void SetCanvasVisible(bool visible)
+        {
+            if (_canvas != null && _canvas.gameObject.activeSelf != visible)
+            {
+                _canvas.gameObject.SetActive(visible);
             }
         }
 
@@ -182,6 +200,7 @@ namespace TapTap2026.Game
                 return;
             }
 
+            SetCanvasVisible(true);
             _dialoguePanel.SetActive(true);
             _reviewPanel.SetActive(false);
             HideChoices();
@@ -298,6 +317,9 @@ namespace TapTap2026.Game
             {
                 _reviewPanel.SetActive(false);
             }
+
+            // 最后收画布：不在对话了，整根关掉（面板的开关上面已经复位，下次开启从干净状态起）。
+            SetCanvasVisible(false);
         }
 
         private static string BuildReviewText(IReadOnlyList<DialogueHistoryEntryView> history)
