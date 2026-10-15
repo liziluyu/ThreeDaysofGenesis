@@ -106,6 +106,7 @@ namespace TapTap2026.EditorTools
             WireDialogue(view, dialogueRoot, font, report);
             WireGameController(scene, FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hud, report);
             WireButtons(FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hudRoot, report);
+            WireParticlePanel(FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hudRoot, report);
             EnsureScreenFeed(scene, hudRoot, report);
 
             EditorSceneManager.MarkSceneDirty(scene);
@@ -1005,6 +1006,77 @@ namespace TapTap2026.EditorTools
                 (UnityAction)System.Delegate.CreateDelegate(typeof(UnityAction), target, methodName));
             EditorUtility.SetDirty(button);
             report.Wired();
+        }
+
+        /// <summary>面板子物体名 → 它选中的投放项显示名（<see cref="ParticleSelectionEntry.DisplayName"/>）。
+        /// 固定顺序即 <c>_bindings</c> 的顺序；面板按钮的名字与这个表对不上时报错，不静默跳过。</summary>
+        private static readonly (string Button, string SelectionName)[] ParticlePanelBindings =
+        {
+            ("Stone", "StoneParticle"),
+            ("Sand", "SandParticle"),
+            ("Dirt", "SoilParticle"),
+            ("Water", "WaterParticle"),
+            ("Fire", "FireParticle"),
+            ("Tree_seed", "TreeSeedParticle"),
+            ("Grass_seed", "GrassSeedParticle"),
+            ("Rabbit", "兔子"),
+            ("Fish", "鱼"),
+            ("Bird", "鸟"),
+        };
+
+        /// <summary>
+        /// 投放面板的接线：把 <c>ParticlePanel</c> 下的 10 颗投放按钮与「清除」按钮交给 <see cref="ParticleSelectionPanel"/>，
+        /// 并**清掉这些按钮上场景里的持久监听**——点击改由组件在运行期绑定，留着旧的会重复触发
+        /// （<c>Erease</c> 上就有一条从「高速」按钮复制过来的错的 <c>EnterHighSpeedMode</c>）。
+        /// **幂等**：引用每次重写、持久监听清了就没了、组件缺才建。
+        /// </summary>
+        private static void WireParticlePanel(ParticleEditor editor, GameObject hudRoot, Report report)
+        {
+            Transform root = hudRoot.transform;
+            RectTransform panel = EnsureUiChild(root, "ParticlePanel", report, out _);
+            ParticleSelectionPanel selectionPanel = EnsureComponent<ParticleSelectionPanel>(panel.gameObject);
+
+            var panelSo = new SerializedObject(selectionPanel);
+            SetRef(panelSo, "_editor", editor, report);
+            SetRef(panelSo, "_eraseButton", ComponentAt<Button>(root, "ParticlePanel/Erease"), report);
+
+            SerializedProperty bindings = panelSo.FindProperty("_bindings");
+            bindings.arraySize = ParticlePanelBindings.Length;
+            for (int i = 0; i < ParticlePanelBindings.Length; i++)
+            {
+                (string buttonName, string selectionName) = ParticlePanelBindings[i];
+                Button button = ComponentAt<Button>(root, "ParticlePanel/" + buttonName);
+
+                SerializedProperty element = bindings.GetArrayElementAtIndex(i);
+                element.FindPropertyRelative("Button").objectReferenceValue = button;
+                element.FindPropertyRelative("SelectionName").stringValue = selectionName;
+
+                ClearPersistentListeners(button, report);
+            }
+
+            panelSo.ApplyModifiedPropertiesWithoutUndo();
+            ClearPersistentListeners(ComponentAt<Button>(root, "ParticlePanel/Erease"), report);
+        }
+
+        /// <summary>清掉按钮上全部持久监听（面板点击由 <see cref="ParticleSelectionPanel"/> 运行期绑定）。</summary>
+        private static void ClearPersistentListeners(Button button, Report report)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            int count = button.onClick.GetPersistentEventCount();
+            for (int i = count - 1; i >= 0; i--)
+            {
+                UnityEventTools.RemovePersistentListener(button.onClick, i);
+            }
+
+            if (count > 0)
+            {
+                EditorUtility.SetDirty(button);
+                report.Notice("清掉了「" + button.name + "」上 " + count + " 条旧的 onClick 持久监听（点击改由 ParticleSelectionPanel 运行期绑定）。");
+            }
         }
 
         /// <summary>编辑器与流程控制器的两条 HUD 引用。</summary>

@@ -48,7 +48,14 @@ namespace TapTap2026.Game
     /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：
     /// 该组件每帧把字段写回世界，写世界会被下一帧覆盖。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
     /// <para>按钮入口（给场景里的 uGUI 按钮 <c>onClick</c> 接线）：<see cref="TogglePauseMenu"/>（开关暂停界面 +
-    /// 暂停 / 恢复模拟）、<see cref="ToggleLightPanel"/>（开关光照面板）、<see cref="EnterHighSpeedMode"/>（进入高速模式）。</para>
+    /// 暂停 / 恢复模拟）、<see cref="ToggleLightPanel"/>（开关光照面板）、<see cref="EnterHighSpeedMode"/>（进入高速模式）。
+    /// 投放面板（<c>HUD Canvas/ParticlePanel</c>）的按钮走 <see cref="SelectByName"/> /
+    /// <see cref="Select(ParticleSelectionEntry)"/>，由 <c>ParticleSelectionPanel</c> 接线。</para>
+    /// <para><b>投放选择入口</b>：当前选中项与全部可投项
+    /// 都是 <see cref="ParticleSelectionEntry"/> 描述符——枚举 <see cref="Selections"/> 铺按钮、读
+    /// <see cref="CurrentSelection"/> 决定高亮、按下时调 <see cref="Select(ParticleSelectionEntry)"/> /
+    /// <see cref="SelectByName"/> / <see cref="SelectByTypeId"/>，选中项真的变化时收 <see cref="SelectionChanged"/>。
+    /// 按钮只读这些入口，不改白名单与投放逻辑。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleEditor : MonoBehaviour
@@ -114,11 +121,11 @@ namespace TapTap2026.Game
         [SerializeField] private string[] _placeableGasTypes = { "FireParticle" };
 
         /// <summary>
-        /// 可投放的动物物种：右键循环里**排在所有粒子类型之后**（见 <see cref="SelectionCount"/>），
+        /// 可投放的动物物种：投放选择里**排在所有粒子类型之后**（见 <see cref="Selections"/>），
         /// 选中后左键放置产出**实体**而不是格（见 <see cref="SpawnCreature"/>）。
         /// </summary>
         /// <remarks>
-        /// 只列工厂——HUD 的名字与色块取自原型实例（<see cref="Creature.DebugName"/> /
+        /// 只列工厂——显示名 / 占位色 / 类名取自原型实例（<see cref="Creature.DebugName"/> /
         /// <see cref="Creature.PlaceholderColor"/>），物种元数据的唯一真源留在 <see cref="Creature"/> 派生类里，
         /// 这里不再抄一份。兔子 / 鱼 / 鸟是**预定全集**里的三个。
         /// 动物投放不看粒子白名单与阶段投放名单（<see cref="SetPlacementFilter"/> 只管粒子）。
@@ -130,14 +137,12 @@ namespace TapTap2026.Game
             () => new BirdCreature(),
         };
 
-        /// <summary>各动物物种的显示名（<see cref="Awake"/> 里从原型实例取）。</summary>
-        private string[] _creatureNames;
-
-        /// <summary>各动物物种的占位色（<see cref="Awake"/> 里从原型实例取）。</summary>
-        private Color[] _creatureColors;
-
-        /// <summary>当前选中的动物物种下标；−1 = 当前选中的是粒子类型（见 <see cref="Select"/>）。</summary>
-        private int _creatureIndex = -1;
+        /// <summary>
+        /// 各动物物种的原型实例（<see cref="Awake"/> 里从 <see cref="CreatureFactories"/> 现建一份）：
+        /// 物种元数据（<see cref="Creature.DebugName"/> / <see cref="Creature.PlaceholderColor"/> / 类名）的
+        /// **唯一真源**——建 <see cref="Selections"/> 与按类名查找都读它，不再另抄一份平行数组。
+        /// </summary>
+        private Creature[] _creaturePrototypes;
 
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
         private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();
@@ -147,9 +152,20 @@ namespace TapTap2026.Game
         /// 在 <see cref="IsPlaceable"/> 里与既有白名单取交集。</summary>
         private HashSet<ushort> _placementFilter;
 
+        /// <summary>当前可投放的粒子 typeId（注册顺序；<see cref="Selections"/> 的粒子段就是按它建的）。
+        /// 阶段投放名单（<see cref="SetPlacementFilter"/>）会整体重算它。</summary>
         private ushort[] _placeable = new ushort[0];
+
+        /// <summary>当前选中项在 <see cref="_selections"/> 里的下标（右键循环的游标）。</summary>
         private int _cursor;
-        private ushort _typeId;
+
+        /// <summary>
+        /// 当前全部可投放项：**先粒子类型、后动物物种**，顺序即右键循环顺序。白名单或阶段投放名单变化时
+        /// 由 <see cref="BuildSelections"/> 整体重建（因此下标只在一次构建内有效，见 <see cref="ParticleSelectionEntry"/>）。
+        /// 无可投项时为空数组（<see cref="CurrentSelection"/> 即 null）。
+        /// </summary>
+        private ParticleSelectionEntry[] _selections = Array.Empty<ParticleSelectionEntry>();
+
         private string _hudText;
         private Color _hudColor;
         private string _probeText;
@@ -182,6 +198,10 @@ namespace TapTap2026.Game
         /// <summary>当前树木物种（Shift+滚轮切换；仅选中树木种子时参与投放与 HUD，见 <see cref="CycleTreeSpecies"/>）。</summary>
         private int _treeSpecies;
 
+        /// <summary>是否处于**清除模式**（见 <see cref="EraseMode"/>）：为真时左键改为擦除。键盘口径是 E 按下置真、
+        /// 抬起置假（<see cref="UpdateEraseMode"/>），投放面板的「清除」按钮翻转它（<see cref="ToggleEraseMode"/>）。</summary>
+        private bool _eraseMode;
+
         /// <summary>笔刷半径下限（格）。</summary>
         public const int MinBrushRadius = 1;
 
@@ -191,6 +211,30 @@ namespace TapTap2026.Game
         /// <summary>「单颗投放」白名单类型的投放冷却（秒）。</summary>
         public const float SinglePlacementCooldownSeconds = 0.5f;
 
+        /// <summary>编辑是否被锁住：对话激活（<see cref="SuppressInput"/>）或高速模式进行中
+        /// （<see cref="ParticleSimulationDriver.HighSpeedActive"/>）。投放面板据此把整排按钮变灰不可点
+        /// （与 <see cref="SandboxHud.SetLightPanelInteractable"/> 同一条判据）。</summary>
+        public bool EditingLocked { get { return SuppressInput || (_driver != null && _driver.HighSpeedActive); } }
+
+        /// <summary>是否处于**清除模式**：为真时左键走 <see cref="Erase"/>（在同一半径内清成空气）而不是投放。
+        /// 键盘上按住 <c>E</c> 即进、松开即退；投放面板的「清除」按钮翻转它（<see cref="ToggleEraseMode"/>）。</summary>
+        public bool EraseMode { get { return _eraseMode; } }
+
+        /// <summary>**「清除」按钮**：翻转清除模式。供场景里的按钮 <c>onClick</c> 与投放面板接线。</summary>
+        public void ToggleEraseMode() { SetEraseMode(!_eraseMode); }
+
+        /// <summary>显式设置清除模式（等值不动）。</summary>
+        public void SetEraseMode(bool erase)
+        {
+            if (_eraseMode == erase)
+            {
+                return;
+            }
+
+            _eraseMode = erase;
+            RefreshHud();
+        }
+
         /// <summary>当前笔刷半径（格）。</summary>
         public int BrushRadius
         {
@@ -198,22 +242,120 @@ namespace TapTap2026.Game
             get { return Mathf.Clamp(_brushRadius, MinBrushRadius, MaxBrushRadius); }
         }
 
-        /// <summary>当前正在投放的粒子 typeId（选中动物物种时保持上一次的粒子选择——投放走 <see cref="SpawnCreature"/>，不读本值）。</summary>
-        public ushort CurrentTypeId
+        /// <summary>
+        /// 当前全部可投放项（**先粒子类型、后动物物种**，顺序即右键循环顺序）——数组后备，遍历零分配。
+        /// </summary>
+        /// <remarks>
+        /// 只读快照：条目在构建后不再变，白名单或阶段投放名单（<see cref="SetPlacementFilter"/>）变化时**整体重建**
+        /// （因此 <see cref="ParticleSelectionEntry.Index"/> 与这里的下标只在一次构建内有效，缓存的条目会变陈旧）。
+        /// 未来的投放选择按钮（粒子调色板 / 物种按钮）遍历本列表铺按钮，按下时把对应条目交给
+        /// <see cref="Select(ParticleSelectionEntry)"/>。
+        /// </remarks>
+        public IReadOnlyList<ParticleSelectionEntry> Selections
         {
-            get { return _typeId; }
+            get { return _selections; }
         }
 
-        /// <summary>右键循环的总项数：可投放粒子类型 + 动物物种（动物排在后面）。</summary>
-        private int SelectionCount
+        /// <summary>
+        /// 当前选中的投放项（左键投放的就是它）；**没有任何可投项时为 null**。
+        /// </summary>
+        /// <remarks>
+        /// 选中项的描述（名字 / 色块 / 是否动物 / 是否单颗投放）全在这一个对象上，取代了此前散落的
+        /// 「当前 typeId / 是否选中动物」两个平行读数；投放路径每帧读它，不做查询。
+        /// </remarks>
+        public ParticleSelectionEntry CurrentSelection
         {
-            get { return _placeable.Length + CreatureFactories.Length; }
+            get { return _cursor >= 0 && _cursor < _selections.Length ? _selections[_cursor] : null; }
         }
 
-        /// <summary>当前选中的是不是动物物种（true 时左键放置实体，见 <see cref="SpawnCreature"/>）。</summary>
-        public bool CreatureSelected
+        /// <summary>
+        /// 选中项实例**真的换了**时触发（重新选中同一项不触发）——未来按钮据此刷新高亮。
+        /// 载荷是新的 <see cref="CurrentSelection"/>（绝不传 null：触发时必有选中项）。
+        /// </summary>
+        public event Action<ParticleSelectionEntry> SelectionChanged;
+
+        /// <summary>选中第 <paramref name="index"/> 项（<see cref="Selections"/> 的下标）。</summary>
+        /// <remarks>越界（含负数）返回 false 且**不改变当前选择**；成功时刷新 HUD，选中项实例变化才发 <see cref="SelectionChanged"/>。</remarks>
+        public bool Select(int index)
         {
-            get { return _creatureIndex >= 0; }
+            if (index < 0 || index >= _selections.Length)
+            {
+                return false;
+            }
+
+            ParticleSelectionEntry previous = CurrentSelection;
+            _cursor = index;
+            ParticleSelectionEntry current = _selections[index];
+            RefreshHud();
+
+            if (!ReferenceEquals(previous, current))
+            {
+                SelectionChanged?.Invoke(current);
+            }
+
+            return true;
+        }
+
+        /// <summary>选中 <paramref name="entry"/> 这一项（按钮接线的主入口）。</summary>
+        /// <remarks>
+        /// 只认**当前 <see cref="Selections"/> 里的同一个实例**：null，或陈旧的 / 外来的实例
+        /// （<see cref="SetPlacementFilter"/> 重建后残留的旧条目、别处新造的条目）一律返回 false 且不改变选择——
+        /// 因此拿着过期条目点按钮不会选错东西。
+        /// </remarks>
+        public bool Select(ParticleSelectionEntry entry)
+        {
+            if (entry == null)
+            {
+                return false;
+            }
+
+            int index = entry.Index;
+            if (index < 0 || index >= _selections.Length || !ReferenceEquals(_selections[index], entry))
+            {
+                return false;
+            }
+
+            return Select(index);
+        }
+
+        /// <summary>按粒子 typeId 选中可投放的粒子项（动物项不参与匹配）。找不到返回 false 且不改变选择。</summary>
+        public bool SelectByTypeId(int typeId)
+        {
+            for (int i = 0; i < _selections.Length; i++)
+            {
+                ParticleSelectionEntry entry = _selections[i];
+                if (!entry.IsCreature && entry.TypeId == typeId)
+                {
+                    return Select(i);
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 按名字选中一项：比显示名（<see cref="ParticleSelectionEntry.DisplayName"/>，中文）或类名
+        /// （<see cref="ParticleSelectionEntry.ClassName"/>）——匹配规则与 <see cref="ResolveTypeNames"/> 的
+        /// 「DebugName 或类名」一致，因此阶段 JSON / 场景接线用类名、界面用中文名都能选中。
+        /// </summary>
+        /// <remarks>null / 空名字、或两项都比不中的名字返回 false 且不改变选择。</remarks>
+        public bool SelectByName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < _selections.Length; i++)
+            {
+                ParticleSelectionEntry entry = _selections[i];
+                if (entry.DisplayName == name || entry.ClassName == name)
+                {
+                    return Select(i);
+                }
+            }
+
+            return false;
         }
 
         private void Awake()
@@ -275,16 +417,14 @@ namespace TapTap2026.Game
                 return;
             }
 
-            // 动物物种的显示名 / 占位色取自原型实例：物种差异的唯一真源在 Creature 派生类里。
-            _creatureNames = new string[CreatureFactories.Length];
-            _creatureColors = new Color[CreatureFactories.Length];
+            // 动物物种的原型实例：显示名 / 占位色 / 类名都取自它，物种差异的唯一真源在 Creature 派生类里。
+            _creaturePrototypes = new Creature[CreatureFactories.Length];
             for (int i = 0; i < CreatureFactories.Length; i++)
             {
-                Creature prototype = CreatureFactories[i]();
-                _creatureNames[i] = prototype.DebugName;
-                _creatureColors[i] = prototype.PlaceholderColor;
+                _creaturePrototypes[i] = CreatureFactories[i]();
             }
 
+            _selections = BuildSelections();
             Select(0);
         }
 
@@ -294,10 +434,30 @@ namespace TapTap2026.Game
             // 任何提前返回（对话激活、世界没就绪、高速模式锁编辑）都不会留下上一帧的白圈。
             _hoverCellValid = false;
 
+            UpdateEraseMode();
+
             UpdateEditing();
 
             ApplyBrushOutline();
             PushHud();
+        }
+
+        /// <summary>
+        /// 清除模式的键盘口径：<c>E</c> 按下置真、抬起置假。用**边沿**事件而不是按住查询
+        /// （<c>Input.GetKey</c>）——按住查询每帧都会把面板按钮翻转出来的值立刻抹回「E 没按住 = 假」。
+        /// 放在 <see cref="UpdateEditing"/> 之前、不受 <see cref="SuppressInput"/> 与高速锁编辑影响，
+        /// 因此松开 E 一定会把标记清掉，不会留下「对话结束后第一笔莫名擦除」的残留。
+        /// </summary>
+        private void UpdateEraseMode()
+        {
+            if (Input.GetKeyDown(KeyCode.E))
+            {
+                SetEraseMode(true);
+            }
+            else if (Input.GetKeyUp(KeyCode.E))
+            {
+                SetEraseMode(false);
+            }
         }
 
         /// <summary>
@@ -335,7 +495,8 @@ namespace TapTap2026.Game
             }
 
             // 对话激活（本组件完全不响应输入）与高速模式进行中都把光照面板变灰——两者的会话结果都依赖光照输入。
-            _hud.SetLightPanelInteractable(!SuppressInput && !highSpeedActive);
+            // 判据只有 EditingLocked 一份：投放面板（ParticleSelectionPanel）读的是同一个属性。
+            _hud.SetLightPanelInteractable(!EditingLocked);
         }
 
         /// <summary>编辑输入：热键、相机平移、光标读数、切类型 / 调半径 / 投放 / 擦除。</summary>
@@ -447,12 +608,12 @@ namespace TapTap2026.Game
                 && Input.GetMouseButton(0)
                 && TryGetCell(Input.mousePosition, world, out int x, out int y))
             {
-                // E 是擦除修饰键：与左键同按时改走擦除（按住的整段时间都擦），不改当前投放项。
-                if (Input.GetKey(KeyCode.E))
+                // 清除模式（E 按住或面板「清除」槽）：改走擦除（按住的整段时间都擦），不改当前投放项。
+                if (_eraseMode)
                 {
                     Erase(world, x, y);
                 }
-                else if (_creatureIndex >= 0)
+                else if (CurrentSelection != null && CurrentSelection.IsCreature)
                 {
                     // 选中动物物种：放置产出实体、不写格（因此暂停时也无所谓上屏）。
                     SpawnCreature(world, x, y);
@@ -684,12 +845,12 @@ namespace TapTap2026.Game
         /// <summary>切到下一个可投放项（粒子类型之后接动物物种，到末尾回到开头）。</summary>
         public void CycleType()
         {
-            if (_placeable.Length == 0)
+            if (_selections.Length == 0)
             {
                 return;
             }
 
-            Select((_cursor + 1) % SelectionCount);
+            Select((_cursor + 1) % _selections.Length);
         }
 
         /// <summary>滚轮每格调 <paramref name="steps"/> 格半径，结果夹在 [<see cref="MinBrushRadius"/>, <see cref="MaxBrushRadius"/>]。</summary>
@@ -793,6 +954,8 @@ namespace TapTap2026.Game
         /// <remarks>
         /// 名单与既有白名单的交集为空时记错误并**忽略这次调用**（<see cref="_placementFilter"/> 与可投放列表保持原样）——
         /// 既不能让编辑器落进「一个类型都选不了」的死状态，也不能因为一次配置错误就悄悄把限制丢掉。
+        /// <para>成功时 <see cref="Selections"/> **整体重建**（旧条目作废、<see cref="SelectionChanged"/> 按新选中项触发），
+        /// 动物物种段不受名单影响、照旧接在粒子段之后。</para>
         /// <para><b>调用时机</b>：必须在 <c>Awake</c> 之后（注册表已由 <c>BeforeSceneLoad</c> 钩子填好、
         /// 本组件也已完成初始白名单解析）。<see cref="GameController"/> 在阶段启动时调用，晚于所有 <c>Awake</c>，安全。</para>
         /// </remarks>
@@ -831,6 +994,8 @@ namespace TapTap2026.Game
                 return;
             }
 
+            // 可投项跟着新名单整体重建（旧条目全部作废），再选中新的第一项。
+            _selections = BuildSelections();
             Select(0);
         }
 
@@ -876,20 +1041,22 @@ namespace TapTap2026.Game
         /// 会上升 + 摇曳并很快熄灭）。不合格的格被跳过（圆内部分投放，其余类型不受影响）。
         /// </summary>
         /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0；
-        /// 当前选中的是动物物种时恒返回 0（没有粒子可投，放置走 <see cref="SpawnCreature"/>）。</returns>
+        /// 当前选中的是动物物种（或无可投项）时恒返回 0（没有粒子可投，放置走 <see cref="SpawnCreature"/>）。</returns>
         public int Paint(ParticleWorld world, int cx, int cy)
         {
-            if (_creatureIndex >= 0)
+            ParticleSelectionEntry selection = CurrentSelection;
+            if (selection == null || selection.IsCreature)
             {
                 // 当前选中的是动物物种：没有「当前粒子」可投，放置走 SpawnCreature（见 Update 的分支）。
                 return 0;
             }
 
-            if (_singlePlacement.Contains(_typeId))
+            if (selection.SinglePlacement)
             {
                 return PaintSingle(world, cx, cy);
             }
 
+            ushort typeId = selection.TypeId;
             int radiusSquared = BrushRadius * BrushRadius;
             int written = 0;
 
@@ -903,12 +1070,12 @@ namespace TapTap2026.Game
                     }
 
                     // 火不许覆盖实体（见 FireParticle.CanPlaceAt）；其余类型照常投放。
-                    if (_typeId == ParticleIds.Fire && !FireParticle.CanPlaceAt(world, cx + dx, cy + dy))
+                    if (typeId == ParticleIds.Fire && !FireParticle.CanPlaceAt(world, cx + dx, cy + dy))
                     {
                         continue;
                     }
 
-                    if (world.Set(cx + dx, cy + dy, _typeId))
+                    if (world.Set(cx + dx, cy + dy, typeId))
                     {
                         written++;
                     }
@@ -928,10 +1095,11 @@ namespace TapTap2026.Game
         /// （已知限制，与纯物理阶段的取舍一致；将来若要「不许生成在实体内」，在这里加判据即可）。
         /// 本方法不消耗世界随机流（动物层有自己的随机流），也不受粒子白名单 / 阶段投放名单约束。
         /// </remarks>
-        /// <returns>真的生成了返回 true；当前选中的不是动物、没有动物世界或冷却未到返回 false。</returns>
+        /// <returns>真的生成了返回 true；当前选中项不是动物（含没有任何可投项）、没有动物世界或冷却未到返回 false。</returns>
         public bool SpawnCreature(ParticleWorld world, int cx, int cy)
         {
-            if (_creatureIndex < 0 || world == null)
+            ParticleSelectionEntry selection = CurrentSelection;
+            if (selection == null || !selection.IsCreature || world == null)
             {
                 return false;
             }
@@ -949,7 +1117,7 @@ namespace TapTap2026.Game
             }
 
             _lastSinglePlacementTime = Time.unscaledTime;
-            creatures.Spawn(CreatureFactories[_creatureIndex](), world, cx + 0.5f, cy);
+            creatures.Spawn(CreatureFactories[selection.CreatureIndex](), world, cx + 0.5f, cy);
             return true;
         }
 
@@ -965,12 +1133,14 @@ namespace TapTap2026.Game
                 return 0;
             }
 
-            if (!world.Set(cx, cy, _typeId))
+            // 只有 CurrentSelection 的单颗投放粒子项会走到这里（见 Paint 的分发）。
+            ushort typeId = CurrentSelection.TypeId;
+            if (!world.Set(cx, cy, typeId))
             {
                 return 0;
             }
 
-            if (_typeId == ParticleIds.TreeSeed)
+            if (typeId == ParticleIds.TreeSeed)
             {
                 // Set 已把 flags 清成边沿标记、shade 重新抽样过；这里盖上物种位并把 shade 折进该物种色片。
                 TreeSpecies.Stamp(world, cx, cy, _treeSpecies, TreeSpecies.SeedColorsPerSpecies);
@@ -980,16 +1150,13 @@ namespace TapTap2026.Game
             return 1;
         }
 
-        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」；按住 E（擦除修饰键）时前置提示。
-        /// 末尾追加当前倍速（见 <see cref="DescribeSpeed"/>）。</summary>
+        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」。
+        /// 只有这一行格子读数——清除模式与当前倍速都不在这里显示（清除模式看光标旁的色块与面板高亮，
+        /// 实测吞吐看高速模式左下角读数行，见 <see cref="DescribeHighSpeed"/>）。</summary>
         private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
         {
             bool inGrid = TryGetCell(screenPosition, world, out int x, out int y);
-            string reading = inGrid ? DescribeCell(world, x, y) : "视口外";
-
-            // 按住 E 时前缀一个固定串，免得以为左键还在投放。
-            string line = Input.GetKey(KeyCode.E) ? "【擦除】" + reading : reading;
-            _probeText = line + "  " + DescribeSpeed();
+            _probeText = inGrid ? DescribeCell(world, x, y) : "视口外";
 
             // 光标格顺手留给 ApplyBrushOutline 的笔刷轮廓（与读数同一次射线，不重复投影）。
             _hoverCellValid = inGrid;
@@ -998,23 +1165,7 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 左上角读数的倍速后缀：普通编辑模式恒 <c>×1</c>、高速模式恒 <c>×16</c>（档位只由
-        /// <see cref="HighSpeedSession"/> 改变，见文件头）。要的只是「当前按几倍跑」这个事实——
-        /// 实测吞吐在高速模式左下角 HUD 里报（那时目标档没有信息量，见 <see cref="DescribeHighSpeed"/>）。
-        /// </summary>
-        private string DescribeSpeed()
-        {
-            SpeedController speed = _driver != null ? _driver.Speed : null;
-            if (speed == null)
-            {
-                return "×1";
-            }
-
-            return "×" + speed.Speed.ToString("0.##", CultureInfo.InvariantCulture);
-        }
-
-        /// <summary>
-        /// (x,y) 的读数行：坐标 + 粒子名 + 温度 + 热量 + 湿度。
+        /// (x,y) 的读数行：坐标 + 粒子中文名 + 温度 + 热量 + 湿度。
         /// 温度是导出量 <c>T = Q / 热容</c>，热量是格子里存的那份 Q，湿度对这一格而言（固/液恒为 0）。
         /// 粒子名取 <see cref="ParticleTypeInfo.DebugName"/>（每类型一个中文名，见各粒子类型的 <c>Info</c>），
         /// 空气与未注册 / 空槽一律显示「空气」。
@@ -1135,41 +1286,67 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>选中第 <paramref name="index"/> 项（先粒子类型、后动物物种），并重建 HUD 文本。</summary>
-        private void Select(int index)
+        /// <summary>
+        /// 按当前 <see cref="_placeable"/> 与 <see cref="_creaturePrototypes"/> 重建 <see cref="_selections"/>：
+        /// **先粒子类型**（顺序即 <see cref="_placeable"/> 的注册顺序，显示名 / 色块 / 是否单颗投放都取自类型注册表），
+        /// **再动物物种**（顺序即 <see cref="CreatureFactories"/>，显示名 / 色块取自原型实例）。
+        /// </summary>
+        /// <remarks>
+        /// 只在 <see cref="Awake"/> 与 <see cref="SetPlacementFilter"/> 的成功路径上调用；每次调用都造一批新实例
+        /// （因此调用前的旧条目全部作废，见 <see cref="Select(ParticleSelectionEntry)"/> 的陈旧实例判据）。
+        /// </remarks>
+        private ParticleSelectionEntry[] BuildSelections()
         {
-            _cursor = index;
+            var selections = new ParticleSelectionEntry[_placeable.Length + _creaturePrototypes.Length];
 
-            if (index < _placeable.Length)
+            for (int i = 0; i < _placeable.Length; i++)
             {
-                _creatureIndex = -1;
-                _typeId = _placeable[index];
-            }
-            else
-            {
-                _creatureIndex = index - _placeable.Length;
+                ushort typeId = _placeable[i];
+                ParticleType type = ParticleRegistry.Types[typeId];
+                selections[i] = ParticleSelectionEntry.ForParticle(
+                    i,
+                    typeId,
+                    DisplayName(type),
+                    type.ClassName,
+                    type.Info.Palette[0],
+                    _singlePlacement.Contains(typeId));
             }
 
-            RefreshHud();
+            for (int i = 0; i < _creaturePrototypes.Length; i++)
+            {
+                Creature prototype = _creaturePrototypes[i];
+                selections[_placeable.Length + i] = ParticleSelectionEntry.ForCreature(
+                    _placeable.Length + i,
+                    i,
+                    prototype.DebugName,
+                    prototype.GetType().Name,
+                    prototype.PlaceholderColor);
+            }
+
+            return selections;
         }
 
-        /// <summary>按当前选中项与半径重建 HUD 文本与色块颜色（动物项显示物种名与「单只」）。</summary>
+        /// <summary>按当前选中项与半径重建 HUD 文本与色块颜色（动物项显示物种名与「单只」）；无可投项时清空。</summary>
         private void RefreshHud()
         {
-            if (_creatureIndex >= 0)
+            ParticleSelectionEntry entry = CurrentSelection;
+            if (entry == null)
             {
-                _hudColor = _creatureColors[_creatureIndex];
-                _hudText = $"{_creatureNames[_creatureIndex]}  {_cursor + 1}/{SelectionCount}  单只";
+                _hudText = null;
+                _hudColor = default(Color);
                 return;
             }
 
-            ParticleType type = ParticleRegistry.Types[_typeId];
-            ParticleTypeInfo info = type.Info;
+            _hudColor = entry.Swatch;
+            if (entry.IsCreature)
+            {
+                _hudText = $"{entry.DisplayName}  {_cursor + 1}/{_selections.Length}  单只";
+                return;
+            }
 
-            _hudColor = info.Palette[0];
-            string brush = _singlePlacement.Contains(_typeId) ? "单颗" : $"r={BrushRadius}";
-            string species = _typeId == ParticleIds.TreeSeed ? "  " + TreeSpecies.NameOf(_treeSpecies) : string.Empty;
-            _hudText = $"{DisplayName(type)}  {_cursor + 1}/{SelectionCount}{species}  {brush}";
+            string brush = entry.SinglePlacement ? "单颗" : $"r={BrushRadius}";
+            string species = entry.TypeId == ParticleIds.TreeSeed ? "  " + TreeSpecies.NameOf(_treeSpecies) : string.Empty;
+            _hudText = $"{entry.DisplayName}  {_cursor + 1}/{_selections.Length}{species}  {brush}";
         }
 
         /// <summary>类型的显示名：优先 <see cref="ParticleTypeInfo.DebugName"/>，没填则回退类名。</summary>
