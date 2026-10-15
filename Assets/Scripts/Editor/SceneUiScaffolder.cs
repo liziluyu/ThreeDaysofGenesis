@@ -27,7 +27,8 @@ namespace TapTap2026.EditorTools
     /// 一概不动**——用户手调过的布局、文案、字号不会被跑一次脚手架抹掉。每次重跑都会做的只有：
     /// 引用接线、三个按钮的 <c>onClick</c> 持久监听、显示图的「居中 + 底层 + 不吃点击」三条契约、
     /// 预览 mesh 的尺寸刷新、笔刷叠层的 <c>sortingOrder</c>、相机的编辑态取景、
-    /// 两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用。</para>
+    /// 两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用、
+    /// 以及**清掉多余的 <c>EventSystem</c>**（同场景多个会让 UI 全哑，见 <see cref="EnsureEventSystem"/>）。</para>
     /// <para>用法：菜单 <c>Tools/TapTap2026/Scene UI Setup（补缺失+接线)</c>，
     /// 或批处理 <c>-executeMethod TapTap2026.EditorTools.SceneUiScaffolder.Run</c>。
     /// 批处理必须在 Unity 编辑器关着的时候跑。</para>
@@ -35,6 +36,10 @@ namespace TapTap2026.EditorTools
     public static class SceneUiScaffolder
     {
         private const string ScenePath = "Assets/Scenes/MainScene.unity";
+
+        /// <summary>场景里那个**唯一**的输入根对象的约定名（<see cref="EnsureEventSystem"/> 保证仅此一个）。</summary>
+        private const string EventSystemRootName = "EventSystem";
+
         private const string DataFolder = "Assets/Data";
         private const string PreviewMeshPath = "Assets/Data/SandboxPreviewMesh.asset";
         private const string PreviewMaterialPath = "Assets/Data/SandboxPreview.mat";
@@ -320,13 +325,62 @@ namespace TapTap2026.EditorTools
             cameraObject.transform.position = new Vector3(width * 0.5f, height * 0.5f, -10f);
         }
 
-        /// <summary>场景必须有 EventSystem：对话按钮、光照输入框都靠它收事件（组件不再自建）。</summary>
+        /// <summary>
+        /// 场景必须**恰好一个** EventSystem：对话按钮、光照输入框都靠它收事件（组件不再自建）。
+        /// <para><b>为什么按组件找而不是按名字找</b>：多出来的 EventSystem（从 GameObject 菜单 / MCP 拖进来的
+        /// 第二个，名字往往不叫 <c>EventSystem</c>）会静默废掉整个 UI——<see cref="EventSystem.current"/> 只认
+        /// 注册表里的第一个，其余既不收指针事件也不再更新选中，表现就是「所有按钮点了没反应」。
+        /// 按名字找只保证「有」，这里按组件找并清掉多余的，才叫幂等。</para>
+        /// <para>保留谁：带输入模块的那个（能收事件的就是它）；都没有模块时优先保留叫 <c>EventSystem</c> 的根对象。</para>
+        /// </summary>
         private static void EnsureEventSystem(Scene scene, Report report)
         {
-            GameObject eventSystemObject = FindRoot(scene, "EventSystem");
-            if (eventSystemObject == null)
+            var systems = new List<EventSystem>();
+            GameObject[] roots = scene.GetRootGameObjects();
+            for (int i = 0; i < roots.Length; i++)
             {
-                eventSystemObject = EnsureChild(null, "EventSystem", report, out bool _);
+                systems.AddRange(roots[i].GetComponentsInChildren<EventSystem>(true));
+            }
+
+            EventSystem keeper = null;
+            for (int i = 0; i < systems.Count && keeper == null; i++)
+            {
+                if (systems[i].GetComponent<BaseInputModule>() != null)
+                {
+                    keeper = systems[i];
+                }
+            }
+
+            for (int i = 0; i < systems.Count && keeper == null; i++)
+            {
+                if (systems[i].gameObject.name == EventSystemRootName)
+                {
+                    keeper = systems[i];
+                }
+            }
+
+            if (keeper == null && systems.Count > 0)
+            {
+                keeper = systems[0];
+            }
+
+            for (int i = 0; i < systems.Count; i++)
+            {
+                if (systems[i] == keeper)
+                {
+                    continue;
+                }
+
+                report.Notice("删除多余的 EventSystem（" + PathOf(systems[i].transform) + "）——同场景多个会让 UI 全哑");
+                Undo.DestroyObjectImmediate(systems[i].gameObject);
+            }
+
+            GameObject eventSystemObject = keeper != null ? keeper.gameObject : EnsureChild(null, EventSystemRootName, report, out bool _);
+            if (eventSystemObject.name != EventSystemRootName)
+            {
+                // 名字按契约收回：下一次找它就只认这一个，且 Inspector 里一眼能看出这是场景的输入根。
+                report.Notice("EventSystem 改名：" + eventSystemObject.name + " → " + EventSystemRootName);
+                eventSystemObject.name = EventSystemRootName;
             }
 
             EnsureComponent<EventSystem>(eventSystemObject);
