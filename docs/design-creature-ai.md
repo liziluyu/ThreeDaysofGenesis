@@ -147,6 +147,10 @@ Y += 1; rowMin++; rowMax++; 重测同一列（每帧至多抬一格）
 - **Stranded**（离水，`!IsSubmerged`）：`IntentVx = 0`；思考帧摇 `NextInt(15, 36)`（15~35）作为下次蹦跳间隔，间隔到 → `WantHop = true`（扑腾）。`BeachedTicks > 200` → `Kill(Beached)`。重新入水自动回 Swim。
 - **死法**：搁浅超时 → Beached；接触火 → Burned（通用机制）。
 
+### 7.3 鸟（Perched / Fly / Flee）
+
+2026-10-14 批准并实施，唯一权威文档是 **`docs/plan-bird-ai.md`**（决策记录：接受 1 源像素 = 1 格惯例、栖息面含树叶 / 树干、v1 不进食、帧序实现时自判）。要点：新虚门 `FliesInAir`（空中挂起重力、可悬停；`FlyAccel` 驱动空中竖直意图，落地 / 入水恢复常规则）与 `PerchesOnFoliage`（**向下**支撑改走 `CreatureTerrain.IsPerchable` = IsSolid ∪ 树叶 / 树干；向上顶头 / 水平 / 掩埋 / 尸体覆盖口径不变）；落水正浮力自救；水平墙感知换向与鱼同款；尸体走 `CreatureArtData.Bird`（生成器已备产，pivot 0 直接对齐）。测试在 `BirdCreatureTests`（16 条）。
+
 ## 8. 渲染（`CreatureRenderer` 小改）
 
 - 帧播放速度按状态缩放：`|Vx| > 0.01` → `_idleFps × 2`；兔子 Flee → `× 3`；否则 `× 1`。**不换帧图**（v1 只有 4 帧 idle，差异化靠播放速度 + 程序动作）。
