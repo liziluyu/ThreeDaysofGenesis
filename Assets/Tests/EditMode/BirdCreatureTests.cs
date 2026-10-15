@@ -153,6 +153,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(a.Facing, b.Facing, $"{context} Facing 应逐位一致");
             Assert.AreEqual(a.SubmergedTicks, b.SubmergedTicks, $"{context} SubmergedTicks 应逐位一致");
             Assert.AreEqual(a.IsGrounded, b.IsGrounded, $"{context} IsGrounded 应逐位一致");
+            Assert.AreEqual(a.HuntTarget == null, b.HuntTarget == null, $"{context} HuntTarget 是否为空应一致");
         }
 
         /// <summary>无大脑的探针实体：暴露 protected 的 <see cref="Creature.ShouldThink"/>（门控用例用）。</summary>
@@ -775,6 +776,323 @@ namespace TapTap2026.Tests
             bird.AiState = BirdBrain.StatePerched;
             bird.VelocityX = 0f;
             Assert.AreEqual(1f, CreatureRenderer.ResolveAnimSpeedFactor(bird), "栖息静止应 ×1");
+        }
+
+        // ============================== §11 v2 捕食（Hunt）测试清单 1-9 ==============================
+
+        /// <summary>§11-① 视野无猎物 ⇒ 永不进 Hunt，且（视野外的猎物存在也不）扰动随机流。
+        /// 两个同 seed 世界：A 只有鸟、B 鸟 + 一只**视野外**的猎物（钉住计时使其 Brain 不摇骰、原地不动），
+        /// 跑 300 帧后两世界的下一次随机抽取必须逐位一致——「无猎物在视野内不摇骰」的直接证据。</summary>
+        [Test]
+        public void Hunt_NoPreyInView_NeverHunts_AndRngUnchanged()
+        {
+            ParticleWorld worldA = NewWorld();
+            FillRows(worldA, 0, 0, Stone);
+            CreatureWorld ca = new CreatureWorld(SeedValue);
+            BirdCreature birdA = ca.Spawn(new BirdCreature(), worldA, 4f, 7f);
+            birdA.AiState = BirdBrain.StateFly;
+            birdA.StateTicksLeft = 100000;
+
+            ParticleWorld worldB = NewWorld();
+            FillRows(worldB, 0, 0, Stone);
+            CreatureWorld cb = new CreatureWorld(SeedValue);
+            BirdCreature birdB = cb.Spawn(new BirdCreature(), worldB, 4f, 7f);
+            birdB.AiState = BirdBrain.StateFly;
+            birdB.StateTicksLeft = 100000;
+            RabbitCreature farPrey = cb.Spawn(new RabbitCreature(), worldB, 44f, 1f);
+            farPrey.AiState = RabbitBrain.StateIdle; // Idle + 计时不走完 ⇒ 思考帧不消耗随机流
+            farPrey.StateTicksLeft = 100000;
+
+            bool enteredHunt = false;
+            for (int i = 0; i < 300; i++)
+            {
+                birdA.X = 4f; // 钉住水平位置，保证猎物始终在视野外（盒中心距离 ≈ 40 > 12）
+                birdB.X = 4f;
+                ca.Step(worldA);
+                cb.Step(worldB);
+                enteredHunt |= birdA.AiState == BirdBrain.StateHunt || birdB.AiState == BirdBrain.StateHunt;
+            }
+
+            Assert.IsFalse(enteredHunt, "视野内无猎物时不该进入 Hunt");
+            Assert.AreEqual(ca.NextUInt(), cb.NextUInt(), "视野外的猎物不该扰动捕食触发（无猎物在视野内时不摇骰）");
+        }
+
+        /// <summary>§11-② 视野内有猎物 ⇒ 跑够帧数必进 Hunt（触发骰子命中）。
+        /// 猎物钉在同一列正下方 6 格（Idle 不动），鸟钉住水平位置并抑制降落计时——</summary>
+        [Test]
+        public void Hunt_PreyInView_EntersHuntWithinBudget()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 20f, 7f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 20f, 1f);
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+
+            bool entered = false;
+            for (int i = 0; i < 2000 && !entered; i++)
+            {
+                bird.X = 20f;
+                prey.X = 20f;
+                prey.HungerTicks = 0; // 钉住饥饿，避免 600/1200 帧后转入觅食 / 饿死（那段会消耗随机流且移动）
+                if (bird.AiState == BirdBrain.StateFly)
+                {
+                    bird.StateTicksLeft = 100000; // 不降落，保持巡航扫视野
+                }
+
+                creatures.Step(world);
+                entered = bird.AiState == BirdBrain.StateHunt;
+            }
+
+            Assert.IsTrue(entered, "视野内有猎物时应在若干思考帧内摇中骰子进入 Hunt");
+        }
+
+        /// <summary>§11-③ 接触击杀：猎物死一次、死因 <see cref="CreatureDeathCause.Hunted"/>、事件恰好一次、
+        /// 目标槽位清空，且尸体物质化格数 == 兔子轮廓非空格数（走既有管线）。</summary>
+        [Test]
+        public void Hunt_Contact_KillsPreyOnceAsHunted_AndMaterializes()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 1f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 1f);
+
+            int deaths = 0;
+            Creature seen = null;
+            CreatureDeathCause seenCause = CreatureDeathCause.Unknown;
+            creatures.CreatureDied += (c, cause) =>
+            {
+                deaths++;
+                seen = c;
+                seenCause = cause;
+            };
+
+            bird.AiState = BirdBrain.StateHunt;
+            bird.HuntTarget = prey;
+            bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
+
+            creatures.Step(world); // 相位 0：思考 → 运动层 ⑥b 重叠击杀 → 清扫物质化
+
+            Assert.IsFalse(prey.Alive, "接触即应被猎杀");
+            Assert.AreEqual(1, deaths, "死亡事件应恰好一次");
+            Assert.AreSame(prey, seen, "事件应送出猎物本身");
+            Assert.AreEqual(CreatureDeathCause.Hunted, seenCause, "死因应为 Hunted");
+            Assert.IsTrue(bird.HuntTarget == null, "击杀后目标槽位应被清空");
+
+            sbyte[] cells = BiomassProfile.Rabbit.Cells;
+            int baseX = Mathf.FloorToInt(24f) - (BiomassProfile.Size / 2);
+            int baseY = Mathf.FloorToInt(1f) - BiomassProfile.Rabbit.PivotRowCells;
+
+            int written = 0;
+            for (int dy = 0; dy < BiomassProfile.Size; dy++)
+            {
+                for (int dx = 0; dx < BiomassProfile.Size; dx++)
+                {
+                    if (cells[(dy * BiomassProfile.Size) + dx] < 0)
+                    {
+                        continue;
+                    }
+
+                    int x = baseX + dx;
+                    int y = baseY + dy;
+                    Assert.IsTrue(world.IsInBounds(x, y), $"轮廓格 ({dx},{dy}) 应落在界内");
+                    Assert.AreEqual(Biomass, world.GetCell(x, y).typeId, $"轮廓格 ({dx},{dy}) 应写成生物质");
+                    written++;
+                }
+            }
+
+            Assert.AreEqual(NonEmptyCount(cells), written, "每个非空兔子轮廓格都应写入");
+            Assert.AreEqual(written, CountType(world, Biomass), "场上生物质格数应恰等于兔子轮廓格数");
+        }
+
+        /// <summary>§11-④ 击杀后撤离：鸟回 Fly 且竖直意图向上（不停留）。</summary>
+        [Test]
+        public void Hunt_AfterKill_RetreatsToFlyGoingUp()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 1f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 1f);
+
+            bird.AiState = BirdBrain.StateHunt;
+            bird.HuntTarget = prey;
+            bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
+
+            bool sawRetreat = false;
+            float intentVyAtRetreat = 0f;
+            for (int i = 0; i < 40 && !sawRetreat; i++)
+            {
+                byte before = bird.AiState;
+                creatures.Step(world);
+                if (before == BirdBrain.StateHunt && bird.AiState == BirdBrain.StateFly)
+                {
+                    sawRetreat = true;
+                    intentVyAtRetreat = bird.IntentVy;
+                }
+            }
+
+            Assert.IsTrue(sawRetreat, "击杀后应回到 Fly");
+            Assert.Greater(intentVyAtRetreat, 0f, "撤离应带向上冲的竖直意图（不停留）");
+            Assert.IsTrue(bird.HuntTarget == null, "撤离后目标槽位应为空");
+        }
+
+        /// <summary>§11-⑤ 超时与追丢都放弃回 Fly。</summary>
+        [Test]
+        public void Hunt_Timeout_And_LostTarget_BothAbandonToFly()
+        {
+            // A. 超时：目标在视野内但远处（>16 才会被距离放弃，这里取 ≈11.7）；StateTicksLeft 归零即放弃。
+            ParticleWorld worldA = NewWorld();
+            FillRows(worldA, 0, 0, Stone);
+            CreatureWorld ca = new CreatureWorld(SeedValue);
+            BirdCreature birdA = ca.Spawn(new BirdCreature(), worldA, 10f, 7f);
+            RabbitCreature preyA = ca.Spawn(new RabbitCreature(), worldA, 20f, 1f);
+            birdA.AiState = BirdBrain.StateHunt;
+            birdA.HuntTarget = preyA;
+            birdA.StateTicksLeft = 3;
+
+            bool abandonedByTimeout = false;
+            for (int i = 0; i < 40 && !abandonedByTimeout; i++)
+            {
+                ca.Step(worldA);
+                abandonedByTimeout = birdA.AiState == BirdBrain.StateFly;
+            }
+
+            Assert.IsTrue(abandonedByTimeout, "超时应放弃回 Fly");
+            Assert.IsTrue(birdA.HuntTarget == null, "放弃后目标槽位应清空");
+            Assert.IsTrue(preyA.Alive, "超时放弃时猎物仍活");
+
+            // B. 追丢：目标逃出 HuntAbortCells（16）⇒ 立即放弃。
+            ParticleWorld worldB = NewWorld();
+            FillRows(worldB, 0, 0, Stone);
+            CreatureWorld cb = new CreatureWorld(SeedValue);
+            BirdCreature birdB = cb.Spawn(new BirdCreature(), worldB, 2f, 20f);
+            RabbitCreature preyB = cb.Spawn(new RabbitCreature(), worldB, 45f, 1f);
+            birdB.AiState = BirdBrain.StateHunt;
+            birdB.HuntTarget = preyB; // 盒中心距离 ≈ 47 > 16
+            birdB.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
+
+            cb.Step(worldB); // 相位 0 ⇒ 首帧即思考
+            Assert.AreEqual(BirdBrain.StateFly, birdB.AiState, "目标逃出放弃半径应回 Fly");
+            Assert.IsTrue(birdB.HuntTarget == null, "放弃后目标槽位应清空");
+        }
+
+        /// <summary>§11-⑥ 俯冲入水杀浅层鱼且鸟不死：Hunt 态且目标是鱼 ⇒ 豁免落水自救反射，能扎进水里叼鱼。</summary>
+        [Test]
+        public void Hunt_DivesIntoWater_KillsShallowFish_AndSurvives()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 1, Stone);
+            FillRows(world, 2, 2, Water); // 一层浅水：鱼贴水面且伏底不动
+
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 8f);
+            FishCreature prey = creatures.Spawn(new FishCreature(), world, 24f, 2f);
+
+            bird.AiState = BirdBrain.StateHunt;
+            bird.HuntTarget = prey;
+            bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
+
+            bool killed = false;
+            for (int i = 0; i < 400 && !killed; i++)
+            {
+                creatures.Step(world);
+                killed = !prey.Alive;
+            }
+
+            Assert.IsTrue(killed, "俯冲应叼到浅层鱼");
+            Assert.IsTrue(bird.Alive, "短暂入水不该溺死鸟");
+            Assert.IsTrue(bird.SubmergedTicks < bird.DrownTicksLimit, "入水时长应远小于溺死阈值");
+        }
+
+        /// <summary>§11-⑦ 同 seed 重放逐位一致（含猎物与捕食逻辑）。</summary>
+        [Test]
+        public void Hunt_Determinism_SameSeed_ReplayBitExact()
+        {
+            ParticleWorld wa = NewWorld();
+            ParticleWorld wb = NewWorld();
+            FillRows(wa, 0, 0, Stone);
+            FillRows(wb, 0, 0, Stone);
+
+            CreatureWorld ca = new CreatureWorld(SeedValue);
+            CreatureWorld cb = new CreatureWorld(SeedValue);
+            BirdCreature a = ca.Spawn(new BirdCreature(), wa, 20f, 7f);
+            BirdCreature b = cb.Spawn(new BirdCreature(), wb, 20f, 7f);
+            ca.Spawn(new RabbitCreature(), wa, 24f, 1f);
+            cb.Spawn(new RabbitCreature(), wb, 24f, 1f);
+
+            for (int i = 0; i < 300; i++)
+            {
+                wa.StepLogic();
+                ca.Step(wa);
+                wb.StepLogic();
+                cb.Step(wb);
+            }
+
+            Assert.AreEqual(ca.Count, cb.Count, "同 seed 同操作下存活数应一致");
+            AssertCreatureEqual(a, b, "鸟");
+        }
+
+        /// <summary>§11-⑧ 世界随机流隔离：鸟 + 视野外猎物都不消耗粒子世界的随机流。</summary>
+        [Test]
+        public void Hunt_RngIsolation_BirdAndPreyDoNotConsumeWorldStream()
+        {
+            ParticleWorld solo = NewWorld();
+            ParticleWorld withLife = NewWorld();
+            FillRows(solo, 0, 0, Stone);
+            FillRows(withLife, 0, 0, Stone);
+
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), withLife, 24f, 30f);
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+            RabbitCreature farPrey = creatures.Spawn(new RabbitCreature(), withLife, 2f, 1f); // 竖直差 ≈ 29 ⇒ 视野外
+            farPrey.StateTicksLeft = 100000;
+
+            for (int i = 0; i < 300; i++)
+            {
+                solo.StepLogic();
+                withLife.StepLogic();
+                creatures.Step(withLife);
+            }
+
+            for (int i = 0; i < 64; i++)
+            {
+                Assert.AreEqual(solo.NextUInt(), withLife.NextUInt(), "鸟与视野外猎物都不该消耗世界随机流");
+            }
+        }
+
+        /// <summary>§11-⑨ 兔子对鸟无感知（v1 契约）：即使捕食的鸟就在头顶，兔子也永不进入 Flee。</summary>
+        [Test]
+        public void Hunt_RabbitHasNoPredatorAwareness()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 7f);
+            RabbitCreature rabbit = creatures.Spawn(new RabbitCreature(), world, 24f, 1f);
+
+            bool everFled = false;
+            bool predatorAttacked = false;
+            for (int i = 0; i < 2000 && !predatorAttacked; i++)
+            {
+                bird.X = 24f;   // 钉住鸟，保证始终与兔子同列（视野内）
+                rabbit.X = 24f;
+                rabbit.HungerTicks = 0; // 钉住饥饿，避免饿死 / 转觅食干扰
+                if (bird.AiState == BirdBrain.StateFly)
+                {
+                    bird.StateTicksLeft = 100000;
+                }
+
+                creatures.Step(world);
+                everFled |= rabbit.AiState == RabbitBrain.StateFlee;
+                predatorAttacked = bird.AiState == BirdBrain.StateHunt;
+            }
+
+            Assert.IsTrue(predatorAttacked, "鸟应确实发起过捕食（证明兔子面对的是真实威胁）");
+            Assert.IsFalse(everFled, "兔子没有天敌感知（v1）：面对捕食的鸟也不该进入 Flee");
         }
     }
 }

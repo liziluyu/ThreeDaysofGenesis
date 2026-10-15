@@ -29,6 +29,9 @@ namespace TapTap2026.Simulation
         OldAge,
 
         /// <summary>搁浅而死（鱼离水过久）。</summary>
-        Beached
+        Beached,
+
+        /// <summary>被猎杀（鸟捕食兔 / 鱼——<see cref="Creature.HuntTarget"/> 接触致死）。</summary>
+        Hunted
     }
 }

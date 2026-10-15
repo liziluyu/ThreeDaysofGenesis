@@ -131,6 +131,13 @@ namespace TapTap2026.Simulation
         /// 不写它的物种恒为 false ⇒ 零行为差异、零开销。</summary>
         public bool VerticalDiveLatched;
 
+        /// <summary>捕猎目标引用槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
+        /// 鸟（<see cref="BirdBrain"/>）用它把当前追击的猎物（兔 / 鱼）记在这里；非空且两碰撞盒重叠时，
+        /// <see cref="ApplyLocomotion"/> 第 ⑥b 段把目标判死（<see cref="CreatureDeathCause.Hunted"/>）并把本槽位清空。
+        /// 失去目标 / 放弃追击 / 击杀之后**必须**由 Brain 置回 null（防悬挂引用）。
+        /// 不写它的物种恒为 null ⇒ 零行为差异、零开销。</summary>
+        public Creature HuntTarget;
+
         /// <summary>起跳请求：运动层在 <see cref="IsGrounded"/> 时消费成 <see cref="VelocityY"/> 脉冲并清零。</summary>
         public bool WantHop;
 
@@ -450,6 +457,18 @@ namespace TapTap2026.Simulation
                 Kill(CreatureDeathCause.Burned);
             }
 
+            // ⑥b 捕猎接触击杀（通用机制，与 ⑥「接触火即死」同层）：HuntTarget 非 null 且两碰撞盒 AABB 重叠
+            //     ⇒ 猎物被猎杀。这是**反射**而不是「决策」——Brain 只负责把追击目标写进黑板，真正判定
+            //     「咬到没咬到」放在运动层，和接触火并列（因此不做寻路、不做概率、每帧零分配）。
+            //     击杀后立刻清空 HuntTarget：Brain 下次思考看到「身在 Hunt 态但目标已空」即进入撤离。
+            //     只有鸟会写 HuntTarget ⇒ 其它物种恒 null，本条目对它们零行为差异、零开销。
+            Creature huntTarget = HuntTarget;
+            if (huntTarget != null && Overlaps(huntTarget))
+            {
+                huntTarget.Kill(CreatureDeathCause.Hunted);
+                HuntTarget = null;
+            }
+
             // ⑦ 掩埋致死（压死）：身体覆盖的**每一格**都是**静止**的固体（沙 / 石 / 土家族）时开始计时，
             //    连续超过 BuriedTicksLimit 帧即 Kill(Crushed)。
             //    为什么放在这里：与 ⑥ 同为「即时环境致死」——判据只依赖当前帧的环境本身，不依赖任何计时阈值；
@@ -526,6 +545,21 @@ namespace TapTap2026.Simulation
         /// <param name="cause">死因。</param>
         public virtual void OnDeath(CreatureWorld creatures, ParticleWorld world, CreatureDeathCause cause)
         {
+        }
+
+        /// <summary>两个碰撞盒的 AABB 是否重叠（半开区间：贴边不算重叠）。碰撞盒跨度
+        /// <c>[X − Width/2, X + Width/2] × [Y, Y + Height]</c>。纯四则、零分配，供
+        /// <see cref="ApplyLocomotion"/> 第 ⑥b 段的捕猎接触判定使用。</summary>
+        /// <param name="other">另一实体。</param>
+        /// <returns>两盒重叠时 true。</returns>
+        private bool Overlaps(Creature other)
+        {
+            float halfWidth = Width * 0.5f;
+            float otherHalfWidth = other.Width * 0.5f;
+            return X - halfWidth < other.X + otherHalfWidth
+                && X + halfWidth > other.X - otherHalfWidth
+                && Y < other.Y + other.Height
+                && Y + Height > other.Y;
         }
 
         /// <summary>标注死亡（幂等：重复调用只有第一次生效，死因以第一次为准）。</summary>
