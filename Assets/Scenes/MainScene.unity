@@ -9043,6 +9043,7 @@ MonoBehaviour:
   - TreeTrunkParticle
   - TreeLeafParticle
   - BiomassParticle
+  - IceParticle
   _singlePlacementTypes:
   - GrassSeedParticle
   - TreeSeedParticle
