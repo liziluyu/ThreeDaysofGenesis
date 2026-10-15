@@ -29,9 +29,12 @@ namespace TapTap2026.Game
     /// （驱动器是这三个值的唯一配置面、每帧写回 <c>world.Light</c>，写世界会被下一帧覆盖），改完即时生效；
     /// 输入框拿着键盘时暂停 / 高速 / 平移热键让位给输入框，且**使用 HUD 面板期间（输入框持有键盘焦点或指针落在
     /// 光照面板 / 按钮面板矩形内）屏蔽左键投放/擦除**——点进输入框、点按钮都不会顺手在底下画一笔；
-    /// 高速模式与对话激活时面板变灰不可编辑；
-    /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放项）；
-    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（普通模式恒 <c>×1</c>）；
+    /// 对话激活时面板变灰不可编辑，**高速模式则整块锁死**——进入会话即强制隐藏（会话结果依赖光照输入），
+    /// 模式期间按钮与热键都打不开它，退出后按原显隐状态放回来；
+    /// **清除模式**（按住 <c>E</c> 即进、松开即退；投放面板的「清除」按钮翻转它，见 <see cref="EraseMode"/> / <see cref="ToggleEraseMode"/>）下按左键改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放项）；
+    /// **L** 等价于点场景里的**光照按钮**——翻转右上角光照面板的显隐（<see cref="ToggleLightPanel"/>，热键 <see cref="_lightPanelKey"/>；
+    /// 高速模式期间与按钮一样被拒绝）；
+    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子中文名、温度、热量与湿度；
     /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
     /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
     /// </summary>
@@ -42,7 +45,7 @@ namespace TapTap2026.Game
     /// 因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
     /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者），本类只管输入与显示：
     /// <see cref="ParticleSimulationDriver.HighSpeedActive"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
-    /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
+    /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、光照面板热键、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
     /// <para>阶段限制：<see cref="SetPlacementFilter"/> 由 <see cref="GameController"/> 在阶段启动时按 JSON 调用，
     /// 与 Inspector 白名单取交集（只缩小、不放开）；清空（null / 空数组）即恢复默认白名单。</para>
     /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：
@@ -85,6 +88,10 @@ namespace TapTap2026.Game
 
         [Tooltip("高速模式热键：不在模式中时按它进入；结算完成后按它（或 Enter）确认退出。设为 None 关闭热键。")]
         [SerializeField] private KeyCode _highSpeedKey = KeyCode.H;
+
+        [Tooltip("光照面板热键：按一下等价于点场景里的「光照」按钮（翻转右上角光照面板的显隐，见 ToggleLightPanel）。" +
+                 "设为 None 关闭热键。")]
+        [SerializeField] private KeyCode _lightPanelKey = KeyCode.L;
 
         [Header("相机平移")]
         [Tooltip("左移热键（按住持续左移）：默认 左方向键 + A。列表留空 / 全设 None 即关闭左移。")]
@@ -190,7 +197,8 @@ namespace TapTap2026.Game
         private bool _pauseMenuVisible;
 
         /// <summary>光照面板（光照选择界面）是否可见——由光照按钮翻转（见 <see cref="ToggleLightPanel"/>），
-        /// 默认 true（保持既有常显行为，按钮按下即隐藏）。</summary>
+        /// 默认 true（保持既有常显行为，按钮按下即隐藏）。**这只是玩家的意愿**：高速模式期间显示被
+        /// <see cref="PushHud"/> 强制压成隐藏、本值冻结不动，退出会话后原样恢复。</summary>
         private bool _lightPanelVisible = true;
 
         private float _lastSinglePlacementTime = float.NegativeInfinity;
@@ -494,7 +502,9 @@ namespace TapTap2026.Game
 
             _hud.SetHudVisible(_drawHud);
             _hud.SetPauseMenuVisible(_drawHud && _pauseMenuVisible);
-            _hud.SetLightPanelVisible(_drawHud && _lightPanelVisible);
+            // 高速模式**强制隐藏**光照面板（会话结果依赖光照输入，见 SetLightPanelVisible 的锁）：
+            // 不管 _lightPanelVisible 记着什么，会话进行中都不显示——退出后按原状态恢复。
+            _hud.SetLightPanelVisible(_drawHud && _lightPanelVisible && !highSpeedActive);
             _hud.SetProbeText(_drawHud ? _probeText : null);
             _hud.SetCursorHint(_hudText, _hudColor);
             _hud.SetHighSpeedStatus(_drawHud && highSpeedActive ? _highSpeedHudText : null);
@@ -532,8 +542,8 @@ namespace TapTap2026.Game
                 return;
             }
 
-            // 光照输入框正拿着键盘时，按键属于输入框（数字之外空格 / H / A / D / 回车也都是能敲进去的字符）——
-            // 暂停、高速模式、相机平移三条键盘热键整段让位；否则敲个空格就暂停、敲个 H 就跑一整场高速。
+            // 光照输入框正拿着键盘时，按键属于输入框（数字之外空格 / H / L / A / D / 回车也都是能敲进去的字符）——
+            // 暂停、高速模式、光照面板、相机平移四条键盘热键整段让位；否则敲个空格就暂停、敲个 H 就跑一整场高速。
             bool typingInLightPanel = _hud != null && _hud.LightFieldFocused;
 
             // 高速模式热键：不在模式中时按 H 进入；结算完成后按 Enter（或 H）确认退出。
@@ -558,6 +568,14 @@ namespace TapTap2026.Game
                 }
             }
 
+            // 光照面板热键：与场景里的「光照」按钮同一个入口（ToggleLightPanel）——因此按钮改语义时热键跟着改，
+            // 不在这里自己翻转 _lightPanelVisible。高速模式期间这个入口自己会拒绝（见 SetLightPanelVisible 的锁），
+            // 所以放在锁编辑的拦截之前不影响语义，只与「按钮在模式中照旧可点」保持同一个位置。
+            if (!typingInLightPanel && _lightPanelKey != KeyCode.None && Input.GetKeyDown(_lightPanelKey))
+            {
+                ToggleLightPanel();
+            }
+
             // 相机平移：只动相机、不碰世界，所以放在高速模式的锁编辑拦截**之前**——
             // 高速模式锁的是编辑，观看视角（平移 + 光标读数）跟着解锁一起禁用没有意义。
             if (!typingInLightPanel)
@@ -566,7 +584,8 @@ namespace TapTap2026.Game
             }
 
             // 高速模式锁编辑：在这里**统一拦截**——右键切换、滚轮调半径、左键投放/擦除一概跳过，
-            // 只保留上面的空格暂停与下面只读的光标读数。不是每个输入分支各加一个判断。
+            // 只保留上面的空格暂停、光照面板热键（模式期间被锁死，按了也不会打开面板）与下面只读的光标读数。
+            // 不是每个输入分支各加一个判断。
             if (_driver.HighSpeedActive)
             {
                 ProbeCell(world, Input.mousePosition);
@@ -914,15 +933,27 @@ namespace TapTap2026.Game
         /// <summary>
         /// **光照选择按钮**：翻转右上角光照面板（光照选择界面）的显隐。隐藏不丢值——面板的三个输入框保留在
         /// <see cref="ParticleLightDriver"/> 上，重新显示即原样回来。供场景里的按钮 <c>onClick</c> 接线。
+        /// <para>高速模式期间整个请求被锁吞掉（见 <see cref="SetLightPanelVisible"/>），因此按钮与 L 热键
+        /// 都无法把面板切回来。</para>
         /// </summary>
         public void ToggleLightPanel()
         {
             SetLightPanelVisible(!_lightPanelVisible);
         }
 
-        /// <summary>显式设置光照面板的显隐（无光源驱动器时 HUD 仍会保持隐藏）。立即推给 HUD。</summary>
+        /// <summary>
+        /// 显式设置光照面板的显隐（无光源驱动器时 HUD 仍会保持隐藏）。立即推给 HUD。
+        /// <para><b>高速模式锁</b>：会话进行中整个请求被吞掉、状态冻结，显示另由 <see cref="PushHud"/>
+        /// 强制为隐藏——会话结果依赖光照输入，跑一场高速前先把光照面板收起来、跑完才按原状态放回来。
+        /// 锁在**这一个入口**上，因此按钮 <c>onClick</c> 与 <see cref="_lightPanelKey"/> 热键行为天然一致。</para>
+        /// </summary>
         public void SetLightPanelVisible(bool visible)
         {
+            if (_driver != null && _driver.HighSpeedActive)
+            {
+                return;
+            }
+
             _lightPanelVisible = visible;
             PushHud();
         }
@@ -939,6 +970,10 @@ namespace TapTap2026.Game
             }
 
             _driver.EnterHighSpeed();
+
+            // 按钮的 onClick 跑在 Update 之外（EventSystem），不补这一下的话光照面板要等下一帧才被
+            // PushHud 的锁收起来——点「高速」后有一帧仍看得见面板。热键路径本来就在 Update 内、同帧推到。
+            PushHud();
         }
 
         /// <summary>左右 Shift 是否按住（legacy Input Manager，没有 Input System）。</summary>
