@@ -4,6 +4,7 @@
     "references": [
         "TapTap2026.Simulation",
         "TapTap2026.Game",
+        "Unity.TextMeshPro",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

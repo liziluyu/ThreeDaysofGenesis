@@ -1454,7 +1454,7 @@ namespace TapTap2026.Tests
         public void CustomTypeTable_WithInvalidEntry_ThrowsAtConstruction()
         {
             var badInfo = new ParticleTypeInfo(ParticleTags.Solid, 1f, 1f, 1f, 1f, false, false, 0, 0f, 0f, new Color32[0], "BadTableEntry");
-            var bad = new ParticleType(1, badInfo, null, null, null, null, null);
+            var bad = new ParticleType(1, badInfo, "BadTableEntry", null, null, null, null, null);
 
             Assert.Throws<ArgumentException>(() => new ParticleWorld(2, 2, 1u, new ParticleType[] { null, bad }));
         }

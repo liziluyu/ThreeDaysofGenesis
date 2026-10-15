@@ -38,7 +38,7 @@ namespace TapTap2026.Tests
         {
             ParticleType type = ParticleRegistry.Types[ParticleIds.Flower];
 
-            Assert.AreEqual(nameof(FlowerParticle), type.Info.DebugName,
+            Assert.AreEqual("花", type.Info.DebugName,
                 "ParticleIds.Flower 必须指向花（注册清单与 id 下标对齐）");
             Assert.AreEqual(ParticleTags.Solid | ParticleTags.Organic, type.Info.Tags,
                 "花继承草的标签：Solid + Organic（挡光、死亡按 20% 留腐殖质）");

@@ -135,6 +135,29 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, empty.availableParticles.Length);
         }
 
+        /// <summary>可空语义钉死：<c>repeatDialogueId</c> 显式写出 → 解析出该值；省略 → null
+        /// （与 <c>dialogueId</c> 同款，都让「重进不播对话」的判定成立）。</summary>
+        [Test]
+        public void TryParse_RepeatDialogueId_RoundTrips()
+        {
+            string error;
+
+            GamePhaseData explicitId;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse(
+                    "{\"dialogueId\":\"phase_01_intro\",\"repeatDialogueId\":\"phase_01_retry\"," +
+                    "\"sandboxWidth\":10,\"sandboxHeight\":10}", out explicitId, out error),
+                error);
+            Assert.AreEqual("phase_01_intro", explicitId.dialogueId);
+            Assert.AreEqual("phase_01_retry", explicitId.repeatDialogueId);
+
+            GamePhaseData omitted;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse("{\"sandboxWidth\":10,\"sandboxHeight\":10}", out omitted, out error),
+                error);
+            Assert.IsNull(omitted.repeatDialogueId);
+        }
+
         /// <summary>胜利条件里的缺省约束保持哨兵值：温度 / 湿度为 NaN、计数为 -1（都表示「不约束」）。</summary>
         [Test]
         public void TryParse_OmittedConstraints_KeepSentinels()
@@ -197,6 +220,43 @@ namespace TapTap2026.Tests
             Assert.IsFalse(GamePhaseParser.TryParse(json, out phase, out error));
             Assert.IsNull(phase);
             StringAssert.Contains("type", error);
+        }
+
+        // ============================== 开场对话选择 ==============================
+
+        /// <summary>首次进入（isRepeat = false）→ 用 <c>dialogueId</c>。</summary>
+        [Test]
+        public void ResolveOpeningDialogueId_FirstEntry_ReturnsDialogueId()
+        {
+            var phase = new GamePhaseData
+            {
+                dialogueId = "phase_01_intro",
+                repeatDialogueId = "phase_01_retry",
+            };
+
+            Assert.AreEqual("phase_01_intro", phase.ResolveOpeningDialogueId(false));
+        }
+
+        /// <summary>重复进入（isRepeat = true）→ 用 <c>repeatDialogueId</c>。</summary>
+        [Test]
+        public void ResolveOpeningDialogueId_Repeat_ReturnsRepeatId()
+        {
+            var phase = new GamePhaseData
+            {
+                dialogueId = "phase_01_intro",
+                repeatDialogueId = "phase_01_retry",
+            };
+
+            Assert.AreEqual("phase_01_retry", phase.ResolveOpeningDialogueId(true));
+        }
+
+        /// <summary>重复进入但没配 <c>repeatDialogueId</c> → null（= 不播对话），不会回落到 <c>dialogueId</c>。</summary>
+        [Test]
+        public void ResolveOpeningDialogueId_RepeatWithoutRepeatId_ReturnsNull()
+        {
+            var phase = new GamePhaseData { dialogueId = "phase_01_intro" };
+
+            Assert.IsNull(phase.ResolveOpeningDialogueId(true));
         }
 
         // ============================== 判定 ==============================

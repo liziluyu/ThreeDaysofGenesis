@@ -594,7 +594,7 @@ namespace TapTap2026.Tests
 
         // ============================== 13. 死亡物质化 ==============================
 
-        /// <summary>鸟死亡物质化：格数 == <see cref="CreatureArtData.Bird"/> 非空格数（61），
+        /// <summary>鸟死亡物质化：写入数 == <see cref="CreatureArtData.Bird"/> 非空格数（值随美术走、不钉字面量），
         /// 且竖直锚在 <c>floor(Y)</c>（pivot = 0）。</summary>
         [Test]
         public void Death_MaterializesBirdProfile_AnchoredAtFloorY()
@@ -629,7 +629,7 @@ namespace TapTap2026.Tests
                 }
             }
 
-            Assert.AreEqual(61, NonEmptyCount(cells), "鸟帧 0 不空格数应为 61");
+            // 轮廓格数不钉字面量（美术重绘就会变）——「美术有没有变」由 CreatureArtDataTests 的漂移对拍专门负责。
             Assert.AreEqual(NonEmptyCount(cells), written, "每个非空轮廓格都应写入");
             Assert.AreEqual(written, CountType(world, Biomass), "场上生物质格数应恰等于轮廓格数（无多余写入）");
         }

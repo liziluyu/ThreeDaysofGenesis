@@ -73,7 +73,7 @@ namespace TapTap2026.Simulation
             friction: 0.5f,
             stickiness: 0.5f,
             palette: Palette,
-            debugName: nameof(BiomassParticle),
+            debugName: "生物质",
             // 运动阅读盒：0.5/0.5 的 StepSolid 斜滑净空链 3 格 ⇒ (1, 0, 3)（与土 / 腐殖质同款）。
             motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3));
         // hasLogic 保持默认 true：OnLogic 有真实行为（落稳计数 + 腐败），逻辑帧扫描不得跳过本格。

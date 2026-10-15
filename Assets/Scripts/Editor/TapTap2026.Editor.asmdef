@@ -2,7 +2,9 @@
     "name": "TapTap2026.Editor",
     "rootNamespace": "TapTap2026.Editor",
     "references": [
-        "TapTap2026.Simulation"
+        "TapTap2026.Game",
+        "TapTap2026.Simulation",
+        "Unity.TextMeshPro"
     ],
     "includePlatforms": [
         "Editor"

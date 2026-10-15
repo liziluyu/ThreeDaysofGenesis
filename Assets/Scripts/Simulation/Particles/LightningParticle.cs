@@ -108,7 +108,7 @@ namespace TapTap2026.Simulation
             friction: 0f,                // 非固体，不参与安息角规则
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(LightningParticle));
+            debugName: "雷电");
         // HasLogic 取默认 true：OnLogic 做闪光衰老（每帧推进 shade，末档 Clear）。
         // MotionReadReach 取默认 (1, 1, 1)：OnMotion 是空体，没有任何结构读距。
 

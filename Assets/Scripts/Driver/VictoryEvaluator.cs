@@ -326,8 +326,8 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 按 <c>DebugName</c> 或类名在注册表里查类型 id（与 <c>ParticleEditor.ResolveTypeNames</c> 同规则：
-        /// 任一匹配即可）。查不到返回 false。
+        /// 按 <see cref="ParticleTypeInfo.DebugName"/>（中文名）或 <see cref="ParticleType.ClassName"/>（类名）
+        /// 在注册表里查类型 id（与 <c>ParticleEditor.ResolveTypeNames</c> 同规则：任一匹配即可）。查不到返回 false。
         /// </summary>
         private static bool TryResolveTypeId(string name, out ushort typeId)
         {
@@ -346,7 +346,7 @@ namespace TapTap2026.Game
                     continue;
                 }
 
-                if (type.Info.DebugName == name || type.GetType().Name == name)
+                if (type.Info.DebugName == name || type.ClassName == name)
                 {
                     typeId = (ushort)i;
                     return true;

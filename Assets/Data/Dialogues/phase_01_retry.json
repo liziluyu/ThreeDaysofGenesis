@@ -1,0 +1,12 @@
+{
+  "id": "phase_01_retry",
+  "onEnd": "start_simulation",
+  "segments": [
+    {
+      "id": "start",
+      "lines": [
+        { "speaker": "", "text": "开发期占位：再次进入第一阶段。" }
+      ]
+    }
+  ]
+}

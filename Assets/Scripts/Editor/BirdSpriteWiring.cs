@@ -7,7 +7,7 @@ using UnityEngine;
 namespace TapTap2026.Editor
 {
     /// <summary>
-    /// 鸟美术接线工具：把 <c>bird.png</c> 的切片按语义接进 <c>SampleScene</c> 里动物渲染器的三块鸟帧字段——
+    /// 鸟美术接线工具：把 <c>bird.png</c> 的切片按语义接进 <c>MainScene</c>（由 SampleScene 改名而来）里动物渲染器的三块鸟帧字段——
     /// 上排 <c>bird_0..bird_3</c> → <c>_birdFlyFrames</c>（飞行组）、下排①③ <c>bird_4</c>/<c>bird_6</c> →
     /// <c>_birdPerchFrames</c>（栖息组）、下排② <c>bird_5</c> → <c>_birdTakeoffFrame</c>（起飞展翅单片）。
     /// 菜单 <c>Tools/Animals/Wire Bird Sprites</c>（同签名兼作 <c>-executeMethod</c> 入口）。
@@ -25,7 +25,7 @@ namespace TapTap2026.Editor
     public static class BirdSpriteWiring
     {
         /// <summary>目标场景（工程根相对路径）。</summary>
-        private const string ScenePath = "Assets/Scenes/SampleScene.unity";
+        private const string ScenePath = "Assets/Scenes/MainScene.unity";
 
         /// <summary>鸟美术（切片源）路径。</summary>
         private const string BirdSpritePath = "Assets/Images/Animals/bird/1/bird.png";

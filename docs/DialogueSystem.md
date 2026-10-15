@@ -15,7 +15,7 @@
 | `DialogueLineView.cs` | 显示层数据：一行（说话人 + 名字 + 头像/立绘 + 整句 + 旁白标记） |
 | `IDialogueView.cs` | **显示层契约**（由 UI 实现，控制器持有）：`ShowLine` / `SetRevealedText` / `ShowChoices` / `HideChoices` / `ShowReview` / `HideReview` / `CloseView` |
 | `DialogueController.cs` | **UI 无关核心**（MonoBehaviour）：热键、打字机协程、暂停模拟、说话人解析；显示全部经 `IDialogueView` |
-| `DialogueDebugView.cs` | **调试用 UI**（运行时构建 Canvas/面板，实现 `IDialogueView`）；真实 UI 可禁用它并 `SetView` |
+| `DialogueDebugView.cs` | **调试用 UI**（实现 `IDialogueView`；UI 层级是**场景里的可编辑对象**——`Dialogue Canvas` 下的对话面板 / 回顾面板 / 选项按钮模板，本组件只持引用并填数据）；真实 UI 可禁用它并 `SetView` |
 | `Assets/Data/Dialogues/example_dialogue.json` | 示例对话（`TextAsset`） |
 | `Assets/Tests/EditMode/DialogueRunnerTests.cs` | 状态机与解析的 EditMode 测试 |
 
@@ -114,7 +114,7 @@ public void CloseDialogue();                   // 强制关闭（跳过 onEnd）
 ## 6. 运行时表现（UI / 输入 / 暂停）
 
 - **显示层走接口**：控制器**不碰任何 UI 类型**，全部显示通过 `IDialogueView`（`ShowLine` / `SetRevealedText` / `ShowChoices` / `ShowReview` / `CloseView` …）。换对话框（例如接入另一个项目的 UI）只需实现该接口并 `SetView`。
-- **自带调试 UI**：`DialogueDebugView`（运行时构建 `Canvas` + 对话面板 + 回顾面板；默认隐藏；**不写场景文件**）。同一物体上存在它即作为默认视图；真实 UI 里禁用它并 `SetView(自己的视图)` 即可。
+- **自带调试 UI**：`DialogueDebugView`。它的 Canvas + 对话面板 + 回顾面板**摆在场景里**（`Dialogue Canvas`，overlay、sortingOrder 1000；由编辑器菜单 `Tools/TapTap2026/Scene UI Setup` 幂等补齐与接线），两个面板与选项按钮模板在场景里默认隐藏、可直接在编辑器里可视化编辑；选项按钮运行时从场景里的 `ChoiceButtonTemplate` 实例化。**整张 `Dialogue Canvas` 的显隐 = 是否在对话**：`Awake` 关掉整根画布、`ShowLine`（首句）打开、`CloseView`（对话结束）关掉；面板自己的开关只在画布内部切「哪一屏」。运行初态由 `Awake` 强制保证。同一物体上存在它即作为默认视图；真实 UI 里禁用它并 `SetView(自己的视图)` 即可。
 - **打字机**：协程按 `_charsPerSecond` 逐字输出；打字中按"下一句"→ 立即补全；纯文本（不解析 TMP 标签）。
 - **热键**（`KeyCode` 字段，可改）：`Space`/左键 = 下一句；`Tab` = 回顾；`Esc`/`Tab` = 关回顾；`T` = 调试播放示例。
 - **回顾**：独立面板，多行 `TMP_Text` + `ScrollRect`（滚轮滚动），打开时按当前 `History` 重建；回顾打开时**屏蔽下一句**。

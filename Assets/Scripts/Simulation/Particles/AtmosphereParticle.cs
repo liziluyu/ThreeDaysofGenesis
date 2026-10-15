@@ -62,7 +62,7 @@ namespace TapTap2026.Simulation
             friction: 0f,
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(AtmosphereParticle),
+            debugName: "大气",
             // 运动阅读盒：TryBuoyantStep 只读四邻 ⇒ (1, 1, 1)。TryThermalDrift 的「连片」判据读
             // (x ± 2, y) 的**温度**——温度读距不进盒（走世界的热脏路径，半径 2），故这里只声明结构读距。
             motionReadReach: new MotionReadBox(x: 1, up: 1, down: 1),

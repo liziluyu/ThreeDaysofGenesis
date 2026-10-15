@@ -123,7 +123,7 @@ namespace TapTap2026.Simulation
             friction: 0f,
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(AquaticPlantParticle),
+            debugName: "水生植物",
             lightAbsorption: LightAbsorptionFactor); // HasLogic 取默认 true：OnLogic 现做衰老
 
         public void OnMotion(ParticleWorld world, int x, int y)

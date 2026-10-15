@@ -89,7 +89,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual((ushort)(ParticleIds.Lightning + 1), Biomass, "Biomass 必须紧随雷电追加在清单末尾");
 
             ParticleTypeInfo info = BiomassInfo;
-            Assert.AreEqual("BiomassParticle", info.DebugName);
+            Assert.AreEqual("生物质", info.DebugName);
             Assert.IsTrue((info.Tags & ParticleTags.Solid) != 0, "生物质是固体");
             Assert.AreEqual(0, (int)(info.Tags & ParticleTags.Organic), "生物质不得带 Organic（避免重复衰变骰）");
             Assert.IsTrue(info.AffectedByGravity, "生物质受重力");
