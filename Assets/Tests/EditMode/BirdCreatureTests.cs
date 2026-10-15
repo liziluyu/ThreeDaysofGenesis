@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using NUnit.Framework;
+using TapTap2026.Rendering;
 using TapTap2026.Simulation;
 using UnityEngine;
 
@@ -53,6 +55,20 @@ namespace TapTap2026.Tests
         public void SetUp()
         {
             ParticleRegistration.RegisterAll();
+        }
+
+        /// <summary>帧选择用例造的假纹理：用例间清理，避免泄漏。</summary>
+        private readonly List<Texture2D> _frameTextures = new List<Texture2D>();
+
+        [TearDown]
+        public void TearDown()
+        {
+            foreach (Texture2D texture in _frameTextures)
+            {
+                Object.DestroyImmediate(texture);
+            }
+
+            _frameTextures.Clear();
         }
 
         // ============================== 共用脚手架 ==============================
@@ -616,6 +632,149 @@ namespace TapTap2026.Tests
             Assert.AreEqual(61, NonEmptyCount(cells), "鸟帧 0 不空格数应为 61");
             Assert.AreEqual(NonEmptyCount(cells), written, "每个非空轮廓格都应写入");
             Assert.AreEqual(written, CountType(world, Biomass), "场上生物质格数应恰等于轮廓格数（无多余写入）");
+        }
+
+        // ============================== 14. 帧组选择（纯函数） ==============================
+
+        /// <summary>造一个假帧 sprite（1×1 白纹理，仅用于引用比对；命名便于失败时的断言信息）。</summary>
+        private Sprite NewFrame(string name)
+        {
+            var texture = new Texture2D(1, 1);
+            _frameTextures.Add(texture);
+            Sprite sprite = Sprite.Create(texture, new Rect(0f, 0f, 1f, 1f), new Vector2(0f, 0f), 1f);
+            sprite.name = name;
+            return sprite;
+        }
+
+        /// <summary>① 栖息态：帧选择只在收翅组内交替（永远不返回飞行 / 展翅帧）。</summary>
+        [Test]
+        public void BirdFrame_Perched_PlaysPerchGroup()
+        {
+            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
+            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite takeoff = NewFrame("takeoff5");
+
+            var seen = new HashSet<Sprite>();
+            for (int i = 0; i < 16; i++)
+            {
+                Sprite frame = CreatureRenderer.ResolveBirdFrame(
+                    BirdBrain.StatePerched, 0f, i, fly, perch, takeoff);
+                Assert.Contains(frame, perch, "栖息态应播收翅组帧");
+                seen.Add(frame);
+            }
+
+            Assert.AreEqual(perch.Length, seen.Count, "收翅两片都应在栖息态交替出现（不是死盯第一片）");
+        }
+
+        /// <summary>② 飞行态：帧选择只在上排飞行组内循环。</summary>
+        [Test]
+        public void BirdFrame_Fly_PlaysFlyGroup()
+        {
+            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
+            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite takeoff = NewFrame("takeoff5");
+
+            var seen = new HashSet<Sprite>();
+            for (int i = 0; i < 8; i++)
+            {
+                Sprite frame = CreatureRenderer.ResolveBirdFrame(
+                    BirdBrain.StateFly, 0f, i, fly, perch, takeoff);
+                Assert.Contains(frame, fly, "飞行态应播上排飞行组帧");
+                seen.Add(frame);
+            }
+
+            Assert.AreEqual(fly.Length, seen.Count, "上排 4 片都应循环出现");
+        }
+
+        /// <summary>③ Perched → Fly 沿：先定格展翅帧，过渡耗尽后进飞行组循环。</summary>
+        [Test]
+        public void BirdFrame_PerchedToFly_PlaysTakeoffThenFly()
+        {
+            const float duration = 0.3f;
+            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
+            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite takeoff = NewFrame("takeoff5");
+
+            // 沿那一帧起满过渡。
+            float remaining = CreatureRenderer.AdvanceBirdTakeoff(
+                BirdBrain.StatePerched, BirdBrain.StateFly, 0f, 0.02f, duration);
+            Assert.AreEqual(duration, remaining, "Perched → Fly 沿应把过渡计时重置为满时长");
+
+            Sprite during = CreatureRenderer.ResolveBirdFrame(
+                BirdBrain.StateFly, remaining, 7f, fly, perch, takeoff);
+            Assert.AreSame(takeoff, during, "过渡期间应定格展翅帧（不随相位换帧）");
+
+            // 过渡剩余按真实秒数递减到 0。
+            remaining = CreatureRenderer.AdvanceBirdTakeoff(
+                BirdBrain.StateFly, BirdBrain.StateFly, remaining, 0.1f, duration);
+            Assert.AreEqual(0.2f, remaining, 1e-5f, "过渡应随真实时间递减");
+
+            remaining = CreatureRenderer.AdvanceBirdTakeoff(
+                BirdBrain.StateFly, BirdBrain.StateFly, remaining, 0.5f, duration);
+            Assert.AreEqual(0f, remaining, "过渡应夹到 0，不越界为负");
+
+            Sprite after = CreatureRenderer.ResolveBirdFrame(
+                BirdBrain.StateFly, remaining, 7f, fly, perch, takeoff);
+            Assert.Contains(after, fly, "过渡耗尽后应进飞行组循环");
+        }
+
+        /// <summary>④ 重复进出栖息：每次 Perched → Fly/Flee 沿都能重新触发过渡；Fly → Perched 无过渡。</summary>
+        [Test]
+        public void BirdTakeoff_Retriggers_OnEachPerchDeparture()
+        {
+            const float duration = 0.3f;
+            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
+            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite takeoff = NewFrame("takeoff5");
+
+            float remaining = CreatureRenderer.AdvanceBirdTakeoff(
+                BirdBrain.StatePerched, BirdBrain.StateFly, 0f, 0f, duration);
+            Assert.AreEqual(duration, remaining, "第一次起飞应触发过渡");
+
+            // Fly → Perched：无过渡，立即切栖息组（帧选择层保证），且不重启计时。
+            remaining = CreatureRenderer.AdvanceBirdTakeoff(
+                BirdBrain.StateFly, BirdBrain.StatePerched, remaining, 0.05f, duration);
+            Assert.AreEqual(duration - 0.05f, remaining, 1e-5f, "Fly → Perched 不重启过渡计时");
+            Assert.Contains(
+                CreatureRenderer.ResolveBirdFrame(BirdBrain.StatePerched, remaining, 3f, fly, perch, takeoff),
+                perch,
+                "落到栖息面应立即播收翅组（无过渡）");
+
+            // 再次 Perched → Fly：重新起满过渡。
+            remaining = CreatureRenderer.AdvanceBirdTakeoff(
+                BirdBrain.StatePerched, BirdBrain.StateFly, remaining, 0.02f, duration);
+            Assert.AreEqual(duration, remaining, "重复进出栖息应能重新触发过渡");
+            Assert.AreSame(
+                takeoff,
+                CreatureRenderer.ResolveBirdFrame(BirdBrain.StateFly, remaining, 3f, fly, perch, takeoff),
+                "第二次起飞应重新定格展翅帧");
+
+            // Perched → Flee 沿同样触发（起飞逃命也是展翅）。
+            Assert.AreEqual(
+                duration,
+                CreatureRenderer.AdvanceBirdTakeoff(BirdBrain.StatePerched, BirdBrain.StateFlee, 0f, 0.02f, duration),
+                "Perched → Flee 沿同样触发过渡");
+
+            // 未观测过（LastAiState = −1）不算沿，开局即为 Fly 不误播展翅。
+            Assert.AreEqual(
+                0f,
+                CreatureRenderer.AdvanceBirdTakeoff(-1, BirdBrain.StateFly, 0f, 0.02f, duration),
+                "尚未观测过的首帧不算沿");
+        }
+
+        /// <summary>⑤ 鸟 Flee 的动画倍率 == 3（与兔子同惯例）；在动 ×2、静止 ×1。</summary>
+        [Test]
+        public void BirdSpeedFactor_FleeIsTriple()
+        {
+            var bird = new BirdCreature { AiState = BirdBrain.StateFly, VelocityX = 0.05f };
+            Assert.AreEqual(2f, CreatureRenderer.ResolveAnimSpeedFactor(bird), "飞行移动应 ×2");
+
+            bird.AiState = BirdBrain.StateFlee;
+            Assert.AreEqual(3f, CreatureRenderer.ResolveAnimSpeedFactor(bird), "鸟 Flee 应与兔子同惯例 ×3");
+
+            bird.AiState = BirdBrain.StatePerched;
+            bird.VelocityX = 0f;
+            Assert.AreEqual(1f, CreatureRenderer.ResolveAnimSpeedFactor(bird), "栖息静止应 ×1");
         }
     }
 }
