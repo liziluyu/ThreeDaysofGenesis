@@ -183,20 +183,31 @@ namespace TapTap2026.Tests
         [Test]
         public void ScreenFeedAndBackdropAreWired()
         {
-            // 占位图 → 显示相机画面的 RawImage（纹理是运行期建的，场景里只有引用与开关状态）。
-            GameObject background = Root("HUD Canvas").transform.Find("Background").gameObject;
-            RawImage feedImage = background.GetComponent<RawImage>();
-            Assert.IsNotNull(feedImage, "HUD Canvas/Background 应当是显示相机画面的 RawImage");
-            Assert.IsNull(background.GetComponent<Image>(), "占位图片的 Image 应当已被 RawImage 取代");
-            Assert.IsFalse(feedImage.enabled, "未接管时它是禁用的（编辑模式下不画、相机直接画屏）");
-            Assert.IsNull(feedImage.texture, "画面纹理是运行期建的，场景里不该带");
+            // 显示图 = 屏幕正中央、2:1、画布最底层的 RawImage（纹理是运行期相机画面，场景里带占位图）。
+            GameObject viewObject = Root("HUD Canvas").transform.Find("SandboxView").gameObject;
+            RawImage feedImage = viewObject.GetComponent<RawImage>();
+            Assert.IsNotNull(feedImage, "HUD Canvas/SandboxView 应当是显示相机画面的 RawImage");
+
+            RectTransform view = (RectTransform)viewObject.transform;
+            Assert.AreEqual(new Vector2(0.5f, 0.5f), view.anchorMin, "显示图应当锚在屏幕正中");
+            Assert.AreEqual(new Vector2(0.5f, 0.5f), view.anchorMax);
+            Assert.AreEqual(Vector2.zero, view.anchoredPosition, "显示图应当在屏幕正中央");
+            Assert.AreEqual(2f, view.sizeDelta.x / view.sizeDelta.y, 0.001f,
+                "显示图的宽高比应当是 2:1（= 默认沙箱网格 200×100）");
+            Assert.AreEqual(0, view.GetSiblingIndex(), "显示图应当是 HUD 画布的最底层（其余 UI 压在它上面）");
+            Assert.IsFalse(feedImage.raycastTarget, "显示图是纯显示层，不该吃点击");
+
+            // 占位图：编辑模式看到的就是它；运行期被 CameraScreenFeed 换成相机画面并在退出时还原。
+            Assert.AreEqual("SandboxView", feedImage.texture != null ? feedImage.texture.name : null,
+                "显示图在场景里应当带着占位图 SandboxView");
+            Assert.IsTrue(feedImage.enabled, "显示图应当启用（编辑模式显示占位图）");
 
             Camera mainCamera = Camera.main;
             Assert.IsNotNull(mainCamera, "场景里应当有一台 MainCamera");
             CameraScreenFeed feed = mainCamera.GetComponent<CameraScreenFeed>();
             Assert.IsNotNull(feed, "Main Camera 上没有 CameraScreenFeed");
             Assert.AreSame(mainCamera, Ref(feed, "_camera"), "CameraScreenFeed._camera 没接主相机");
-            Assert.AreSame(feedImage, Ref(feed, "_target"), "CameraScreenFeed._target 没接 Background");
+            Assert.AreSame(feedImage, Ref(feed, "_target"), "CameraScreenFeed._target 没接 SandboxView");
 
             // 主相机改画纹理后，屏幕上必须还有相机在画，否则 Game 视图会警告 No cameras rendering。
             Camera backdrop = Root("ScreenBackdrop").GetComponent<Camera>();
@@ -210,6 +221,61 @@ namespace TapTap2026.Tests
 
             Assert.IsNull(mainCamera.targetTexture, "编辑模式下主相机直接画屏，纹理由 CameraScreenFeed 运行期接管");
             Assert.AreEqual(1f, mainCamera.backgroundColor.a, 0.001f, "清屏色必须不透明——它会成为纹理的 alpha");
+        }
+
+        [Test]
+        public void ParticlePanelIsWired()
+        {
+            // 投放面板：10 颗按钮各绑一个投放项显示名，点击由 ParticleSelectionPanel 在运行期绑定
+            // （场景里留持久监听会重复触发）。
+            GameObject panelObject = Root("HUD Canvas").transform.Find("ParticlePanel").gameObject;
+            ParticleSelectionPanel panel = panelObject.GetComponent<ParticleSelectionPanel>();
+            Assert.IsNotNull(panel, "HUD Canvas/ParticlePanel 上没有 ParticleSelectionPanel");
+
+            Assert.AreSame(Root("Particle Sandbox").GetComponent<ParticleEditor>(), Ref(panel, "_editor"),
+                "ParticleSelectionPanel._editor 没接 Particle Sandbox 上的 ParticleEditor");
+            Assert.AreSame(panelObject.transform.Find("Erease").GetComponent<Button>(), Ref(panel, "_eraseButton"),
+                "ParticleSelectionPanel._eraseButton 没接 ParticlePanel/Erease");
+
+            string[,] expected =
+            {
+                { "Stone", "StoneParticle" },
+                { "Sand", "SandParticle" },
+                { "Dirt", "SoilParticle" },
+                { "Water", "WaterParticle" },
+                { "Fire", "FireParticle" },
+                { "Tree_seed", "TreeSeedParticle" },
+                { "Grass_seed", "GrassSeedParticle" },
+                { "Rabbit", "兔子" },
+                { "Fish", "鱼" },
+                { "Bird", "鸟" },
+            };
+
+            SerializedObject serialized = new SerializedObject(panel);
+            SerializedProperty bindings = serialized.FindProperty("_bindings");
+            Assert.AreEqual(expected.GetLength(0), bindings.arraySize, "投放面板应当接 10 颗按钮");
+
+            for (int i = 0; i < bindings.arraySize; i++)
+            {
+                SerializedProperty element = bindings.GetArrayElementAtIndex(i);
+                string name = expected[i, 0];
+
+                Assert.AreSame(panelObject.transform.Find(name).GetComponent<Button>(),
+                    element.FindPropertyRelative("Button").objectReferenceValue,
+                    "第 " + i + " 槽没接 ParticlePanel/" + name);
+                Assert.AreEqual(expected[i, 1], element.FindPropertyRelative("SelectionName").stringValue,
+                    "ParticlePanel/" + name + " 绑的投放项显示名不对");
+            }
+
+            // 面板点击一律走运行期绑定：11 颗按钮（10 投放 + 清除）上都不该留场景里的持久监听。
+            for (int i = 0; i < panelObject.transform.childCount; i++)
+            {
+                Transform child = panelObject.transform.GetChild(i);
+                Button button = child.GetComponent<Button>();
+                Assert.IsNotNull(button, "ParticlePanel/" + child.name + " 上没有 Button");
+                Assert.AreEqual(0, button.onClick.GetPersistentEventCount(),
+                    "ParticlePanel/" + child.name + " 上不该有 onClick 持久监听（点击由 ParticleSelectionPanel 运行期绑定）");
+            }
         }
 
         // ============================== 小工具 ==============================
