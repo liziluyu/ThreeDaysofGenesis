@@ -186,7 +186,7 @@ namespace TapTap2026.Simulation
         {
             ushort id = (ushort)(_count + 1);
             var type = new ParticleType(
-                id, info, behaviour.OnMotion, behaviour.OnLogic,
+                id, info, behaviour.GetType().Name, behaviour.OnMotion, behaviour.OnLogic,
                 behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
 
             EnsureCapacity(id);

@@ -110,7 +110,7 @@ namespace TapTap2026.Simulation
             friction: 0f,
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(TreeTrunkParticle),
+            debugName: "树干",
             // 遮光率不得超过草的 0.8：稳态温 T ≈ 10×LightAbsorption/(voidHeatLoss+radiativeLoss)
             // = 58.8×Absorption，取 0.8 ⇒ ≈47° < 50° 致死线（ParticleWorldTests 的稳态契约）。
             lightAbsorption: 0.8f,

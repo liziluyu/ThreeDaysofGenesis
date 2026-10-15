@@ -208,7 +208,7 @@ namespace TapTap2026.Simulation
             friction: 0f,                // 非固体，不参与安息角规则
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(FireParticle));
+            debugName: "火");
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {

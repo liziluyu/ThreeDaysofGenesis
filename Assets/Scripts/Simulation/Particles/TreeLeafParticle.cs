@@ -79,7 +79,7 @@ namespace TapTap2026.Simulation
             friction: 0f,      // 不走 ParticleRules.StepSolid（失活叶只竖直下落、不滚落），两值仅占位
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(TreeLeafParticle),
+            debugName: "树叶",
             // 遮光率照抄草的 0.8（热学红线：稳态 T ≈ 58.8×Absorption，0.8 ⇒ ≈47° < 50° 致死线）。
             lightAbsorption: 0.8f,
             hasLogic: false);  // OnLogic 严格空体：失活 / 死亡都在随机刻

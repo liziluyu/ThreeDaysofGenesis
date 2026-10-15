@@ -811,7 +811,7 @@ namespace TapTap2026.Tests
 
         private static ParticleType Bind(ushort id, IParticleType behaviour)
         {
-            return new ParticleType(id, behaviour.Info, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
+            return new ParticleType(id, behaviour.Info, behaviour.GetType().Name, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
         }
     }
 
@@ -826,7 +826,8 @@ namespace TapTap2026.Tests
             {
                 IParticleType behaviour = behaviours[i];
                 table[i + 1] = new ParticleType(
-                    (ushort)(i + 1), behaviour.Info, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
+                    (ushort)(i + 1), behaviour.Info, behaviour.GetType().Name,
+                    behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
             }
 
             return table;
@@ -863,7 +864,7 @@ namespace TapTap2026.Tests
 
         private static ParticleType Bind(ushort id, IParticleType behaviour)
         {
-            return new ParticleType(id, behaviour.Info, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
+            return new ParticleType(id, behaviour.Info, behaviour.GetType().Name, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
         }
     }
 }

@@ -44,7 +44,7 @@ namespace TapTap2026.Simulation
             friction: 0.5f,
             stickiness: 0.5f,
             palette: Palette,
-            debugName: nameof(HumusParticle),
+            debugName: "腐殖质",
             // 运动阅读盒：0.5/0.5 StepSolid ⇒ 斜滑净空链 3 格，即 (1, 0, 3)。
             motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3));
 

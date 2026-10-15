@@ -115,7 +115,7 @@ namespace TapTap2026.Simulation
             friction: 0f,
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(WaterParticle),
+            debugName: "水",
             // 运动阅读盒：TryFlowSide 的「落差视野」逐格扫到 x ± MaxFlowSpread(= 5) 并读 (scanX, y−1)
             // 是否有气体；TryLiquidConvect 读 (x, y+1) 是否也是液体；穿冠扫描沿正下扫过连续叶柱、
             // 并读叶柱下的第一格 ⇒ 向下 = 1（正下）+ CanopyPassMaxDepth(= 8) = 9。

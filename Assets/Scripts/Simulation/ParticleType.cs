@@ -13,6 +13,14 @@ namespace TapTap2026.Simulation
         /// <summary>类型属性。</summary>
         public readonly ParticleTypeInfo Info;
 
+        /// <summary>
+        /// 行为类的类名（如 <c>StoneParticle</c>）——注册时由 <see cref="ParticleRegistry"/> 从行为单例取，
+        /// 是**语言无关的类型标识**：白名单 / 阶段 JSON / 场景接线都按它匹配（见
+        /// <c>ParticleEditor.ResolveTypeNames</c> / <c>VictoryEvaluator</c> / <c>ParticleEditor.SelectByName</c>），
+        /// 界面上显示的是 <see cref="ParticleTypeInfo.DebugName"/>（中文名）。
+        /// </summary>
+        public readonly string ClassName;
+
         /// <summary>运动帧（60 Hz）委托，提取自注册时的行为单例。</summary>
         public readonly ParticleMotionDelegate OnMotion;
 
@@ -31,6 +39,7 @@ namespace TapTap2026.Simulation
         public ParticleType(
             ushort id,
             ParticleTypeInfo info,
+            string className,
             ParticleMotionDelegate onMotion,
             ParticleLogicDelegate onLogic,
             ParticleRandomTickDelegate onRandomTick,
@@ -39,6 +48,7 @@ namespace TapTap2026.Simulation
         {
             Id = id;
             Info = info;
+            ClassName = className;
             OnMotion = onMotion;
             OnLogic = onLogic;
             OnRandomTick = onRandomTick;

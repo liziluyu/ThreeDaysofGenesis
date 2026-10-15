@@ -25,7 +25,7 @@
 - 类型单例上的**私有实例字段做类型级暂存**是允许的（例如反应扩散的邻域缓冲）。理由：整个模拟单线程、每类型只有一个实例，不存在 per-cell 状态。
   **禁止**把 per-cell 状态放进单例字段——per-cell 状态只能放进 `Cell`。
 - 类型级配置常量（密度、调色板）写在类里；**全局**模拟参数（网格尺寸、运动/逻辑帧速率、随机种子）走 `ScriptableObject`。
-- `string DebugName` 允许存在，因为它只用于编辑器/日志显示，**永不出现在模拟热路径**。
+- `string DebugName` 允许存在，因为它只用于编辑器/日志显示，**永不出现在模拟热路径**——它是类型的**中文显示名**（`石头` / `沙` / `水` / `火`…），光标格读数与高速模式结算行直接显示它；按名字查找（白名单 / 阶段 JSON / 场景接线）另有**类名**这一条语言无关的匹配路径（见 `ParticleEditor.ResolveTypeNames` 与 `SelectByName`）。
 
 ---
 
@@ -142,7 +142,7 @@ public readonly struct ParticleTypeInfo
     public readonly float    Stickiness;         // 粘性 0..1，只读于固体运动规则（见下）
     public readonly float    LightAbsorption;    // 光照吸收率 ∈ [0,1]（可选，默认 1）：光照注入本格时按它缩放，只读于 LightController
     public readonly Color32[] Palette;           // 调色板，长度 1..256，索引 = Cell.shade
-    public readonly string   DebugName;          // 仅调试显示，热路径禁用
+    public readonly string   DebugName;          // **中文显示名**（如 石头 / 沙 / 水 / 火）：仅用于编辑器 / HUD / 日志显示，热路径禁用
     public readonly bool     HasLogic;           // OnLogic 是否含真实行为（构造参数可选，默认 true）；false = 严格空体，逻辑帧扫描整段跳过，见 §7「逻辑帧混合扫描」
 }
 ```
@@ -482,7 +482,7 @@ public sealed class XxxParticle : IParticleType
         friction: 0f,
         stickiness: 0f,
         palette: Palette,
-        debugName: nameof(XxxParticle));
+        debugName: "中文名");   // 该类型的**中文显示名**（光标格读数与高速结算行显示的字符串；按名字查找另有语言无关的类名匹配路径）
 
     // 固体：运动帧只做 ParticleRules.StepSolid(world, x, y);（按上面的 friction / stickiness 决定安息角）
     public void OnMotion(ParticleWorld world, int x, int y) { /* ... */ }
@@ -1495,7 +1495,7 @@ Particle Sandbox
 - **编辑操作（`ParticleEditor`）**：按住**左键**用当前粒子填满鼠标处半径 r 的实心圆（r 默认 3，即 29 格）；**滚轮**在 1..10 之间调整 r；按**右键**在可投放类型间循环切换（**材料类固/液 + Gas 白名单**——石头/沙/土/水/火，外加草种子；其余 Gas 中间态由相变/清空产生，草/湿土/腐殖质/腐殖土/湿润腐殖土/水生植物只能由模拟产生，都不可手刷；水汽是湿度场的量，根本不是粒子）；鼠标旁常驻色块 + 类型名 + `序号/总数` + `r=半径`（单颗投放的类型显示「单颗」）。写入走 `world.Set`，因此世界会把新格标成「本 tick 未处理」，画的粒子下一 tick 必定被模拟；驱动暂停（`Simulate = false`）时编辑器补一次 `PresentNow()` 以便看到刚落下的东西。鼠标 → 格子：相机射线打到 z=0 平面后换算到渲染器局部坐标取整，网格 quad 的 1 cell = 1 unit 是这条换算成立的前提。
 - **投放白名单（`ParticleEditor`）**：三个 Inspector 字符串列表，按类型的 `DebugName`（或类名）解析成 typeId——`_unplaceableTypes`（默认 `GrassParticle` / `FlowerParticle` / `WetSoilParticle` / `HumusParticle` / `HumusSoilParticle` / `WetHumusSoilParticle` / `AquaticPlantParticle` / `TreeTrunkParticle` / `TreeLeafParticle`）把它们从右键循环里剔除；`_singlePlacementTypes`（默认 `GrassSeedParticle` / `TreeSeedParticle`）让这些类型**无论笔刷半径多大都只在光标中心落一颗**，且两次投放之间共享 `SinglePlacementCooldownSeconds` = **500ms** 冷却（`Time.unscaledTime`，暂停时照常计时），按住左键也不会每帧落一颗；`_placeableGasTypes`（默认 `FireParticle`）让白名单里的 Gas 例外可手刷（Gas 默认一律不可投放——蒸汽/云/大气是水循环中间态、只能由相变产生，火是唯一例外；火还另有 `FireParticle.CanPlaceAt` 投放资格：只在空气 / 气体格、不覆盖实体，**无附着 / 悬空限制**，圆刷时不合格的格被跳过）。将来有更多「单颗 + 冷却」「不可投放」或「可手刷气体」的类型时，往对应列表追加类型名即可。
 - **笔刷轮廓圈（`ParticleEditor` → `ParticleRenderer`）**：光标处常驻一圈**白色像素圆**，半径 = 当前笔刷半径，圈上的格**恰好是左键会写到的格**（同一套 `dx² + dy² ≤ r²` 判据，见 §9）。它画在**像素场景的顶层**：场景里的 `Particle Sandbox/ParticleBrushOverlay`（`SpriteRenderer`，由 `_brushRenderer` 接线；未接线时运行时自建兜底）+ 自己的小纹理，`pixelsPerUnit = 1` + pivot 居中 ⇒ 1 texel = 1 格，深度 −2 且 `sortingOrder = 1`，压在世界 quad 与动物视图之上；因此与格子逐格对齐、随相机缩放 / 平移自动贴合。`ParticleEditor` 每帧把 `_hoverCellValid / _hoverCellX / _hoverCellY`（由光标读数的同一次射线给出）推给渲染器：光标在网格外、`_drawHud` 关、高速模式锁编辑或 `SuppressInput`（对话）时撤下，不留上一帧的残影。缓冲与纹理按半径增长式复用，≤ 21×21 像素、零逐帧分配。
-- **光标格读数（屏幕左上角）**：常驻一行 `(x,y)  粒子名  T=温度  Q=热量  湿度=…`，显示光标指向的那一格；光标落在网格外则显示「视口外」。读数文本由 `ParticleEditor` 生成、上屏走 `SandboxHud` 的 `HUD Canvas/ProbeText`（场景可编辑）。温度是导出量 `T = Q / C`（C 取该格类型的热容，气体还会加上该格**湿度**带来的附加热容 `HeatMap.HumidityHeatCapacity`），湿度对固/液恒为 0。纯调试读数：只读 `world.Heat` / `world.Humidity`，不参与模拟，也不改动任何状态。
+- **光标格读数（屏幕左上角）**：常驻一行 `(x,y)  粒子中文名  温度=…  热量=…  湿度=…`（只有这一行格子读数：不追加倍速后缀，清除模式也不加前缀），显示光标指向的那一格；光标落在网格外则显示「视口外」。读数文本由 `ParticleEditor` 生成、上屏走 `SandboxHud` 的 `HUD Canvas/ProbeText`（场景可编辑）。温度是导出量 `T = Q / C`（C 取该格类型的热容，气体还会加上该格**湿度**带来的附加热容 `HeatMap.HumidityHeatCapacity`），湿度对固/液恒为 0。纯调试读数：只读 `world.Heat` / `world.Humidity`，不参与模拟，也不改动任何状态。
 - **预设演示内容已弃用**：`ParticleSandboxSeeder` 的「石头容器 + 沙堆」预设在石头改为高摩擦 + 高粘性（摩擦度 0.9 / 粘性 0.9）后不再稳定——整列挡墙内缘高处的石块会滑入容器。保留仅为兼容旧场景；新内容用 `ParticleEditor` 手绘。（右键菜单 `Reseed()` 仍可用，但别指望挡墙长期不漏。）
 - 相机由渲染器在首次建立纹理时自动摆正（`orthographicSize = Height/2`，位置 `(Width/2, Height/2, -10)`），Main Camera 本身无需手改。
 - **相机左右平移（左右方向键 / A / D）**：`ParticleEditor` 每帧按 `_panLeftKeys`（默认 `LeftArrow` + `A`）与 `_panRightKeys`（默认 `RightArrow` + `D`）的**按住**状态算出方向（+1 / −1，同时按住即抵消），乘 `_panSpeed`（默认 30 格/秒）与 `Time.deltaTime` 得到格数，交给 `ParticleRenderer.PanCamera` 落地（相机位置写入与夹取都在渲染器，见 §9）。**视口始终夹在沙箱左右边界内**：相机中心 x 恒在 `[半视宽, Width − 半视宽]`；视口比沙箱还宽时恒居中（此时平移无效）——移不出沙箱，也不会露出网格外的空白。**平移只动相机**：不写 `Cell[]`、不碰随机流、不重建纹理，因此不参与确定性，也**不受暂停影响**（`Time.deltaTime` 是真实帧时间，暂停只冻结模拟推进）；高速模式中同样可用（那里锁的是编辑，不是视角）。看不见输入时也照常调一次（格数 = 0），以便 Game 视图宽高比变化后把相机夹回沙箱内。默认两键是 `LeftArrow` + `A` / `RightArrow` + `D`；列表留空或全设 `None` 即关闭对应方向，`_panSpeed <= 0` 关闭平移（夹取仍在）。

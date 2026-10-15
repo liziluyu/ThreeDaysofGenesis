@@ -1016,6 +1016,8 @@ namespace TapTap2026.Game
         /// <summary>
         /// (x,y) 的读数行：坐标 + 粒子名 + 温度 + 热量 + 湿度。
         /// 温度是导出量 <c>T = Q / 热容</c>，热量是格子里存的那份 Q，湿度对这一格而言（固/液恒为 0）。
+        /// 粒子名取 <see cref="ParticleTypeInfo.DebugName"/>（每类型一个中文名，见各粒子类型的 <c>Info</c>），
+        /// 空气与未注册 / 空槽一律显示「空气」。
         /// 数值固定用不变文化格式化，免得跟着系统区域设置漂出逗号小数点。
         /// </summary>
         public static string DescribeCell(ParticleWorld world, int x, int y)
@@ -1033,7 +1035,7 @@ namespace TapTap2026.Game
 
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "({0},{1})  {2}  T={3:0.0}  Q={4:0.00}  湿度={5:0.000}",
+                "({0},{1})  {2}  温度={3:0.0}  热量={4:0.00}  湿度={5:0.000}",
                 x, y, name, temperature, heat, humidity);
         }
 
@@ -1087,8 +1089,9 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 把 Inspector 上的类型名列表解析成 typeId 集合：按 <see cref="ParticleTypeInfo.DebugName"/> 或类名匹配
-        /// 注册表里的每一个类型。找不到的名字记一条警告并跳过（拼错类型名不会静默失效）。
+        /// 把 Inspector 上的类型名列表解析成 typeId 集合：按 <see cref="ParticleTypeInfo.DebugName"/>（中文名）
+        /// 或 <see cref="ParticleType.ClassName"/>（类名）匹配注册表里的每一个类型。找不到的名字记一条警告并跳过
+        /// （拼错类型名不会静默失效）。
         /// 注册表由 <c>BeforeSceneLoad</c> 钩子填充，本方法只在 <c>Awake</c> 与 <c>SetPlacementFilter</c> 里调用，因此读得到全部类型。
         /// </summary>
         private static void ResolveTypeNames(string[] names, HashSet<ushort> destination)
@@ -1116,7 +1119,7 @@ namespace TapTap2026.Game
                         continue;
                     }
 
-                    if (type.Info.DebugName == name || type.GetType().Name == name)
+                    if (type.Info.DebugName == name || type.ClassName == name)
                     {
                         destination.Add((ushort)i);
                         found = true;

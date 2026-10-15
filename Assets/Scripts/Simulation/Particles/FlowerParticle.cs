@@ -90,7 +90,7 @@ namespace TapTap2026.Simulation
             friction: 0f,
             stickiness: 0f,
             palette: Palette,
-            debugName: nameof(FlowerParticle),
+            debugName: "花",
             lightAbsorption: LightAbsorptionFactor,
             hasLogic: false); // OnLogic 严格空体：花不衰老、无相变，死法全在随机刻
 
