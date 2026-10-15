@@ -66,8 +66,15 @@ namespace TapTap2026.Game
         [Tooltip("结算面板的胜负行（无胜负结论时隐藏）。")]
         [SerializeField] private TMP_Text _reportVerdict;
 
+        [Tooltip("暂停界面（暂停菜单）的根，默认隐藏，由 ParticleEditor 的暂停按钮开关。")]
+        [SerializeField] private GameObject _pauseMenu;
+
         [Tooltip("右上角光照面板的根；挂 CanvasGroup 用于整体变灰 / 屏蔽点击。")]
         [SerializeField] private RectTransform _lightPanel;
+
+        [Tooltip("暂停 / 光照 / 高速三颗按钮的面板根。指针落在它上面时编辑器屏蔽左键投放——" +
+                 "点按钮不会顺带在底下画一笔（与光照面板同一条判据）。")]
+        [SerializeField] private RectTransform _buttonPanel;
 
         [Tooltip("光照强度输入框（可写，任意有限浮点；负值 = 制冷）。")]
         [SerializeField] private TMP_InputField _lightIntensity;
@@ -154,8 +161,9 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 统一开关 HUD：光标读数 / 鼠标跟随组 / 高速读数 / 光照面板一起显隐，隐藏时结算面板也一并收起
-        /// （对齐旧的「<c>_drawHud</c> 关了整块不画」）。光照面板只在接线了光源驱动器时才现身。
+        /// 统一开关 HUD：光标读数 / 鼠标跟随组 / 高速读数一起显隐，隐藏时暂停界面、光照面板与结算面板也一并收起
+        /// （对齐旧的「<c>_drawHud</c> 关了整块不画」）。暂停界面 / 光照面板的再次打开走各自的
+        /// <see cref="SetPauseMenuVisible"/> / <see cref="SetLightPanelVisible"/>；光照面板只在接线了光源驱动器时才现身。
         /// </summary>
         public void SetHudVisible(bool visible)
         {
@@ -164,10 +172,12 @@ namespace TapTap2026.Game
             SetActive(_probeText != null ? _probeText.gameObject : null, visible);
             SetActive(_cursorHint != null ? _cursorHint.gameObject : null, visible);
             SetActive(_highSpeedStatus != null ? _highSpeedStatus.gameObject : null, visible);
-            SetActive(_lightPanel != null ? _lightPanel.gameObject : null, visible && _lightDriver != null);
 
             if (!visible)
             {
+                // 整块 HUD 关闭时暂停界面与光照面板一并收起；重新打开由各自的方法恢复——它们另有独立开关。
+                SetActive(_pauseMenu, false);
+                SetActive(_lightPanel != null ? _lightPanel.gameObject : null, false);
                 HideHighSpeedReport();
             }
         }
@@ -238,6 +248,21 @@ namespace TapTap2026.Game
             SetActive(_reportPanel, false);
         }
 
+        /// <summary>开关暂停界面（暂停菜单）的显示；<paramref name="visible"/> 为 false 时整块收起。未接线时无事发生。</summary>
+        public void SetPauseMenuVisible(bool visible)
+        {
+            SetActive(_pauseMenu, visible);
+        }
+
+        /// <summary>
+        /// 开关光照面板（光照选择界面）的显示；<paramref name="visible"/> 为 true 但没接光源驱动器时仍保持隐藏
+        /// （没有写入口的面板画出来只会误导，与 <see cref="Awake"/> 的初态判断一致）。
+        /// </summary>
+        public void SetLightPanelVisible(bool visible)
+        {
+            SetActive(_lightPanel != null ? _lightPanel.gameObject : null, visible && _lightDriver != null);
+        }
+
         /// <summary>
         /// 光照面板整体可用性：<c>interactable</c> / <c>blocksRaycasts</c> 一起切，并按 1 / 0.6 的透明度
         /// 表达「变灰」（对齐旧 IMGUI 的 <c>GUI.enabled = false</c>——看得见、点不动、也敲不进去）。
@@ -255,16 +280,22 @@ namespace TapTap2026.Game
             _lightPanelGroup.alpha = interactable ? 1f : 0.6f;
         }
 
-        /// <summary>指针是否落在光照面板矩形内（overlay 画布，camera 传 null）。
-        /// 面板没接线或没有光源驱动器时恒为 false——没画出来的东西不该挡画笔。</summary>
-        public bool IsPointerOverLightPanel(Vector2 screenPosition)
+        /// <summary>
+        /// 指针是否落在**会吃掉点击的 HUD 面板**上（光照面板或按钮面板）。编辑器据此屏蔽左键投放 / 擦除——
+        /// 点按钮、点输入框时指针同时也在网格上，不挡就会既改 UI 又在底下画一笔。
+        /// 隐藏的面板不挡（没画出来的东西不该挡画笔）；未接线的面板恒不挡。
+        /// </summary>
+        public bool IsPointerOverPanel(Vector2 screenPosition)
         {
-            if (_lightDriver == null || _lightPanel == null)
-            {
-                return false;
-            }
+            return Contains(_lightPanel, screenPosition) || Contains(_buttonPanel, screenPosition);
+        }
 
-            return RectTransformUtility.RectangleContainsScreenPoint(_lightPanel, screenPosition);
+        /// <summary>overlay 画布与矩形求交（camera 传 null）；不可见 / 未接线恒 false。</summary>
+        private static bool Contains(RectTransform panel, Vector2 screenPosition)
+        {
+            return panel != null
+                && panel.gameObject.activeInHierarchy
+                && RectTransformUtility.RectangleContainsScreenPoint(panel, screenPosition);
         }
 
         /// <summary>

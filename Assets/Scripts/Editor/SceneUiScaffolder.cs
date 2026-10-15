@@ -3,9 +3,11 @@ using TMPro;
 using TapTap2026.Game;
 using TapTap2026.Rendering;
 using UnityEditor;
+using UnityEditor.Events;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Events;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 using UnityEngine.TextCore.LowLevel;
@@ -14,22 +16,22 @@ using UnityEngine.UI;
 namespace TapTap2026.EditorTools
 {
     /// <summary>
-    /// 场景 UI 脚手架：把原本「运行期动态创建」的那批对象补齐到 <c>SampleScene</c> 里并接好线——
-    /// 粒子网格 quad 与笔刷叠层、主相机取景、EventSystem、HUD Canvas（<see cref="SandboxHud"/> 的层级）、
-    /// Dialogue Canvas（<see cref="DialogueDebugView"/> 的层级）、中文字体资产。
+    /// 场景 UI 脚手架：把原本「运行期动态创建」的那批对象补齐到 <c>MainScene</c> 里并接好线——
+    /// 粒子网格 quad 与笔刷叠层、主相机取景、EventSystem、HUD Canvas（<see cref="SandboxHud"/> 的层级 +
+    /// 暂停 / 光照 / 高速三颗按钮）、Dialogue Canvas（<see cref="DialogueDebugView"/> 的层级）、中文字体资产。
     /// </summary>
     /// <remarks>
     /// <para><b>幂等</b>：对象一律按名字 / 路径找，缺才建。**已存在对象的 RectTransform、文本内容与其它外观参数
     /// 一概不动**——用户手调过的布局、文案、字号不会被跑一次脚手架抹掉。每次重跑都会做的只有：
-    /// 引用接线、预览 mesh 的尺寸刷新、笔刷叠层的 <c>sortingOrder</c>、相机的编辑态取景、
-    /// 两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用。</para>
+    /// 引用接线、三个按钮的 <c>onClick</c> 持久监听、预览 mesh 的尺寸刷新、笔刷叠层的 <c>sortingOrder</c>、
+    /// 相机的编辑态取景、两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用。</para>
     /// <para>用法：菜单 <c>Tools/TapTap2026/Scene UI Setup（补缺失+接线)</c>，
     /// 或批处理 <c>-executeMethod TapTap2026.EditorTools.SceneUiScaffolder.Run</c>。
     /// 批处理必须在 Unity 编辑器关着的时候跑。</para>
     /// </remarks>
     public static class SceneUiScaffolder
     {
-        private const string ScenePath = "Assets/Scenes/SampleScene.unity";
+        private const string ScenePath = "Assets/Scenes/MainScene.unity";
         private const string DataFolder = "Assets/Data";
         private const string PreviewMeshPath = "Assets/Data/SandboxPreviewMesh.asset";
         private const string PreviewMaterialPath = "Assets/Data/SandboxPreview.mat";
@@ -103,6 +105,8 @@ namespace TapTap2026.EditorTools
             WireHud(hud, hudRoot, sandbox, report);
             WireDialogue(view, dialogueRoot, font, report);
             WireGameController(scene, FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hud, report);
+            WireButtons(FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hudRoot, report);
+            EnsureScreenFeed(scene, hudRoot, report);
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -346,7 +350,8 @@ namespace TapTap2026.EditorTools
         }
 
         /// <summary>
-        /// HUD 层级：光标读数 / 鼠标跟随组 / 高速读数 / 光照面板 / 高速结算面板 / 通关横幅。
+        /// HUD 层级：光标读数 / 鼠标跟随组 / 高速读数 / 光照面板 / 高速结算面板 / 通关横幅 /
+        /// 暂停·光照·高速三颗按钮。
         /// 全部是场景里的可编辑对象，<see cref="SandboxHud"/> 只持引用。
         /// </summary>
         private static void BuildHud(Transform root, Report report)
@@ -397,6 +402,48 @@ namespace TapTap2026.EditorTools
             BuildLightPanel(root, report);
             BuildReportPanel(root, report);
             BuildCompletionBanner(root, report);
+            BuildButtonPanel(root, report);
+        }
+
+        /// <summary>
+        /// 暂停 / 光照 / 高速三颗按钮的容器（左上角读数下方横排一排）。
+        /// 按钮是**场景对象**，<c>onClick</c> 由 <see cref="WireButtons"/> 接成持久监听指向 <see cref="ParticleEditor"/>。
+        /// </summary>
+        private static void BuildButtonPanel(Transform root, Report report)
+        {
+            RectTransform panel = EnsureUiChild(root, "ButtonPanel", report, out bool createdPanel);
+            if (createdPanel)
+            {
+                Place(panel, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
+                    new Vector2(6f, -30f), new Vector2(330f, 30f));
+            }
+
+            BuildButton(panel, "PauseButton", "暂停", 0f, report);
+            BuildButton(panel, "LightButton", "光照", 110f, report);
+            BuildButton(panel, "HighSpeedButton", "高速", 220f, report);
+        }
+
+        /// <summary>按钮面板里的一颗按钮：背景图（收点击）+ 居中文本；<paramref name="x"/> 是相对面板左边的偏移。</summary>
+        private static void BuildButton(Transform panel, string name, string label, float x, Report report)
+        {
+            RectTransform rect = EnsureUiChild(panel, name, report, out bool created);
+            Image background = EnsureComponent<Image>(rect.gameObject);
+            Button button = EnsureComponent<Button>(rect.gameObject);
+            if (created)
+            {
+                Place(rect, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
+                    new Vector2(x, 0f), new Vector2(100f, 30f));
+                background.color = ButtonColor;
+                button.targetGraphic = background;
+            }
+
+            TMP_Text text = EnsureText(rect, "Label", report, out bool createdText);
+            if (createdText)
+            {
+                Stretch(text.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 2f), new Vector2(-6f, -2f));
+                StyleText(text, 16f, TextAlignmentOptions.Center, Color.white);
+                text.text = label;
+            }
         }
 
         /// <summary>右上角光照面板：标题 + 三行「标签 + 输入框」，整体挂 CanvasGroup 供 SandboxHud 变灰 / 屏蔽点击。</summary>
@@ -426,7 +473,11 @@ namespace TapTap2026.EditorTools
             BuildLightRow(panel, "DarkTicksLabel", "DarkTicks", "暗刻", 2, report);
         }
 
-        /// <summary>光照面板的一行：左侧标签 + 右侧输入框。行顶 y = −26 − 22 × <paramref name="row"/>。</summary>
+        /// <summary>
+        /// 光照面板的一行：左侧标签（同时也是这一行的容器）+ 输入框（**挂在标签下**、四向拉伸到右侧 ——
+        /// 与场景里调好的层级一致，重跑不会在面板下另建一份平级的输入框）。
+        /// 行顶 y = −26 − 22 × <paramref name="row"/>；布局值只在**首次创建**时套用，已存在的对象一律不动。
+        /// </summary>
         private static void BuildLightRow(Transform panel, string labelName, string fieldName, string label, int row, Report report)
         {
             float y = -26f - 22f * row;
@@ -440,11 +491,11 @@ namespace TapTap2026.EditorTools
                 rowLabel.text = label;
             }
 
-            TMP_InputField field = EnsureInputField(panel, fieldName, report, out bool createdField);
+            TMP_InputField field = EnsureInputField(rowLabel.transform, fieldName, report, out bool createdField);
             if (createdField)
             {
-                Place((RectTransform)field.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
-                    new Vector2(52f, y), new Vector2(178f, 21f));
+                Stretch((RectTransform)field.transform, Vector2.zero, Vector2.one,
+                    new Vector2(42f, 0f), new Vector2(180f, 0f));
             }
         }
 
@@ -799,9 +850,10 @@ namespace TapTap2026.EditorTools
             SetRef(hudSo, "_reportBody", ComponentAt<TMP_Text>(root, "ReportPanel/Body"), report);
             SetRef(hudSo, "_reportVerdict", ComponentAt<TMP_Text>(root, "ReportPanel/Verdict"), report);
             SetRef(hudSo, "_lightPanel", ComponentAt<RectTransform>(root, "LightPanel"), report);
-            SetRef(hudSo, "_lightIntensity", ComponentAt<TMP_InputField>(root, "LightPanel/Intensity"), report);
-            SetRef(hudSo, "_lightLitTicks", ComponentAt<TMP_InputField>(root, "LightPanel/LitTicks"), report);
-            SetRef(hudSo, "_lightDarkTicks", ComponentAt<TMP_InputField>(root, "LightPanel/DarkTicks"), report);
+            SetRef(hudSo, "_buttonPanel", ComponentAt<RectTransform>(root, "ButtonPanel"), report);
+            SetRef(hudSo, "_lightIntensity", ComponentAt<TMP_InputField>(root, "LightPanel/IntensityLabel/Intensity"), report);
+            SetRef(hudSo, "_lightLitTicks", ComponentAt<TMP_InputField>(root, "LightPanel/LitTicksLabel/LitTicks"), report);
+            SetRef(hudSo, "_lightDarkTicks", ComponentAt<TMP_InputField>(root, "LightPanel/DarkTicksLabel/DarkTicks"), report);
             hudSo.ApplyModifiedPropertiesWithoutUndo();
         }
 
@@ -828,6 +880,131 @@ namespace TapTap2026.EditorTools
             SetRef(viewSo, "_reviewScroll", ComponentAt<ScrollRect>(root, "ReviewPanel/Scroll"), report);
             SetRef(viewSo, "_font", font, report);
             viewSo.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// 屏幕取景的两块：**把相机画面导进 HUD 的那张图**（<see cref="CameraScreenFeed"/>）与
+        /// **屏幕背板相机**（<c>ScreenBackdrop</c>，culling mask 0、只清屏）。
+        /// </summary>
+        /// <remarks>
+        /// <para>背板相机存在的唯一理由：主相机被 <see cref="CameraScreenFeed"/> 改成画纹理之后，
+        /// 屏幕上就没有相机在画了——Game 视图会显示「No cameras rendering」警告、背景也不被清理。
+        /// 它只清屏（不画任何东西），因此不花任何渲染成本。</para>
+        /// <para><b>幂等</b>：对象与组件缺才建；契约参数（culling mask / 清屏方式 / 深度 / 不能画进纹理不放
+        /// AudioListener）每次重跑都保证，清屏色与位置只在新建时套用（不覆盖手调）。
+        /// <c>HUD Canvas/Background</c> 是**用户自己摆的**那张图（占位图片换成的 <c>RawImage</c>），
+        /// 脚手架不建它——没有就只提示、不接线。</para>
+        /// </remarks>
+        private static void EnsureScreenFeed(Scene scene, GameObject hudRoot, Report report)
+        {
+            GameObject cameraObject = FindRoot(scene, "Main Camera");
+            Camera mainCamera = cameraObject != null ? cameraObject.GetComponent<Camera>() : null;
+            if (mainCamera == null)
+            {
+                report.Notice("场景里没有「Main Camera」，屏幕取景没接线。");
+                return;
+            }
+
+            GameObject backdropObject = EnsureChild(null, "ScreenBackdrop", report, out bool createdBackdrop);
+            Camera backdrop = EnsureComponent<Camera>(backdropObject);
+            if (createdBackdrop)
+            {
+                backdropObject.transform.position = mainCamera.transform.position;
+                backdrop.orthographic = true;
+                backdrop.orthographicSize = mainCamera.orthographicSize;
+                Color clear = mainCamera.backgroundColor;
+                clear.a = 1f;
+                backdrop.backgroundColor = clear;
+            }
+
+            // 契约：只清屏、最先画、不画进纹理、不带 AudioListener（否则与主相机的监听重复）。
+            backdrop.clearFlags = CameraClearFlags.SolidColor;
+            backdrop.cullingMask = 0;
+            backdrop.orthographic = true;
+            backdrop.depth = -100f;
+            backdrop.targetTexture = null;
+            AudioListener listener = backdropObject.GetComponent<AudioListener>();
+            if (listener != null)
+            {
+                Object.DestroyImmediate(listener, true);
+            }
+
+            // 清屏色必须不透明：它会成为纹理的 alpha，透明纹理在 UI 混合下会被当成全透明（整张图看不见）。
+            Color mainClear = mainCamera.backgroundColor;
+            if (!Mathf.Approximately(mainClear.a, 1f))
+            {
+                mainClear.a = 1f;
+                mainCamera.backgroundColor = mainClear;
+                EditorUtility.SetDirty(mainCamera);
+            }
+
+            CameraScreenFeed feed = EnsureComponent<CameraScreenFeed>(cameraObject);
+            GameObject background = hudRoot.transform.Find("Background") != null
+                ? hudRoot.transform.Find("Background").gameObject
+                : null;
+            RawImage target = background != null ? background.GetComponent<RawImage>() : null;
+            if (background == null)
+            {
+                report.Notice("HUD Canvas 下没有「Background」，相机画面没有显示层（屏幕取景不生效）。");
+            }
+            else if (target == null)
+            {
+                report.Notice("「HUD Canvas/Background」上没有 RawImage，相机画面没有显示层（屏幕取景不生效）。");
+            }
+
+            var feedSo = new SerializedObject(feed);
+            SetRef(feedSo, "_camera", mainCamera, report);
+            if (target != null)
+            {
+                SetRef(feedSo, "_target", target, report);
+            }
+
+            feedSo.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>三颗按钮的 <c>onClick</c> 接到 <see cref="ParticleEditor"/> 的三个公开方法上（持久监听，落进场景）。</summary>
+        private static void WireButtons(ParticleEditor editor, GameObject hudRoot, Report report)
+        {
+            if (editor == null)
+            {
+                report.Notice("「Particle Sandbox」上没有 ParticleEditor，三个按钮的 onClick 没接。");
+                return;
+            }
+
+            Transform root = hudRoot.transform;
+            BindButton(ComponentAt<Button>(root, "ButtonPanel/PauseButton"), editor,
+                nameof(ParticleEditor.TogglePauseMenu), report);
+            BindButton(ComponentAt<Button>(root, "ButtonPanel/LightButton"), editor,
+                nameof(ParticleEditor.ToggleLightPanel), report);
+            BindButton(ComponentAt<Button>(root, "ButtonPanel/HighSpeedButton"), editor,
+                nameof(ParticleEditor.EnterHighSpeedMode), report);
+        }
+
+        /// <summary>
+        /// 把按钮的 <c>onClick</c> 钉到 <paramref name="target"/> 的 <paramref name="methodName"/> 上。
+        /// **幂等**：已有「同目标 + 同方法」的持久监听就直接跳过（不动用户在 Inspector 里改过的触发档位）；
+        /// 没有才新增一条。用持久监听而不是运行期 <c>AddListener</c>——按钮是场景对象，接线也该落进场景。
+        /// </summary>
+        private static void BindButton(Button button, Object target, string methodName, Report report)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < button.onClick.GetPersistentEventCount(); i++)
+            {
+                if (button.onClick.GetPersistentTarget(i) == target
+                    && button.onClick.GetPersistentMethodName(i) == methodName)
+                {
+                    return;
+                }
+            }
+
+            UnityEventTools.AddVoidPersistentListener(button.onClick,
+                (UnityAction)System.Delegate.CreateDelegate(typeof(UnityAction), target, methodName));
+            EditorUtility.SetDirty(button);
+            report.Wired();
         }
 
         /// <summary>编辑器与流程控制器的两条 HUD 引用。</summary>

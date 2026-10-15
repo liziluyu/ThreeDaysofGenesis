@@ -13,7 +13,7 @@ using UnityEngine.UI;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 场景接线的回归测试：<c>SampleScene</c> 里那批「编辑化的对象」必须齐备、层级正确、引用接好。
+    /// 场景接线的回归测试：<c>MainScene</c> 里那批「编辑化的对象」必须齐备、层级正确、引用接好。
     /// </summary>
     /// <remarks>
     /// <para>对象与字段都是**场景里的可编辑内容**（由 <c>SceneUiScaffolder</c> 补齐），所以这里直接开真场景读，
@@ -23,7 +23,7 @@ namespace TapTap2026.Tests
     /// </remarks>
     public sealed class SceneWiringTests
     {
-        private const string ScenePath = "Assets/Scenes/SampleScene.unity";
+        private const string ScenePath = "Assets/Scenes/MainScene.unity";
 
         /// <summary>Particle Sandbox 上 ParticleSimulationDriver 的沙箱尺寸覆盖值——驱动有效尺寸。</summary>
         private const int WorldWidth = 200;
@@ -137,7 +137,7 @@ namespace TapTap2026.Tests
             string[] fields =
             {
                 "_lightDriver", "_probeText", "_cursorHint", "_cursorSwatch", "_cursorLabel", "_highSpeedStatus",
-                "_reportPanel", "_reportBody", "_reportVerdict", "_lightPanel",
+                "_reportPanel", "_reportBody", "_reportVerdict", "_lightPanel", "_buttonPanel",
                 "_lightIntensity", "_lightLitTicks", "_lightDarkTicks",
             };
 
@@ -178,6 +178,38 @@ namespace TapTap2026.Tests
             Assert.IsNotNull(banner, "GameController._completionBanner 没接上");
             Assert.AreEqual("CompletionBanner", banner.name);
             Assert.IsFalse(banner.activeSelf, "通关横幅的初始状态是隐藏");
+        }
+
+        [Test]
+        public void ScreenFeedAndBackdropAreWired()
+        {
+            // 占位图 → 显示相机画面的 RawImage（纹理是运行期建的，场景里只有引用与开关状态）。
+            GameObject background = Root("HUD Canvas").transform.Find("Background").gameObject;
+            RawImage feedImage = background.GetComponent<RawImage>();
+            Assert.IsNotNull(feedImage, "HUD Canvas/Background 应当是显示相机画面的 RawImage");
+            Assert.IsNull(background.GetComponent<Image>(), "占位图片的 Image 应当已被 RawImage 取代");
+            Assert.IsFalse(feedImage.enabled, "未接管时它是禁用的（编辑模式下不画、相机直接画屏）");
+            Assert.IsNull(feedImage.texture, "画面纹理是运行期建的，场景里不该带");
+
+            Camera mainCamera = Camera.main;
+            Assert.IsNotNull(mainCamera, "场景里应当有一台 MainCamera");
+            CameraScreenFeed feed = mainCamera.GetComponent<CameraScreenFeed>();
+            Assert.IsNotNull(feed, "Main Camera 上没有 CameraScreenFeed");
+            Assert.AreSame(mainCamera, Ref(feed, "_camera"), "CameraScreenFeed._camera 没接主相机");
+            Assert.AreSame(feedImage, Ref(feed, "_target"), "CameraScreenFeed._target 没接 Background");
+
+            // 主相机改画纹理后，屏幕上必须还有相机在画，否则 Game 视图会警告 No cameras rendering。
+            Camera backdrop = Root("ScreenBackdrop").GetComponent<Camera>();
+            Assert.IsNotNull(backdrop, "ScreenBackdrop 上没有相机");
+            Assert.AreNotSame(mainCamera, backdrop, "背板相机不能就是主相机");
+            Assert.AreEqual(0, backdrop.cullingMask, "屏幕背板相机只清屏、不画任何东西");
+            Assert.AreEqual(CameraClearFlags.SolidColor, backdrop.clearFlags);
+            Assert.Less(backdrop.depth, mainCamera.depth, "背板相机要在主相机之前画");
+            Assert.IsNull(backdrop.targetTexture, "背板相机必须画到屏幕，不能也画进纹理");
+            Assert.IsNull(backdrop.GetComponent<AudioListener>(), "背板相机不该带 AudioListener（会与主相机重复）");
+
+            Assert.IsNull(mainCamera.targetTexture, "编辑模式下主相机直接画屏，纹理由 CameraScreenFeed 运行期接管");
+            Assert.AreEqual(1f, mainCamera.backgroundColor.a, 0.001f, "清屏色必须不透明——它会成为纹理的 alpha");
         }
 
         // ============================== 小工具 ==============================

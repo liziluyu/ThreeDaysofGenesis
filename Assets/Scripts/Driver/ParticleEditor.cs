@@ -27,8 +27,9 @@ namespace TapTap2026.Game
     /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
     /// **右上角光照面板**：三个输入框直接写 <see cref="ParticleLightDriver"/> 的**强度 / 亮相位刻数 / 暗相位刻数**
     /// （驱动器是这三个值的唯一配置面、每帧写回 <c>world.Light</c>，写世界会被下一帧覆盖），改完即时生效；
-    /// 输入框拿着键盘时暂停 / 高速 / 平移热键让位给输入框，且**使用面板期间（输入框持有键盘焦点或指针在面板矩形内）
-    /// 屏蔽左键投放/擦除**——点进输入框不会顺手在底下画一笔；高速模式与对话激活时面板变灰不可编辑；
+    /// 输入框拿着键盘时暂停 / 高速 / 平移热键让位给输入框，且**使用 HUD 面板期间（输入框持有键盘焦点或指针落在
+    /// 光照面板 / 按钮面板矩形内）屏蔽左键投放/擦除**——点进输入框、点按钮都不会顺手在底下画一笔；
+    /// 高速模式与对话激活时面板变灰不可编辑；
     /// **按住 E 时按左键**改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放项）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子名、温度、热量与湿度，末尾追加当前倍速（普通模式恒 <c>×1</c>）；
     /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
@@ -46,6 +47,8 @@ namespace TapTap2026.Game
     /// 与 Inspector 白名单取交集（只缩小、不放开）；清空（null / 空数组）即恢复默认白名单。</para>
     /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：
     /// 该组件每帧把字段写回世界，写世界会被下一帧覆盖。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
+    /// <para>按钮入口（给场景里的 uGUI 按钮 <c>onClick</c> 接线）：<see cref="TogglePauseMenu"/>（开关暂停界面 +
+    /// 暂停 / 恢复模拟）、<see cref="ToggleLightPanel"/>（开关光照面板）、<see cref="EnterHighSpeedMode"/>（进入高速模式）。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleEditor : MonoBehaviour
@@ -164,6 +167,14 @@ namespace TapTap2026.Game
 
         /// <summary>胜负结论是否为过关（决定结算面板那一行的颜色）。</summary>
         private bool _highSpeedVerdictPass;
+
+        /// <summary>暂停界面（暂停菜单）是否可见——由暂停按钮翻转（见 <see cref="TogglePauseMenu"/>，可见即暂停模拟），
+        /// 实际显隐由 <see cref="PushHud"/> 每帧推给 HUD。</summary>
+        private bool _pauseMenuVisible;
+
+        /// <summary>光照面板（光照选择界面）是否可见——由光照按钮翻转（见 <see cref="ToggleLightPanel"/>），
+        /// 默认 true（保持既有常显行为，按钮按下即隐藏）。</summary>
+        private bool _lightPanelVisible = true;
 
         private float _lastSinglePlacementTime = float.NegativeInfinity;
 
@@ -290,7 +301,7 @@ namespace TapTap2026.Game
 
         /// <summary>
         /// 把这一帧算好的显示内容推给场景里的 <see cref="SandboxHud"/>（每帧无条件推一次，让它自己按状态去重）：
-        /// 可见性、光标格读数、鼠标跟随组、高速读数与结算面板、光照面板的可用性。
+        /// 可见性、暂停界面与光照面板的显隐、光标格读数、鼠标跟随组、高速读数与结算面板、光照面板的可用性。
         /// 未接线 HUD 时整段跳过——本类照常处理输入、只是没人显示。
         /// </summary>
         /// <remarks>
@@ -307,6 +318,8 @@ namespace TapTap2026.Game
             bool highSpeedActive = _driver != null && _driver.HighSpeedActive;
 
             _hud.SetHudVisible(_drawHud);
+            _hud.SetPauseMenuVisible(_drawHud && _pauseMenuVisible);
+            _hud.SetLightPanelVisible(_drawHud && _lightPanelVisible);
             _hud.SetProbeText(_drawHud ? _probeText : null);
             _hud.SetCursorHint(_hudText, _hudColor);
             _hud.SetHighSpeedStatus(_drawHud && highSpeedActive ? _highSpeedHudText : null);
@@ -422,14 +435,14 @@ namespace TapTap2026.Game
                 }
             }
 
-            // 光照面板（输入框）正在被使用时**屏蔽放置**：左键点进输入框时指针同时也在网格上，
-            // 不挡就会既改光照值又在底下画一笔。判据两条：
+            // HUD 面板（光照输入框 / 三个按钮）正在被使用时**屏蔽放置**：左键点进输入框或按钮时指针同时也在网格上，
+            // 不挡就会既改 UI 又在底下画一笔。判据两条：
             // ① 某个光照输入框仍持有键盘焦点——点进去后把指针拖到面板外也继续挡（按住左键拖动同理）；
-            // ② 指针当前就在面板矩形内——点进来的那一帧 uGUI 还没把焦点交给输入框，靠这条兜底。
-            bool editingLightValue = typingInLightPanel
-                || (_hud != null && _hud.IsPointerOverLightPanel(Input.mousePosition));
+            // ② 指针当前就在会吃点击的面板矩形内——点进来的那一帧 uGUI 还没把焦点交给输入框，靠这条兜底。
+            bool pointerOverPanel = typingInLightPanel
+                || (_hud != null && _hud.IsPointerOverPanel(Input.mousePosition));
 
-            if (!editingLightValue
+            if (!pointerOverPanel
                 && Input.GetMouseButton(0)
                 && TryGetCell(Input.mousePosition, world, out int x, out int y))
             {
@@ -683,6 +696,73 @@ namespace TapTap2026.Game
         {
             _brushRadius = Mathf.Clamp(BrushRadius + steps, MinBrushRadius, MaxBrushRadius);
             RefreshHud();
+        }
+
+        /// <summary>
+        /// **暂停按钮**：翻转暂停界面（暂停菜单）的显隐。界面可见即暂停模拟、收起即恢复
+        /// （菜单本身就是「暂停」的语义，见 <see cref="SetPauseMenuVisible"/>），与空格热键
+        /// （<see cref="_pauseKey"/>）走同一对 <see cref="ParticleSimulationDriver.Pause"/> /
+        /// <see cref="ParticleSimulationDriver.Resume"/>。供场景里的按钮 <c>onClick</c> 接线。
+        /// </summary>
+        public void TogglePauseMenu()
+        {
+            SetPauseMenuVisible(!_pauseMenuVisible);
+        }
+
+        /// <summary>
+        /// 显式设置暂停界面的显隐（按钮想拆成「开 / 关」两个时用），并同步模拟的暂停状态：
+        /// 可见 → <see cref="ParticleSimulationDriver.Pause"/>、收起 → <see cref="ParticleSimulationDriver.Resume"/>。
+        /// <para><b>两处豁免</b>：① 高速模式期间只切显示、不动模拟——会话自持推进状态（进入时 Resume、
+        /// 跑满自动 Pause），中途被外部 Pause 会卡在跑不满时长的死状态；② 对话激活（<see cref="SuppressInput"/>）
+        /// 时同样只切显示——暂停记账归对话系统，这里抢会破坏它的「只恢复自己暂停的」语义。立即推给 HUD。</para>
+        /// </summary>
+        public void SetPauseMenuVisible(bool visible)
+        {
+            _pauseMenuVisible = visible;
+
+            if (_driver != null && !SuppressInput && !_driver.HighSpeedActive)
+            {
+                if (visible)
+                {
+                    _driver.Pause();
+                }
+                else
+                {
+                    _driver.Resume();
+                }
+            }
+
+            PushHud();
+        }
+
+        /// <summary>
+        /// **光照选择按钮**：翻转右上角光照面板（光照选择界面）的显隐。隐藏不丢值——面板的三个输入框保留在
+        /// <see cref="ParticleLightDriver"/> 上，重新显示即原样回来。供场景里的按钮 <c>onClick</c> 接线。
+        /// </summary>
+        public void ToggleLightPanel()
+        {
+            SetLightPanelVisible(!_lightPanelVisible);
+        }
+
+        /// <summary>显式设置光照面板的显隐（无光源驱动器时 HUD 仍会保持隐藏）。立即推给 HUD。</summary>
+        public void SetLightPanelVisible(bool visible)
+        {
+            _lightPanelVisible = visible;
+            PushHud();
+        }
+
+        /// <summary>
+        /// **高速模式按钮**：进入高速模式（等价于按 <see cref="_highSpeedKey"/>）。对话激活（<see cref="SuppressInput"/>）
+        /// 或无驱动时不做任何事。会话本身幂等——已在模式中再调用无事发生。供场景里的按钮 <c>onClick</c> 接线。
+        /// </summary>
+        public void EnterHighSpeedMode()
+        {
+            if (_driver == null || SuppressInput)
+            {
+                return;
+            }
+
+            _driver.EnterHighSpeed();
         }
 
         /// <summary>左右 Shift 是否按住（legacy Input Manager，没有 Input System）。</summary>
