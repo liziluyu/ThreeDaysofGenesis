@@ -646,12 +646,12 @@ namespace TapTap2026.Tests
             return sprite;
         }
 
-        /// <summary>① 栖息态：帧选择只在收翅组内交替（永远不返回飞行 / 展翅帧）。</summary>
+        /// <summary>① 栖息态：帧选择只在上排栖息组内交替（永远不返回飞行 / 展翅帧）。</summary>
         [Test]
         public void BirdFrame_Perched_PlaysPerchGroup()
         {
-            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
-            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite[] fly = { NewFrame("fly4"), NewFrame("fly5"), NewFrame("fly6") };
+            Sprite[] perch = { NewFrame("perch0"), NewFrame("perch1"), NewFrame("perch2"), NewFrame("perch3") };
             Sprite takeoff = NewFrame("takeoff5");
 
             var seen = new HashSet<Sprite>();
@@ -659,19 +659,19 @@ namespace TapTap2026.Tests
             {
                 Sprite frame = CreatureRenderer.ResolveBirdFrame(
                     BirdBrain.StatePerched, 0f, i, fly, perch, takeoff);
-                Assert.Contains(frame, perch, "栖息态应播收翅组帧");
+                Assert.Contains(frame, perch, "栖息态应播上排栖息组帧");
                 seen.Add(frame);
             }
 
-            Assert.AreEqual(perch.Length, seen.Count, "收翅两片都应在栖息态交替出现（不是死盯第一片）");
+            Assert.AreEqual(perch.Length, seen.Count, "上排 4 片都应在栖息态交替出现（不是死盯第一片）");
         }
 
-        /// <summary>② 飞行态：帧选择只在上排飞行组内循环。</summary>
+        /// <summary>② 飞行态：帧选择只在下排飞行组内循环。</summary>
         [Test]
         public void BirdFrame_Fly_PlaysFlyGroup()
         {
-            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
-            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite[] fly = { NewFrame("fly4"), NewFrame("fly5"), NewFrame("fly6") };
+            Sprite[] perch = { NewFrame("perch0"), NewFrame("perch1"), NewFrame("perch2"), NewFrame("perch3") };
             Sprite takeoff = NewFrame("takeoff5");
 
             var seen = new HashSet<Sprite>();
@@ -679,11 +679,11 @@ namespace TapTap2026.Tests
             {
                 Sprite frame = CreatureRenderer.ResolveBirdFrame(
                     BirdBrain.StateFly, 0f, i, fly, perch, takeoff);
-                Assert.Contains(frame, fly, "飞行态应播上排飞行组帧");
+                Assert.Contains(frame, fly, "飞行态应播下排飞行组帧");
                 seen.Add(frame);
             }
 
-            Assert.AreEqual(fly.Length, seen.Count, "上排 4 片都应循环出现");
+            Assert.AreEqual(fly.Length, seen.Count, "下排 3 片都应循环出现");
         }
 
         /// <summary>③ Perched → Fly 沿：先定格展翅帧，过渡耗尽后进飞行组循环。</summary>
@@ -691,8 +691,8 @@ namespace TapTap2026.Tests
         public void BirdFrame_PerchedToFly_PlaysTakeoffThenFly()
         {
             const float duration = 0.3f;
-            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
-            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite[] fly = { NewFrame("fly4"), NewFrame("fly5"), NewFrame("fly6") };
+            Sprite[] perch = { NewFrame("perch0"), NewFrame("perch1"), NewFrame("perch2"), NewFrame("perch3") };
             Sprite takeoff = NewFrame("takeoff5");
 
             // 沿那一帧起满过渡。
@@ -723,8 +723,8 @@ namespace TapTap2026.Tests
         public void BirdTakeoff_Retriggers_OnEachPerchDeparture()
         {
             const float duration = 0.3f;
-            Sprite[] fly = { NewFrame("fly0"), NewFrame("fly1"), NewFrame("fly2"), NewFrame("fly3") };
-            Sprite[] perch = { NewFrame("perch4"), NewFrame("perch6") };
+            Sprite[] fly = { NewFrame("fly4"), NewFrame("fly5"), NewFrame("fly6") };
+            Sprite[] perch = { NewFrame("perch0"), NewFrame("perch1"), NewFrame("perch2"), NewFrame("perch3") };
             Sprite takeoff = NewFrame("takeoff5");
 
             float remaining = CreatureRenderer.AdvanceBirdTakeoff(
@@ -738,7 +738,7 @@ namespace TapTap2026.Tests
             Assert.Contains(
                 CreatureRenderer.ResolveBirdFrame(BirdBrain.StatePerched, remaining, 3f, fly, perch, takeoff),
                 perch,
-                "落到栖息面应立即播收翅组（无过渡）");
+                "落到栖息面应立即播栖息组（无过渡）");
 
             // 再次 Perched → Fly：重新起满过渡。
             remaining = CreatureRenderer.AdvanceBirdTakeoff(

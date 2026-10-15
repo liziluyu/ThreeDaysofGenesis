@@ -8,8 +8,9 @@ namespace TapTap2026.Editor
 {
     /// <summary>
     /// 鸟美术接线工具：把 <c>bird.png</c> 的切片按语义接进 <c>MainScene</c>（由 SampleScene 改名而来）里动物渲染器的三块鸟帧字段——
-    /// 上排 <c>bird_0..bird_3</c> → <c>_birdFlyFrames</c>（飞行组）、下排①③ <c>bird_4</c>/<c>bird_6</c> →
-    /// <c>_birdPerchFrames</c>（栖息组）、下排② <c>bird_5</c> → <c>_birdTakeoffFrame</c>（起飞展翅单片）。
+    /// 下排 <c>bird_4</c>/<c>bird_5</c>/<c>bird_6</c> → <c>_birdFlyFrames</c>（飞行扑翼循环：翅横展 → 竖直扬起 → 下收）、
+    /// 上排 <c>bird_0..bird_3</c> → <c>_birdPerchFrames</c>（栖息站立组）、
+    /// <c>bird_5</c> → <c>_birdTakeoffFrame</c>（起飞展翅单片，翅竖直顶点，也属飞行循环）。
     /// 菜单 <c>Tools/Animals/Wire Bird Sprites</c>（同签名兼作 <c>-executeMethod</c> 入口）。
     /// </summary>
     /// <remarks>
@@ -36,13 +37,13 @@ namespace TapTap2026.Editor
         /// <summary>插入锚点字段（鸟帧字段插在它之后）。</summary>
         private const string AnchorField = "_fishIdleFrames:";
 
-        /// <summary>飞行组字段（上排 bird_0..bird_3）。</summary>
+        /// <summary>飞行组字段（下排 bird_4 / bird_5 / bird_6，扑翼循环）。</summary>
         private const string FlyField = "_birdFlyFrames:";
 
-        /// <summary>栖息组字段（下排①③ bird_4 / bird_6）。</summary>
+        /// <summary>栖息组字段（上排 bird_0..bird_3，栖息站立）。</summary>
         private const string PerchField = "_birdPerchFrames:";
 
-        /// <summary>起飞展翅单片字段（下排② bird_5）。</summary>
+        /// <summary>起飞展翅单片字段（bird_5，翅竖直顶点）。</summary>
         private const string TakeoffField = "_birdTakeoffFrame:";
 
         /// <summary>历史遗留的单帧组字段名（已迁移到上面三个新字段，布线时一并清除）。
@@ -67,8 +68,8 @@ namespace TapTap2026.Editor
                 byName[sprite.name] = sprite;
             }
 
-            Sprite[] fly = PickSlices(byName, "bird_0", "bird_1", "bird_2", "bird_3");
-            Sprite[] perch = PickSlices(byName, "bird_4", "bird_6");
+            Sprite[] fly = PickSlices(byName, "bird_4", "bird_5", "bird_6");
+            Sprite[] perch = PickSlices(byName, "bird_0", "bird_1", "bird_2", "bird_3");
             Sprite takeoff = PickSlice(byName, "bird_5");
             if (fly == null || perch == null || takeoff == null)
             {

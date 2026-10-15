@@ -55,13 +55,13 @@ namespace TapTap2026.Rendering
         /// <summary>鱼 idle 动画帧（同上规格）。为空或未接线时鱼退回占位块。</summary>
         [SerializeField] private Sprite[] _fishIdleFrames;
 
-        /// <summary>鸟飞行帧（上排 4 片 bird_0..bird_3：展翅 / 后掠飞行姿态）。为空或未接线时鸟退回占位块。</summary>
+        /// <summary>鸟飞行帧（下排 3 片 bird_4/bird_5/bird_6：扑翼循环——翅横展 → 竖直扬起 → 下收）。为空或未接线时鸟退回占位块。</summary>
         [SerializeField] private Sprite[] _birdFlyFrames;
 
-        /// <summary>鸟栖息帧（下排①③两片 bird_4 / bird_6：收翅栖息姿态）。栖息态慢速交替播放。</summary>
+        /// <summary>鸟栖息帧（上排 4 片 bird_0..bird_3：站立收腿、落到地面 / 叶子时播放）。栖息态慢速交替播放。</summary>
         [SerializeField] private Sprite[] _birdPerchFrames;
 
-        /// <summary>鸟起飞过渡帧（下排②bird_5：翅膀竖直扬起的展翅帧）。Perched → Fly/Flee 沿先定格播它。</summary>
+        /// <summary>鸟起飞过渡帧（bird_5：翅膀竖直扬起的展翅帧，翅竖直顶点，它本就在飞行循环里）。Perched → Fly/Flee 沿先定格播它。</summary>
         [SerializeField] private Sprite _birdTakeoffFrame;
 
         /// <summary>起飞过渡时长（秒）：离开栖息面后先播 <see cref="_birdTakeoffFrame"/> 这么久，再进飞行组循环。</summary>
@@ -333,7 +333,7 @@ namespace TapTap2026.Rendering
             return frames != null && frames.Length > 0 && frames[0] != null ? frames : null;
         }
 
-        /// <summary>栖息组帧速缩放：收翅两片以飞行组一半的速率慢速交替（视觉上更安静）。</summary>
+        /// <summary>栖息组帧速缩放：上排栖息站立 4 片以飞行组一半的速率慢速交替（视觉上更安静）。</summary>
         private const float PerchSpeedFactor = 0.5f;
 
         /// <summary>
@@ -342,12 +342,12 @@ namespace TapTap2026.Rendering
         /// <param name="aiState">鸟行为状态（<see cref="BirdBrain.StatePerched"/> / <see cref="BirdBrain.StateFly"/> / <see cref="BirdBrain.StateFlee"/>）。</param>
         /// <param name="takeoffRemaining">起飞过渡剩余时间（秒）；&gt; 0 且非栖息时定格播展翅帧。</param>
         /// <param name="animTime">动画相位（= 已流逝秒 × 帧率 × 状态倍率）；调用方已把倍率乘进来。</param>
-        /// <param name="flyFrames">飞行组（上排 bird_0..3），循环播。</param>
-        /// <param name="perchFrames">栖息组（收翅 bird_4 / bird_6），半速交替。</param>
+        /// <param name="flyFrames">飞行组（下排 bird_4/bird_5/bird_6），循环播。</param>
+        /// <param name="perchFrames">栖息组（上排 bird_0..bird_3），半速交替。</param>
         /// <param name="takeoffFrame">起飞展翅帧（bird_5，单片）。</param>
         /// <returns>该帧应写入 <see cref="SpriteRenderer.sprite"/> 的帧；对应组为空时返回 null。</returns>
         /// <remarks>
-        /// 优先级：**栖息 &gt; 起飞过渡 &gt; 飞行**。栖息最高，使「起飞后 0.3s 内又落回」直接切回收翅组、不残留展翅帧；
+        /// 优先级：**栖息 &gt; 起飞过渡 &gt; 飞行**。栖息最高，使「起飞后 0.3s 内又落回」直接切回栖息组、不残留展翅帧；
         /// Fly/Flee → Perched 无过渡（立即切栖息组），过渡只由 Perched → Fly/Flee 沿触发（见 <see cref="AdvanceBirdTakeoff"/>）。
         /// </remarks>
         public static Sprite ResolveBirdFrame(
