@@ -44,12 +44,21 @@
 
 **参数初值**（集中在 `BirdBrain`，实测后调）：`FlySpeed`（水平）0.06、`FlyVSpeed` 0.08、`FlyAccel` 0.05、`FleeSpeed` 0.12、`FleeClimbSpeed` 0.10、`MinAltitudeCells` 6、`CeilingMarginCells` 12、`LandProbeCells` 12、`AheadProbeCells` 3。
 
-## 6. 渲染与编辑器接线
+## 6. 渲染与编辑器接线（2026-10-15 定稿：按状态分帧组）
 
-- `CreatureRenderer`：加 `[SerializeField] Sprite[] _birdIdleFrames` + 物种分支（编译器会逼着补）；占位色给一个鸟的调试色。
-- **场景接线工具**：新增 Editor 菜单 `Tools/Animals/Wire Bird Sprites`（静态方法，兼作 `-executeMethod` 入口）：按切片名序加载 `bird.png` 全部 7 片 → 赋给 SampleScene 里 `CreatureRenderer._birdIdleFrames` → 标脏保存场景。美术更新后重跑即可。
+**帧语义实测结论**（2026-10-14，实现时逐帧目检）：`bird_0..3`（上排 4 片）= 展翅 / 后掠飞行姿态；`bird_4`、`bird_6`（下排①③）= 收翅栖息；`bird_5`（下排②）= 翅膀竖直扬起 = 展翅起飞帧。朝向：眼（最暗像素）恒在不透明包围盒左半 ⇒ 头朝左，与兔 / 鱼一致，沿用 `_spriteFacesLeft` 默认值。
+
+**按状态分帧组**（2026-10-15 用户定稿，取代「单一 `_birdIdleFrames` 顺序播」）：
+
+| 组 | 帧 | 用途 |
+|---|---|---|
+| `_birdFlyFrames` | bird_0..3（上排 4 片循环） | Fly / Flee（移动 ×2、Flee ×3 加速） |
+| `_birdPerchFrames` | bird_4、bird_6 | Perched（收翅慢速交替） |
+| `_birdTakeoffFrame` + `_birdTakeoffSeconds`（默认 0.3s） | bird_5 | **Perched → Fly / Flee 的沿**：先播展翅帧、计时耗尽再进飞行组；落回栖息立即切收翅（无过渡） |
+
+实现要点：帧选择核心抽成**纯静态函数**（可 EditMode 测试）；过渡状态是渲染器 per-view 的表现层私有字段（同 `_animTime`，不进模拟、不影响确定性）；场景接线仍只走 `Tools/Animals/Wire Bird Sprites`（幂等定点写入三帧组、删旧 `_birdIdleFrames` 块）。
 - `ParticleEditor`：`CreatureFactories` 末尾加 `() => new BirdCreature()`（右键循环 兔 → 鱼 → 鸟）；不做地形校验（与兔 / 鱼同一已知限制）。
-- 朝向：实现时从 PNG 实测眼 / 喙在不透明包围盒的哪一半，据实设置 `_spriteFacesLeft` 并加 `CreatureSpriteFacingTests` 用例。
+- 朝向：已实测定稿（眼恒在包围盒左半 ⇒ 头朝左，`_spriteFacesLeft` 沿用默认 true），`CreatureSpriteFacingTests` 已加鸟朝向用例。
 
 ## 7. 尸体
 
@@ -72,16 +81,16 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 | `Simulation/Creatures/CreatureTerrain.cs` | 加 `IsPerchable` |
 | `Simulation/Creatures/CreatureSensors.cs` | 加 `ProbeSurfaceBelow`（含合格栖息面判定） |
 | `Simulation/Creatures/BiomassProfile.cs` | `For` 加鸟案 |
-| `Rendering/CreatureRenderer.cs` | `_birdIdleFrames` + 分支 + 占位色 |
+| `Rendering/CreatureRenderer.cs` | 三帧组字段（`_birdFlyFrames` / `_birdPerchFrames` / `_birdTakeoffFrame`）+ 状态选组 + 起飞过渡 |
 | `Driver/ParticleEditor.cs` | `CreatureFactories` 加鸟 |
 | `Editor/BirdSpriteWiring.cs` | 新建（菜单 + `-executeMethod` 布线工具） |
-| `Assets/Scenes/SampleScene.unity` | 由布线工具写入 `_birdIdleFrames`（不手改 YAML） |
+| `Assets/Scenes/SampleScene.unity` | 由布线工具写入三个鸟帧组字段（不手改 YAML） |
 | `Tests/EditMode/BirdCreatureTests.cs` | 新建（§8） |
 | `Tests/EditMode/CreatureSpriteFacingTests.cs` | 加鸟朝向用例 |
 
 ## 10. 风险与开放项
 
 - **视觉穿帮**：b2 让鸟能站树冠，但「图案 7 格宽 / 碰撞盒 1 格宽」意味着栖在叶顶时图案会盖住两侧树冠——与 §22 第 3 条同一类已知风格，接受。
-- **帧语义**：上排 4 帧的语义实现时若判不出来，v1 只用能判明的扑翼循环，其余帧留在切片里不接。
+- **帧语义**：已判明（见 §6）——上排 = 飞行、下排①③ = 收翅、下排② = 展翅起飞；按状态分组播放。
 - **Play 模式观感**（飞行速度 / 高度带 / 栖歇节奏）只能人眼验收，测试只钉确定性与不变量。
 - 高速模式 / 存档 / 对话系统与鸟零交互，无需改动。
