@@ -580,6 +580,55 @@ namespace TapTap2026.Tests
             Assert.LessOrEqual(probe.X, 16f, "漫步者不应越过平台右缘");
         }
 
+        /// <summary>
+        /// **回归（世界底 = 地板）**：空世界（不铺任何地形）里落到世界底（<c>Y = 0</c>）的漫步者**不该**被
+        /// 悬崖守卫翻面——物理层已把世界底当地板（<see cref="Creature.StepPhysics"/> 把 <c>Y</c> 夹到 0 且
+        /// <c>Y ≤ 0 ⇒ IsGrounded</c>），「世界底之下」并不存在可以掉下去的悬崖。
+        /// </summary>
+        /// <remarks>
+        /// <para><b>修复前必失败</b>：站世界底时 <c>ProbeGroundAhead</c> 探的两行（<c>floor(Y) − 1 = −1</c>、
+        /// 再下一行 <c>−2</c>）全部越界，<see cref="CreatureTerrain.IsSolid"/> 对越界一律答非固体 ⇒ 探针每帧
+        /// 答「前方悬空」⇒ <see cref="Creature.ApplyLocomotion"/> 第 ③ 段每逻辑帧反转 <c>IntentVx</c>、
+        /// <c>Facing</c> 于是每帧翻面（实测 600 帧里翻了 597 次）——正是玩家看到的世界最底部「左右抽搐」。</para>
+        /// <para><b>为什么用探针而不是真实兔子</b>：真实兔子的 Brain 每 <c>ThinkEvery</c> 帧会按 RNG 重摇漫步
+        /// 方向，合法的朝向变化会混进计数里，<c>翻转 == 0</c> 就不再是对本缺陷的判据；探针没有 Brain、意图钉在
+        /// 漫步速度上，翻面因此**只**可能来自悬崖守卫（宽 1.5 / 高 1 / 加速度与重力同兔子）。</para>
+        /// <para><b>为什么不铺一行石头当底</b>：铺了底就有了「前方列脚下有支撑」这个别的理由让守卫闭嘴，
+        /// 缺陷会被掩盖；本用例要的正是「世界底本身即支撑」。</para>
+        /// </remarks>
+        [Test]
+        public void CliffGuard_AtWorldFloor_DoesNotFlipFacing()
+        {
+            const int WideW = 320;
+            const int WideH = 180;
+            ParticleWorld world = new ParticleWorld(WideW, WideH, SeedValue);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            ProbeCreature probe = creatures.Spawn(
+                new ProbeCreature(1.5f, 1f, RabbitBrain.Accel, RabbitGravity, RabbitBrain.HopVelocity),
+                world,
+                16f,
+                0.5f);
+            probe.IntentVx = RabbitBrain.WalkSpeed;
+
+            int flips = 0;
+            int prevFacing = probe.Facing;
+            for (int i = 0; i < 600; i++)
+            {
+                creatures.Step(world);
+                if (probe.Facing != prevFacing)
+                {
+                    flips++;
+                    prevFacing = probe.Facing;
+                }
+            }
+
+            Assert.AreEqual(0, flips, $"世界底的漫步者不该被悬崖守卫反复翻面（600 帧实测翻面 {flips} 次）");
+            Assert.IsTrue(probe.Alive, "只是贴底行走，不该死亡");
+            Assert.AreEqual(0f, probe.Y, Tol, "应被物理层夹在世界底（Y = 0）上");
+            Assert.GreaterOrEqual(probe.X, 0f, "X 应仍在界内");
+            Assert.Less(probe.X, WideW, "X 应仍在界内（探针只以漫步速度前进）");
+        }
+
         // ============================== 7. 威胁方向与逃命 ==============================
 
         /// <summary>火在右侧时探针返回右侧那格（<c>fireX &gt; cx</c>），兔子在下一个思考帧反向逃跑（<c>IntentVx &lt; 0</c>）。</summary>
