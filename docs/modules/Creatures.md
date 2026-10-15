@@ -6,7 +6,7 @@
 
 - `CreatureWorld`：实体表 + **独立 xorshift32**——动物绝不消耗世界随机流；事件 `CreatureSpawned`/`CreatureDied` 为渲染/音源预留。
 - `Creature` 抽象基类（相当于粒子体系的 `IParticleType`）：物种差异走虚属性——`Gravity`/`MaxFallSpeed`/`Buoyancy`/`WaterDrag`/`FliesInAir`/`PerchesOnFoliage`/`FlyAccel`/`PlaceholderColor`；钩子 `OnSpawn`/`OnLogic`（物理之前，AI 决策入口）/`OnDeath`。
-- `CreatureTerrain` 碰撞白名单：**只有沙/石头/泥土家族（土、湿土、腐殖土、湿润腐殖土）挡动物**，水是淹没/浮力介质，草花叶树种子一律穿过；鸟另有栖息面口径 `IsPerchable` = IsSolid ∪ 树叶/树干（只服务向下支撑）。
+- `CreatureTerrain` 碰撞白名单：**只有沙/石头/泥土家族（土、湿土、腐殖土、湿润腐殖土）与冰挡动物**，水是淹没/浮力介质，草花叶树种子一律穿过；鸟另有栖息面口径 `IsPerchable` = IsSolid ∪ 树叶/树干（只服务向下支撑）。冰在死亡物质化那侧是**显式例外**（尸体不得覆盖冰，见下）。
 - 实体 = 连续浮点位置（`X, Y` = 碰撞盒底边中点，单位格）+ 轴分离 AABB 物理（重力 → 竖直逐行扫 → 水平 → 边界夹取 → 刷新 `IsGrounded`/`IsSubmerged`）。物理与感知对粒子世界只读；两处写入例外：**兔子进食**（`world.Clear` 一格草）与**死亡物质化**，都走世界 API，不得直接改 `_cells`。
 - 驱动在每个 `StepLogic()` 之后调 `Creatures.Step(world)`（高速会话转发之前）。
 
@@ -25,7 +25,7 @@
 ## 生态交互
 
 - **饥饿与食草**（兔）：`HungerTicks` 每逻辑帧 +1、饱和 `MaxHungerTicks` = 1200（≈60 秒）；只有 `StarvesWithoutFood` 为真的物种〔兔〕饿死 → `Starved`。超过 `HungryThreshold`（600）且进食冷却为 0 进入觅食——`SeekFood` 用 `FindNearestGrass`（半径 6 圆盘、固定扫描序、取最近）选目标，进到相邻一格转 `Eat`，按固定顺序（正下→正前→正上→左→右）找第一格草 `Clear`（一次只吃一格、恢复 `FoodRestoreTicks` 并进 20 帧冷却、只吃草不吃花/种子/腐殖质；目标连续 40 思考帧不可达放弃）。火焰威胁优先于饥饿。
-- **死亡物质化**：死亡清扫先由 `CreatureDeathMaterializer` 按 `BiomassProfile`（轮廓由编辑器菜单 `Tools/Animals/Regenerate Creature Art Data` 从 PNG + 切片 pivot 生成 `CreatureArtData.g.cs`——当前兔 22 格/鱼 22 格/鸟 61 格；`CreatureArtDataTests` 对拍守卫，美术变更后忘重跑即红；映射 `x = floor(X) − 8 + dx`、`y = floor(Y) − PivotRowPixels + dy` ⇒ 尸体与渲染身体逐格对齐）用 `SetWithShade` 逐格写生物质（空气/气体/草花叶 + 地形固体可覆盖；**水先 `Swap` 挪到合格空位再写、挪不动跳过该格**（绝不删水 ⇒ 水守恒）；火/树干/已有生物质/越界跳过），**再**发 `OnDeath`/`CreatureDied`（顺序即契约）。生物质随后作为普通粒子下落堆积、腐败（见 Particles 文档）。
+- **死亡物质化**：死亡清扫先由 `CreatureDeathMaterializer` 按 `BiomassProfile`（轮廓由编辑器菜单 `Tools/Animals/Regenerate Creature Art Data` 从 PNG + 切片 pivot 生成 `CreatureArtData.g.cs`——当前兔 22 格/鱼 22 格/鸟 61 格；`CreatureArtDataTests` 对拍守卫，美术变更后忘重跑即红；映射 `x = floor(X) − 8 + dx`、`y = floor(Y) − PivotRowPixels + dy` ⇒ 尸体与渲染身体逐格对齐）用 `SetWithShade` 逐格写生物质（空气/气体/草花叶 + 地形固体可覆盖——**冰除外**：冰算地形但不可被尸体覆盖，否则水账漏一份水；**水先 `Swap` 挪到合格空位再写、挪不动跳过该格**（绝不删水 ⇒ 水守恒）；火/树干/已有生物质/越界跳过），**再**发 `OnDeath`/`CreatureDied`（顺序即契约）。生物质随后作为普通粒子下落堆积、腐败（见 Particles 文档）。
 
 ## 时间尺度
 
