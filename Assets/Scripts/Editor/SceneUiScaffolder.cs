@@ -18,13 +18,16 @@ namespace TapTap2026.EditorTools
     /// <summary>
     /// 场景 UI 脚手架：把原本「运行期动态创建」的那批对象补齐到 <c>MainScene</c> 里并接好线——
     /// 粒子网格 quad 与笔刷叠层、主相机取景、EventSystem、HUD Canvas（<see cref="SandboxHud"/> 的层级 +
-    /// 暂停 / 光照 / 高速三颗按钮）、Dialogue Canvas（<see cref="DialogueDebugView"/> 的层级）、中文字体资产。
+    /// 暂停 / 光照 / 高速三颗按钮 + 正中央显示相机画面的 <c>SandboxView</c>）、
+    /// 投放面板（<c>ParticlePanel</c>）的按钮接线、
+    /// Dialogue Canvas（<see cref="DialogueDebugView"/> 的层级）、中文字体资产、屏幕背板。
     /// </summary>
     /// <remarks>
     /// <para><b>幂等</b>：对象一律按名字 / 路径找，缺才建。**已存在对象的 RectTransform、文本内容与其它外观参数
     /// 一概不动**——用户手调过的布局、文案、字号不会被跑一次脚手架抹掉。每次重跑都会做的只有：
-    /// 引用接线、三个按钮的 <c>onClick</c> 持久监听、预览 mesh 的尺寸刷新、笔刷叠层的 <c>sortingOrder</c>、
-    /// 相机的编辑态取景、两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用。</para>
+    /// 引用接线、三个按钮的 <c>onClick</c> 持久监听、显示图的「居中 + 底层 + 不吃点击」三条契约、
+    /// 预览 mesh 的尺寸刷新、笔刷叠层的 <c>sortingOrder</c>、相机的编辑态取景、
+    /// 两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用。</para>
     /// <para>用法：菜单 <c>Tools/TapTap2026/Scene UI Setup（补缺失+接线)</c>，
     /// 或批处理 <c>-executeMethod TapTap2026.EditorTools.SceneUiScaffolder.Run</c>。
     /// 批处理必须在 Unity 编辑器关着的时候跑。</para>
@@ -37,6 +40,9 @@ namespace TapTap2026.EditorTools
         private const string PreviewMaterialPath = "Assets/Data/SandboxPreview.mat";
         private const string FontAssetPath = "Assets/Data/CjkDynamicFont.asset";
         private const string FontFolderPath = "Assets/Data/Fonts";
+
+        /// <summary>显示相机画面的那张图的占位图（编辑模式看到的就是它；运行期换成相机画面）。</summary>
+        private const string SandboxViewPlaceholderPath = "Assets/Images/UI/SandboxView.png";
 
         private const float ReferenceWidth = 1920f;
         private const float ReferenceHeight = 1080f;
@@ -51,6 +57,10 @@ namespace TapTap2026.EditorTools
         {
             "simhei", "NotoSansSC-VF",
         };
+
+        /// <summary>显示图占位的默认尺寸（参考分辨率 1920×1080 下：2:1，四周留出 UI 边距）。
+        /// 宽高比 2:1 与默认沙箱网格 200×100 一致——相机视野因此恰好是整张网格（见 CameraScreenFeed）。</summary>
+        private static readonly Vector2 SandboxViewSize = new Vector2(1600f, 800f);
 
         private static readonly Color DialoguePanelColor = new Color(0.05f, 0.06f, 0.09f, 0.85f);
         private static readonly Color ReviewPanelColor = new Color(0.03f, 0.04f, 0.07f, 0.96f);
@@ -884,17 +894,16 @@ namespace TapTap2026.EditorTools
         }
 
         /// <summary>
-        /// 屏幕取景的两块：**把相机画面导进 HUD 的那张图**（<see cref="CameraScreenFeed"/>）与
-        /// **屏幕背板相机**（<c>ScreenBackdrop</c>，culling mask 0、只清屏）。
+        /// 屏幕取景的三块：**显示相机画面的那张图**（<c>HUD Canvas/SandboxView</c>）、
+        /// **把画面导进它的组件**（<see cref="CameraScreenFeed"/>）与**屏幕背板相机**（<c>ScreenBackdrop</c>）。
         /// </summary>
         /// <remarks>
         /// <para>背板相机存在的唯一理由：主相机被 <see cref="CameraScreenFeed"/> 改成画纹理之后，
         /// 屏幕上就没有相机在画了——Game 视图会显示「No cameras rendering」警告、背景也不被清理。
         /// 它只清屏（不画任何东西），因此不花任何渲染成本。</para>
-        /// <para><b>幂等</b>：对象与组件缺才建；契约参数（culling mask / 清屏方式 / 深度 / 不能画进纹理不放
-        /// AudioListener）每次重跑都保证，清屏色与位置只在新建时套用（不覆盖手调）。
-        /// <c>HUD Canvas/Background</c> 是**用户自己摆的**那张图（占位图片换成的 <c>RawImage</c>），
-        /// 脚手架不建它——没有就只提示、不接线。</para>
+        /// <para><b>幂等</b>：对象与组件缺才建；契约参数（显示图居中 + 2:1 + 画布最底层 + 不吃点击、背板的
+        /// culling mask / 清屏方式 / 深度 / 不能画进纹理不放 AudioListener）每次重跑都保证，
+        /// 尺寸与清屏色只在新建时套用（不覆盖手调）。</para>
         /// </remarks>
         private static void EnsureScreenFeed(Scene scene, GameObject hudRoot, Report report)
         {
@@ -905,6 +914,8 @@ namespace TapTap2026.EditorTools
                 report.Notice("场景里没有「Main Camera」，屏幕取景没接线。");
                 return;
             }
+
+            RawImage target = BuildSandboxView(hudRoot.transform, report);
 
             GameObject backdropObject = EnsureChild(null, "ScreenBackdrop", report, out bool createdBackdrop);
             Camera backdrop = EnsureComponent<Camera>(backdropObject);
@@ -940,19 +951,6 @@ namespace TapTap2026.EditorTools
             }
 
             CameraScreenFeed feed = EnsureComponent<CameraScreenFeed>(cameraObject);
-            GameObject background = hudRoot.transform.Find("Background") != null
-                ? hudRoot.transform.Find("Background").gameObject
-                : null;
-            RawImage target = background != null ? background.GetComponent<RawImage>() : null;
-            if (background == null)
-            {
-                report.Notice("HUD Canvas 下没有「Background」，相机画面没有显示层（屏幕取景不生效）。");
-            }
-            else if (target == null)
-            {
-                report.Notice("「HUD Canvas/Background」上没有 RawImage，相机画面没有显示层（屏幕取景不生效）。");
-            }
-
             var feedSo = new SerializedObject(feed);
             SetRef(feedSo, "_camera", mainCamera, report);
             if (target != null)
@@ -961,6 +959,42 @@ namespace TapTap2026.EditorTools
             }
 
             feedSo.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// 显示相机画面的那张图（<c>HUD Canvas/SandboxView</c>）：**屏幕正中央**、宽高比 2:1
+        /// （= 默认沙箱网格 200×100 的长宽比，见 <see cref="SandboxViewSize"/>），
+        /// 是画布的**最底层**（其余 UI 都压在它上面），且不吃点击（纯显示层）。
+        /// </summary>
+        /// <remarks>
+        /// 场景里它带着 <c>SandboxView.png</c> 占位图（编辑模式看到的就是它）；运行期
+        /// <see cref="CameraScreenFeed"/> 会把纹理换成相机画面、并在退出时还原。找不到占位图资产时只提示、
+        /// 仍然把图建出来（一张白板总好过没有显示层）。
+        /// <para>已存在时不动 <c>anchoredPosition</c> / <c>sizeDelta</c>——尺寸是手调过的布局，
+        /// 只有「居中 + 底层 + 不吃点击」这三条契约每次重跑都保证。</para>
+        /// </remarks>
+        private static RawImage BuildSandboxView(Transform hudRoot, Report report)
+        {
+            RectTransform rect = EnsureUiChild(hudRoot, "SandboxView", report, out bool created);
+            RawImage raw = EnsureComponent<RawImage>(rect.gameObject);
+            if (created)
+            {
+                Place(rect, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
+                    Vector2.zero, SandboxViewSize);
+
+                Texture2D placeholder = AssetDatabase.LoadAssetAtPath<Texture2D>(SandboxViewPlaceholderPath);
+                if (placeholder == null)
+                {
+                    report.Notice("找不到占位图「" + SandboxViewPlaceholderPath + "」，显示图没有占位纹理（编辑模式是白板）。");
+                }
+
+                raw.texture = placeholder;
+                raw.color = Color.white;
+            }
+
+            raw.raycastTarget = false;
+            rect.SetSiblingIndex(0);
+            return raw;
         }
 
         /// <summary>三颗按钮的 <c>onClick</c> 接到 <see cref="ParticleEditor"/> 的三个公开方法上（持久监听，落进场景）。</summary>

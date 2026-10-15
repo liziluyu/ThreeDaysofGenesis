@@ -195,6 +195,10 @@ namespace TapTap2026.Game
 
         private float _lastSinglePlacementTime = float.NegativeInfinity;
 
+        /// <summary>相机上的画面接管组件（<see cref="CameraScreenFeed"/>，可选）。非 null 时相机画进纹理、
+        /// <see cref="TryGetCell"/> 需要先把指针换算进那张图（见 Awake 的兜底查找）。</summary>
+        private CameraScreenFeed _screenFeed;
+
         /// <summary>当前树木物种（Shift+滚轮切换；仅选中树木种子时参与投放与 HUD，见 <see cref="CycleTreeSpecies"/>）。</summary>
         private int _treeSpecies;
 
@@ -400,6 +404,16 @@ namespace TapTap2026.Game
             if (_hud == null)
             {
                 _hud = FindObjectOfType<SandboxHud>();
+            }
+
+            // 相机画面接管（可选依赖）：它把相机改成画进纹理，指针 → 格子要先换算进那张图（见 TryGetCell）。
+            // 组件就挂在相机上，因此先看自己引用的相机 / Camera.main，再退回全场景找（不报错——没有它时
+            // 相机直接画屏，屏幕像素即相机像素，直传即可）。
+            Camera feedCamera = _camera != null ? _camera : Camera.main;
+            _screenFeed = feedCamera != null ? feedCamera.GetComponent<CameraScreenFeed>() : null;
+            if (_screenFeed == null)
+            {
+                _screenFeed = FindObjectOfType<CameraScreenFeed>();
             }
 
             // 注册表由 ParticleRegistration 的 BeforeSceneLoad 钩子填充，因此这里读得到全部类型。
@@ -1356,7 +1370,14 @@ namespace TapTap2026.Game
             return string.IsNullOrEmpty(info.DebugName) ? type.GetType().Name : info.DebugName;
         }
 
-        /// <summary>屏幕坐标（像素，原点左下）→ 格子坐标。射线打到 z=0 平面，再换算到渲染器局部坐标取整。</summary>
+        /// <summary>
+        /// 屏幕坐标（像素，原点左下）→ 格子坐标。射线打到 z=0 平面，再换算到渲染器局部坐标取整。
+        /// </summary>
+        /// <remarks>
+        /// 相机被 <c>CameraScreenFeed</c> 改成画进纹理之后，<c>ScreenPointToRay</c> 吃的是**纹理像素**而不是屏幕像素
+        /// （见 <see cref="CameraScreenFeed"/> 类注释）——显示图不再是满屏时两者相差一个平移，因此先用
+        /// <see cref="CameraScreenFeed.ToCameraPixel"/> 把指针换算进那张图的矩形。未接管（编辑模式）时原样直传。
+        /// </remarks>
         /// <returns>映射结果在网格内则 true；相机缺失、射线与平面平行或落在网格外则 false。</returns>
         public bool TryGetCell(Vector3 screenPosition, ParticleWorld world, out int x, out int y)
         {
@@ -1369,7 +1390,11 @@ namespace TapTap2026.Game
                 return false;
             }
 
-            Ray ray = camera.ScreenPointToRay(screenPosition);
+            Vector3 rayPoint = _screenFeed != null
+                ? (Vector3)_screenFeed.ToCameraPixel(screenPosition)
+                : screenPosition;
+
+            Ray ray = camera.ScreenPointToRay(rayPoint);
             if (Mathf.Approximately(ray.direction.z, 0f))
             {
                 return false;
