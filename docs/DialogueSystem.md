@@ -11,11 +11,11 @@
 | 文件 | 角色 |
 |---|---|
 | `DialogueData.cs` | **纯 C#**：JSON 数据类 + `TryParse`（`JsonUtility`，免第三方依赖） |
-| `DialogueRunner.cs` | **纯 C# 状态机**：进度、历史、`Next` / `Choose` / `OnEnd`。不碰 UI / 输入 / 协程 |
+| `DialogueRunner.cs` | **纯 C# 状态机**：进度、`Next` / `Choose` / `OnEnd`。不碰 UI / 输入 / 协程 |
 | `DialogueLineView.cs` | 显示层数据：一行（说话人 + 名字 + 头像/立绘 + 整句 + 旁白标记） |
-| `IDialogueView.cs` | **显示层契约**（由 UI 实现，控制器持有）：`ShowLine` / `SetRevealedText` / `ShowChoices` / `HideChoices` / `ShowReview` / `HideReview` / `CloseView` |
+| `IDialogueView.cs` | **显示层契约**（由 UI 实现，控制器持有）：`ShowLine` / `SetRevealedText` / `ShowChoices` / `HideChoices` / `CloseView` |
 | `DialogueController.cs` | **UI 无关核心**（MonoBehaviour）：热键、打字机协程、暂停模拟、说话人解析；显示全部经 `IDialogueView` |
-| `DialogueDebugView.cs` | **调试用 UI**（实现 `IDialogueView`；UI 层级是**场景里的可编辑对象**——`Dialogue Canvas` 下的对话面板 / 回顾面板 / 选项按钮模板，本组件只持引用并填数据）；真实 UI 可禁用它并 `SetView` |
+| `DialogueDebugView.cs` | **调试用 UI**（实现 `IDialogueView`；UI 层级是**场景里的可编辑对象**——`Dialogue Canvas` 下的对话面板 / 选项按钮模板，本组件只持引用并填数据）；真实 UI 可禁用它并 `SetView` |
 | `Assets/Data/Dialogues/example_dialogue.json` | 示例对话（`TextAsset`） |
 | `Assets/Tests/EditMode/DialogueRunnerTests.cs` | 状态机与解析的 EditMode 测试 |
 
@@ -104,20 +104,18 @@ public void CloseDialogue();                   // 强制关闭（跳过 onEnd）
 
 ## 5. 状态机（`DialogueRunner`）
 
-- `Start(file)`：定位 `segments[0]`，第 1 句记入 `History`；空段立即 `Finished`。
+- `Start(file)`：定位 `segments[0]`；空段立即 `Finished`。
 - `Next()`：前进下一句；**选项点阻塞**（返回 `false`，必须 `Choose`）；到段尾 → 触发 `OnEnd`（一次）+ `Finished`。
-- `Choose(i)`：把选择记入 `History`（`isChoiceMark=true`）+ 跳转到 `gotoSegment`。
-- `History`：已呈现的所有句（含当前句与"选择"记录），回顾 UI 直接读它。
+- `Choose(i)`：跳转到 `gotoSegment`。
 
 ---
 
 ## 6. 运行时表现（UI / 输入 / 暂停）
 
-- **显示层走接口**：控制器**不碰任何 UI 类型**，全部显示通过 `IDialogueView`（`ShowLine` / `SetRevealedText` / `ShowChoices` / `ShowReview` / `CloseView` …）。换对话框（例如接入另一个项目的 UI）只需实现该接口并 `SetView`。
-- **自带调试 UI**：`DialogueDebugView`。它的 Canvas + 对话面板 + 回顾面板**摆在场景里**（`Dialogue Canvas`，overlay、sortingOrder 1000；由编辑器菜单 `Tools/TapTap2026/Scene UI Setup` 幂等补齐与接线），两个面板与选项按钮模板在场景里默认隐藏、可直接在编辑器里可视化编辑；选项按钮运行时从场景里的 `ChoiceButtonTemplate` 实例化。**整张 `Dialogue Canvas` 的显隐 = 是否在对话**：`Awake` 关掉整根画布、`ShowLine`（首句）打开、`CloseView`（对话结束）关掉；面板自己的开关只在画布内部切「哪一屏」。运行初态由 `Awake` 强制保证。同一物体上存在它即作为默认视图；真实 UI 里禁用它并 `SetView(自己的视图)` 即可。
+- **显示层走接口**：控制器**不碰任何 UI 类型**，全部显示通过 `IDialogueView`（`ShowLine` / `SetRevealedText` / `ShowChoices` / `CloseView` …）。换对话框（例如接入另一个项目的 UI）只需实现该接口并 `SetView`。
+- **自带调试 UI**：`DialogueDebugView`。它的 Canvas + 对话面板**摆在场景里**（`Dialogue Canvas`，overlay、sortingOrder 1000；由编辑器菜单 `Tools/TapTap2026/Scene UI Setup` 幂等补齐与接线），面板与选项按钮模板在场景里默认隐藏、可直接在编辑器里可视化编辑；选项按钮运行时从场景里的 `ChoiceButtonTemplate` 实例化。**整张 `Dialogue Canvas` 的显隐 = 是否在对话**：`Awake` 关掉整根画布、`ShowLine`（首句）打开、`CloseView`（对话结束）关掉；面板自己的开关只管画布内部那几屏。运行初态由 `Awake` 强制保证。同一物体上存在它即作为默认视图；真实 UI 里禁用它并 `SetView(自己的视图)` 即可。
 - **打字机**：协程按 `_charsPerSecond` 逐字输出；打字中按"下一句"→ 立即补全；纯文本（不解析 TMP 标签）。
-- **热键**（`KeyCode` 字段，可改）：`Space`/左键 = 下一句；`Tab` = 回顾；`Esc`/`Tab` = 关回顾；`T` = 调试播放示例。
-- **回顾**：独立面板，多行 `TMP_Text` + `ScrollRect`（滚轮滚动），打开时按当前 `History` 重建；回顾打开时**屏蔽下一句**。
+- **热键**（`KeyCode` 字段，可改）：`Space`/左键 = 下一句；`T` = 调试播放示例。
 - **暂停模拟**：开始对话 `driver.Pause()`、结束 `driver.Resume()`；**只恢复"本次对话才暂停的"**（不误恢复玩家原本的手动暂停）。
 - **输入屏蔽**：对话激活时 `ParticleEditor.SuppressInput = true`——**热键与画笔一起挡**（否则左键"下一句"会同时画粒子、`Space` 会同时切暂停）。
 
@@ -136,7 +134,7 @@ public void CloseDialogue();                   // 强制关闭（跳过 onEnd）
 
 ## 8. 测试
 
-`DialogueRunnerTests`（15 项，EditMode）：解析（合法 / 坏 JSON / 无 segments / characters 段 / characters 缺省为空）、起点、逐句推进、选项点阻塞、分支跳转、坏跳转警告、`OnEnd` 只触发一次 / 无 onEnd 不触发、历史顺序与选择标记、重启重置、空段立即结束。
+`DialogueRunnerTests`（16 项，EditMode）：解析（合法 / 坏 JSON / 无 segments / characters 段 / characters 缺省为空）、起点、逐句推进、选项点阻塞、分支跳转、坏跳转警告、`OnEnd` 只触发一次 / 无 onEnd 不触发、重启重置、空段立即结束。
 
 UI、打字机、热键、`SuppressInput`、暂停联动**不进 EditMode**（属 MonoBehaviour / UI / 输入，需 Play 模式观察）。
 

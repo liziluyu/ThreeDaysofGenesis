@@ -34,7 +34,7 @@
 |`Assets/Scripts/Rendering/`|世界/动物渲染、相机→UI、笔刷叠层|
 |`Assets/Scripts/Editor/`|仅编辑器工具（脚手架、美术生成器、代理自愈）|
 |`Assets/Data/`|配置资产（`ParticleSimulationSettings.asset`、`Phases/`、字体、预览 mesh）|
-|`Assets/Tests/EditMode/`|EditMode 测试（631 个）|
+|`Assets/Tests/EditMode/`|EditMode 测试（630 个）|
 |`docs/`|设计文档（Unity 不导入，无需 `.meta`）|
 |`Assets/Plugins/NuGet/`|MCP NuGet 依赖 DLL（LFS，勿手改）|
 |`ProjectSettings/`、`Packages/`|Unity 工程配置、依赖清单|

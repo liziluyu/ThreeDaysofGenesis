@@ -1,31 +1,10 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace TapTap2026.Game
 {
-    /// <summary>回顾面板里的一条历史记录。</summary>
-    public readonly struct HistoryEntry
-    {
-        /// <summary>角色 id；「玩家选择」记录为空串。</summary>
-        public readonly string speakerId;
-
-        /// <summary>台词，或「→ 选择了：XXX」。</summary>
-        public readonly string text;
-
-        /// <summary>true = 这是一条「玩家做了选择」的记录。</summary>
-        public readonly bool isChoiceMark;
-
-        public HistoryEntry(string speakerId, string text, bool isChoiceMark)
-        {
-            this.speakerId = speakerId;
-            this.text = text;
-            this.isChoiceMark = isChoiceMark;
-        }
-    }
-
     /// <summary>
-    /// 对话状态机：**纯 C#、不碰 UI / 输入 / 协程**，维护进度与历史，便于 EditMode 测试。
+    /// 对话状态机：**纯 C#、不碰 UI / 输入 / 协程**，维护进度，便于 EditMode 测试。
     /// 由 <see cref="DialogueController"/>（MonoBehaviour 薄壳）驱动；它把打字机 / UI / 热键 / 暂停接进来。
     /// </summary>
     public sealed class DialogueRunner
@@ -38,13 +17,11 @@ namespace TapTap2026.Game
         private int _index;
         private bool _finished;
         private bool _onEndFired;
-        private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
 
         public DialogueFile File { get { return _file; } }
         public DialogueSegment CurrentSegment { get { return _segment; } }
         public int Index { get { return _index; } }
         public bool Finished { get { return _finished; } }
-        public IReadOnlyList<HistoryEntry> History { get { return _history; } }
 
         /// <summary>当前应显示的句（结束 / 越界时返回 null）。</summary>
         public DialogueLine CurrentLine
@@ -76,17 +53,13 @@ namespace TapTap2026.Game
             _file = file;
             _finished = false;
             _onEndFired = false;
-            _history.Clear();
             _index = 0;
             _segment = file != null && file.segments != null && file.segments.Count > 0 ? file.segments[0] : null;
 
             if (_segment == null || _segment.lines.Count == 0)
             {
                 Finish();
-                return;
             }
-
-            Record(_segment.lines[0]);
         }
 
         /// <summary>前进下一句。返回是否还能继续（false = 已结束 / 正停在选项点）。</summary>
@@ -109,7 +82,6 @@ namespace TapTap2026.Game
                 return false;
             }
 
-            Record(_segment.lines[_index]);
             return true;
         }
 
@@ -128,7 +100,6 @@ namespace TapTap2026.Game
             }
 
             DialogueChoice choice = line.choices[index];
-            _history.Add(new HistoryEntry(string.Empty, "> Chose: " + choice.text, true));
 
             DialogueSegment target = FindSegment(choice.gotoSegment);
             if (target == null)
@@ -147,7 +118,6 @@ namespace TapTap2026.Game
                 return false;
             }
 
-            Record(_segment.lines[0]);
             return true;
         }
 
@@ -168,11 +138,6 @@ namespace TapTap2026.Game
                     }
                 }
             }
-        }
-
-        private void Record(DialogueLine line)
-        {
-            _history.Add(new HistoryEntry(line.speaker ?? string.Empty, line.text ?? string.Empty, false));
         }
 
         private DialogueSegment FindSegment(string id)

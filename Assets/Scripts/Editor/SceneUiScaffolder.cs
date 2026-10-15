@@ -63,7 +63,6 @@ namespace TapTap2026.EditorTools
         private static readonly Vector2 SandboxViewSize = new Vector2(1600f, 800f);
 
         private static readonly Color DialoguePanelColor = new Color(0.05f, 0.06f, 0.09f, 0.85f);
-        private static readonly Color ReviewPanelColor = new Color(0.03f, 0.04f, 0.07f, 0.96f);
         private static readonly Color ReportPanelColor = new Color(0.05f, 0.06f, 0.09f, 0.92f);
         private static readonly Color ButtonColor = new Color(0.16f, 0.2f, 0.28f, 0.95f);
         private static readonly Color BannerColor = new Color(0.25f, 0.9f, 0.35f, 0.9f);
@@ -102,7 +101,7 @@ namespace TapTap2026.EditorTools
 
             GameObject dialogueRoot = BuildCanvas(scene, "Dialogue Canvas", 1000, report);
             DialogueDebugView view = FindComponent<DialogueDebugView>(scene, "Dialogue Controller");
-            BuildDialogue(dialogueRoot.transform, DefaultReviewHint, report);
+            BuildDialogue(dialogueRoot.transform, report);
 
             // 字体必须在接线之前建好：DialogueDebugView._font 与两个 Canvas 下的 TMP_Text 一次套全。
             TMP_FontAsset font = EnsureCjkFont(report);
@@ -321,7 +320,7 @@ namespace TapTap2026.EditorTools
             cameraObject.transform.position = new Vector3(width * 0.5f, height * 0.5f, -10f);
         }
 
-        /// <summary>场景必须有 EventSystem：对话按钮、光照输入框、滚动回顾都靠它收事件（组件不再自建）。</summary>
+        /// <summary>场景必须有 EventSystem：对话按钮、光照输入框都靠它收事件（组件不再自建）。</summary>
         private static void EnsureEventSystem(Scene scene, Report report)
         {
             GameObject eventSystemObject = FindRoot(scene, "EventSystem");
@@ -596,14 +595,11 @@ namespace TapTap2026.EditorTools
 
         // ============================== Dialogue Canvas ==============================
 
-        /// <summary>回顾面板提示文案的默认值（场景里可直接编辑；这里只是首次创建时的兜底）。</summary>
-        private const string DefaultReviewHint = "Review  (Tab/Esc to close, scroll wheel to browse)";
-
         /// <summary>
-        /// 对话层级：面板（立绘 / 头像 / 名字 / 台词 / 选项容器 + 按钮模板）与回顾面板（提示 + 滚动正文）。
-        /// 布局数值逐条沿用被删掉的 <c>BuildDialoguePanel</c> / <c>BuildReviewPanel</c>，两个面板初始隐藏。
+        /// 对话层级：面板（立绘 / 头像 / 名字 / 台词 / 选项容器 + 按钮模板）。布局数值逐条沿用被删掉的
+        /// <c>BuildDialoguePanel</c>，面板初始隐藏。
         /// </summary>
-        private static void BuildDialogue(Transform root, string reviewHint, Report report)
+        private static void BuildDialogue(Transform root, Report report)
         {
             RectTransform panel = EnsureUiChild(root, "DialoguePanel", report, out bool createdPanel);
             Image panelBackground = EnsureComponent<Image>(panel.gameObject);
@@ -668,7 +664,6 @@ namespace TapTap2026.EditorTools
             }
 
             BuildChoiceButtonTemplate(choices, report);
-            BuildReviewPanel(root, reviewHint, report);
         }
 
         /// <summary>选项按钮模板：<see cref="DialogueDebugView.ShowChoices"/> 每次按它 Instantiate 一份，模板自身隐藏。</summary>
@@ -693,61 +688,6 @@ namespace TapTap2026.EditorTools
                 Stretch(label.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 4f), new Vector2(-12f, -4f));
                 StyleText(label, 28f, TextAlignmentOptions.Center, Color.white);
             }
-        }
-
-        /// <summary>回顾面板：顶部提示 + 滚动正文（ScrollRect + 遮罩视口 + 高度自适应的内容）。</summary>
-        private static void BuildReviewPanel(Transform root, string reviewHint, Report report)
-        {
-            RectTransform panel = EnsureUiChild(root, "ReviewPanel", report, out bool createdPanel);
-            Image background = EnsureComponent<Image>(panel.gameObject);
-            if (createdPanel)
-            {
-                Stretch(panel, Vector2.zero, Vector2.one, new Vector2(120f, 90f), new Vector2(-120f, -90f));
-                background.color = ReviewPanelColor;
-                panel.gameObject.SetActive(false);
-            }
-
-            TMP_Text hint = EnsureText(panel, "Hint", report, out bool createdHint);
-            if (createdHint)
-            {
-                Stretch(hint.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f),
-                    new Vector2(24f, -56f), new Vector2(-24f, -16f));
-                StyleText(hint, 24f, TextAlignmentOptions.TopLeft, HintColor);
-                hint.text = reviewHint;
-            }
-
-            RectTransform scroll = EnsureUiChild(panel, "Scroll", report, out bool createdScroll);
-            ScrollRect scrollRect = EnsureComponent<ScrollRect>(scroll.gameObject);
-            if (createdScroll)
-            {
-                Stretch(scroll, Vector2.zero, Vector2.one, new Vector2(24f, 24f), new Vector2(-24f, -70f));
-                scrollRect.horizontal = false;
-                scrollRect.vertical = true;
-                scrollRect.movementType = ScrollRect.MovementType.Clamped;
-            }
-
-            RectTransform viewport = EnsureUiChild(scroll, "Viewport", report, out bool createdViewport);
-            EnsureComponent<RectMask2D>(viewport.gameObject);
-            if (createdViewport)
-            {
-                Stretch(viewport, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
-            }
-
-            TMP_Text content = EnsureText(viewport, "Content", report, out bool createdContent);
-            ContentSizeFitter fitter = EnsureComponent<ContentSizeFitter>(content.gameObject);
-            if (createdContent)
-            {
-                Place(content.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f),
-                    Vector2.zero, Vector2.zero);
-                StyleText(content, 28f, TextAlignmentOptions.TopLeft, Color.white);
-
-                fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
-                fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-            }
-
-            // 滚动视图的两个端点引用（每次都挂：丢了整块回顾就不滚了）。
-            scrollRect.viewport = viewport;
-            scrollRect.content = content.rectTransform;
         }
 
         // ============================== 中文字体 ==============================
@@ -880,15 +820,12 @@ namespace TapTap2026.EditorTools
             var viewSo = new SerializedObject(view);
             SetRef(viewSo, "_canvas", dialogueRoot.GetComponent<Canvas>(), report);
             SetRef(viewSo, "_dialoguePanel", ObjectAt(root, "DialoguePanel"), report);
-            SetRef(viewSo, "_reviewPanel", ObjectAt(root, "ReviewPanel"), report);
             SetRef(viewSo, "_portraitImage", ComponentAt<Image>(root, "DialoguePanel/Portrait"), report);
             SetRef(viewSo, "_avatarImage", ComponentAt<Image>(root, "DialoguePanel/Avatar"), report);
             SetRef(viewSo, "_nameText", ComponentAt<TMP_Text>(root, "DialoguePanel/Name"), report);
             SetRef(viewSo, "_lineText", ComponentAt<TMP_Text>(root, "DialoguePanel/Line"), report);
             SetRef(viewSo, "_choiceRoot", ComponentAt<RectTransform>(root, "DialoguePanel/Choices"), report);
             SetRef(viewSo, "_choiceButtonTemplate", ComponentAt<Button>(root, "DialoguePanel/Choices/ChoiceButtonTemplate"), report);
-            SetRef(viewSo, "_reviewText", ComponentAt<TMP_Text>(root, "ReviewPanel/Scroll/Viewport/Content"), report);
-            SetRef(viewSo, "_reviewScroll", ComponentAt<ScrollRect>(root, "ReviewPanel/Scroll"), report);
             SetRef(viewSo, "_font", font, report);
             viewSo.ApplyModifiedPropertiesWithoutUndo();
         }

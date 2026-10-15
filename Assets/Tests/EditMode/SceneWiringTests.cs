@@ -110,8 +110,8 @@ namespace TapTap2026.Tests
 
             string[] fields =
             {
-                "_canvas", "_dialoguePanel", "_reviewPanel", "_portraitImage", "_avatarImage", "_nameText",
-                "_lineText", "_choiceRoot", "_choiceButtonTemplate", "_reviewText", "_reviewScroll", "_font",
+                "_canvas", "_dialoguePanel", "_portraitImage", "_avatarImage", "_nameText",
+                "_lineText", "_choiceRoot", "_choiceButtonTemplate", "_font",
             };
 
             for (int i = 0; i < fields.Length; i++)
@@ -120,7 +120,6 @@ namespace TapTap2026.Tests
             }
 
             Assert.IsFalse(((GameObject)Ref(view, "_dialoguePanel")).activeSelf, "对话面板的初始状态是隐藏");
-            Assert.IsFalse(((GameObject)Ref(view, "_reviewPanel")).activeSelf, "回顾面板的初始状态是隐藏");
             Assert.IsFalse(((Button)Ref(view, "_choiceButtonTemplate")).gameObject.activeSelf, "选项按钮模板的初始状态是隐藏");
 
             TMP_Text line = (TMP_Text)Ref(view, "_lineText");

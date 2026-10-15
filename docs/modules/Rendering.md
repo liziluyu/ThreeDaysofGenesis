@@ -22,7 +22,7 @@
 
 - 场景根：`EventSystem`。
 - `HUD Canvas`（overlay 500）：`SandboxHud` 组件 + 光标格读数/鼠标跟随组/高速读数/高速结算面板/光照面板（三个 TMP_InputField 直写 `ParticleLightDriver`）/「全部阶段完成」横幅（`GameController._completionBanner` 只开关激活态）/ **`SandboxView`**（屏幕正中央 2:1 `RawImage`，画布最底层；运行时 `CameraScreenFeed` 绑相机纹理；编辑模式显示自带占位图）/ **`ButtonPanel`**（暂停/光照/高速三颗按钮，`onClick` 持久监听指向 `ParticleEditor` 的 `TogglePauseMenu`/`ToggleLightPanel`/`EnterHighSpeedMode`——暂停按钮一并 `Pause()`/`Resume()`；高速模式与对话激活期间只切显示不动模拟）/ **`ParticlePanel`**（投放选择面板：10 颗按钮由 `ParticleSelectionPanel` 运行期把 `onClick` 绑到 `ParticleEditor.SelectByName`——按 `DisplayName` 绑名，每帧回显选中项（压灰）、名字对不上或锁编辑（`EditingLocked`）时变灰不可点；「清除」槽翻转 `EraseMode`）。
-- `Dialogue Canvas`（overlay 1000）：对话/回顾面板 + 选项按钮模板；**整张画布显隐 = 是否在对话**（`Awake` 关、`ShowLine` 开、`CloseView` 关）。
+- `Dialogue Canvas`（overlay 1000）：对话面板 + 选项按钮模板；**整张画布显隐 = 是否在对话**（`Awake` 关、`ShowLine` 开、`CloseView` 关）。
 - `Particle Sandbox` 下：`ParticleGridQuad`（编辑态挂预览 mesh/材质 `Assets/Data/SandboxPreviewMesh.asset`/`SandboxPreview.mat`，Game 视图不进 Play 可见取景；运行时首帧换 DontSave 运行时 mesh/材质）与 `ParticleBrushOverlay`（笔刷白圈）。
 - 中文显示靠 `Assets/Data/CjkDynamicFont.asset`（动态 TMP 字体，源 `Assets/Data/Fonts/simhei.ttf`，ttf 走 LFS）。
 - 场景结构由 `SceneUiScaffolder` 幂等维护，接线由 `SceneWiringTests` 钉住（见 EditorTooling/Testing 文档）。

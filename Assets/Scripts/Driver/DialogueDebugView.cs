@@ -8,7 +8,7 @@ namespace TapTap2026.Game
 {
     /// <summary>
     /// **调试用**对话 UI：把 <see cref="IDialogueView"/> 的数据填进场景里已经摆好的 uGUI 层级
-    /// （对话面板 + 回顾面板）。
+    /// （对话面板 + 选项按钮模板）。
     /// <para>它是"另一个项目真正的对话框"的替身——只要那个 UI 实现同一个 <see cref="IDialogueView"/> 接口，
     /// 用 <see cref="DialogueController.SetView"/> 交给控制器即可，本组件可以禁用/删掉。</para>
     /// <para><b>UI 层级是场景里的可编辑对象</b>（<c>Dialogue Canvas</c> 下）：本组件只做**接线与数据填充**，
@@ -32,9 +32,6 @@ namespace TapTap2026.Game
         [Tooltip("对话面板根（运行初态隐藏；编辑时可在场景里临时激活做可视化编辑）。")]
         [SerializeField] private GameObject _dialoguePanel;
 
-        [Tooltip("回顾面板根（运行初态隐藏）。")]
-        [SerializeField] private GameObject _reviewPanel;
-
         [Tooltip("左侧立绘。")]
         [SerializeField] private Image _portraitImage;
 
@@ -52,12 +49,6 @@ namespace TapTap2026.Game
 
         [Tooltip("选项按钮模板：每次显示选项时按它 Instantiate 一份（模板本身默认隐藏）。")]
         [SerializeField] private Button _choiceButtonTemplate;
-
-        [Tooltip("回顾正文。")]
-        [SerializeField] private TMP_Text _reviewText;
-
-        [Tooltip("回顾正文的滚动视图。")]
-        [SerializeField] private ScrollRect _reviewScroll;
 
         private readonly List<Button> _choiceButtons = new List<Button>();
 
@@ -89,18 +80,13 @@ namespace TapTap2026.Game
                 }
             }
 
-            // 运行初态：**整张画布先关掉**（还没在对话），两个面板与选项模板也各自收起——
+            // 运行初态：**整张画布先关掉**（还没在对话），面板与选项模板也各自收起——
             // 场景里因此可以临时把它们激活来做可视化编辑，运行时切回由这里保证。
             SetCanvasVisible(false);
 
             if (_dialoguePanel != null)
             {
                 _dialoguePanel.SetActive(false);
-            }
-
-            if (_reviewPanel != null)
-            {
-                _reviewPanel.SetActive(false);
             }
 
             HideChoices();
@@ -113,7 +99,7 @@ namespace TapTap2026.Game
 
         /// <summary>
         /// <c>Dialogue Canvas</c> 整根的显隐：**「是否在对话」就是它的开关**——<see cref="Awake"/> 关掉、
-        /// <see cref="ShowLine"/> 打开、<see cref="CloseView"/> 关掉；选项与回顾都在进行中的对话里，
+        /// <see cref="ShowLine"/> 打开、<see cref="CloseView"/> 关掉；选项在进行中的对话里，
         /// 不额外碰画布。面板自己的 <c>SetActive</c> 只管画布内部切哪一屏。
         /// </summary>
         private void SetCanvasVisible(bool visible)
@@ -127,7 +113,7 @@ namespace TapTap2026.Game
         /// <summary>一次性把所有未接线的引用列出来报错——缺哪个一眼看到，不用逐个字段翻 Inspector。</summary>
         private void LogMissingWiring()
         {
-            var missing = new List<string>(12);
+            var missing = new List<string>(8);
 
             if (_canvas == null)
             {
@@ -137,11 +123,6 @@ namespace TapTap2026.Game
             if (_dialoguePanel == null)
             {
                 missing.Add(nameof(_dialoguePanel));
-            }
-
-            if (_reviewPanel == null)
-            {
-                missing.Add(nameof(_reviewPanel));
             }
 
             if (_portraitImage == null)
@@ -174,16 +155,6 @@ namespace TapTap2026.Game
                 missing.Add(nameof(_choiceButtonTemplate));
             }
 
-            if (_reviewText == null)
-            {
-                missing.Add(nameof(_reviewText));
-            }
-
-            if (_reviewScroll == null)
-            {
-                missing.Add(nameof(_reviewScroll));
-            }
-
             if (missing.Count > 0)
             {
                 Debug.LogError(
@@ -202,7 +173,6 @@ namespace TapTap2026.Game
 
             SetCanvasVisible(true);
             _dialoguePanel.SetActive(true);
-            _reviewPanel.SetActive(false);
             HideChoices();
 
             if (line.IsNarrator)
@@ -285,26 +255,6 @@ namespace TapTap2026.Game
             }
         }
 
-        public void ShowReview(IReadOnlyList<DialogueHistoryEntryView> history)
-        {
-            if (_reviewPanel == null)
-            {
-                return;
-            }
-
-            _reviewText.text = BuildReviewText(history);
-            _reviewPanel.SetActive(true);
-            _reviewScroll.verticalNormalizedPosition = 1f;
-        }
-
-        public void HideReview()
-        {
-            if (_reviewPanel != null)
-            {
-                _reviewPanel.SetActive(false);
-            }
-        }
-
         public void CloseView()
         {
             HideChoices();
@@ -313,42 +263,8 @@ namespace TapTap2026.Game
                 _dialoguePanel.SetActive(false);
             }
 
-            if (_reviewPanel != null)
-            {
-                _reviewPanel.SetActive(false);
-            }
-
             // 最后收画布：不在对话了，整根关掉（面板的开关上面已经复位，下次开启从干净状态起）。
             SetCanvasVisible(false);
-        }
-
-        private static string BuildReviewText(IReadOnlyList<DialogueHistoryEntryView> history)
-        {
-            var builder = new System.Text.StringBuilder();
-            if (history == null)
-            {
-                return string.Empty;
-            }
-
-            for (int i = 0; i < history.Count; i++)
-            {
-                DialogueHistoryEntryView entry = history[i];
-                if (entry.IsChoiceMark)
-                {
-                    builder.Append("<color=#FFD37A>").Append(entry.Text).Append("</color>\n");
-                }
-                else if (string.IsNullOrEmpty(entry.DisplayName))
-                {
-                    builder.Append(entry.Text).Append('\n');
-                }
-                else
-                {
-                    builder.Append("<color=#9FD0FF>").Append(entry.DisplayName).Append("：</color>")
-                        .Append(entry.Text).Append('\n');
-                }
-            }
-
-            return builder.ToString();
         }
     }
 }

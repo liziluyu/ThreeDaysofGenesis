@@ -45,8 +45,6 @@ namespace TapTap2026.Game
         [SerializeField] private float _charsPerSecond = 40f;
         [SerializeField] private KeyCode _nextKey = KeyCode.Space;
         [SerializeField] private bool _nextOnLeftClick = true;
-        [SerializeField] private KeyCode _reviewKey = KeyCode.Tab;
-        [SerializeField] private KeyCode _closeReviewKey = KeyCode.Escape;
         [SerializeField] private KeyCode _debugStartKey = KeyCode.T;
 
         /// <summary>对话播完派发（参数 = 文件的 <c>onEnd</c> 事件名）。外部脚本可订阅。</summary>
@@ -61,7 +59,6 @@ namespace TapTap2026.Game
         private readonly Dictionary<string, Sprite> _spriteCache = new Dictionary<string, Sprite>();
         private readonly Dictionary<string, Sprite> _placeholderByKey = new Dictionary<string, Sprite>();
         private readonly HashSet<string> _warnedSpeakers = new HashSet<string>();
-        private readonly List<DialogueHistoryEntryView> _reviewBuffer = new List<DialogueHistoryEntryView>();
 
         private IDialogueView _view;       // 外部注入（SetView）
         private IDialogueView _sceneView;  // 场景里的 DialogueDebugView
@@ -69,7 +66,6 @@ namespace TapTap2026.Game
         private Coroutine _typing;
         private string _fullLine = string.Empty;
         private bool _isTyping;
-        private bool _reviewOpen;
         private bool _pausedByDialogue;
 
         // 结束对话的那一帧里，Space / 点击会被 ParticleEditor.Update 同帧消费（两者无执行顺序保证）；
@@ -267,24 +263,6 @@ namespace TapTap2026.Game
                 return;
             }
 
-            if (_reviewOpen)
-            {
-                bool toggle = _reviewKey != KeyCode.None && Input.GetKeyDown(_reviewKey);
-                bool close = _closeReviewKey != KeyCode.None && Input.GetKeyDown(_closeReviewKey);
-                if (toggle || close)
-                {
-                    CloseReview();
-                }
-
-                return;
-            }
-
-            if (_reviewKey != KeyCode.None && Input.GetKeyDown(_reviewKey))
-            {
-                OpenReview();
-                return;
-            }
-
             bool nextPressed = (_nextKey != KeyCode.None && Input.GetKeyDown(_nextKey))
                 || (_nextOnLeftClick && Input.GetMouseButtonDown(0));
             if (nextPressed)
@@ -305,7 +283,6 @@ namespace TapTap2026.Game
             }
 
             IsActive = true;
-            _reviewOpen = false;
             _warnedInvalidChoose = false;
             _restoreInputFrame = 0; // 作废可能遗留的延后恢复——本帧即将重新屏蔽输入
             _runner.Start(file);
@@ -345,12 +322,10 @@ namespace TapTap2026.Game
                 _typing = null;
             }
 
-            _reviewOpen = false;
             IDialogueView view = View;
             if (view != null)
             {
                 view.HideChoices();
-                view.HideReview();
                 view.CloseView();
             }
 
@@ -522,49 +497,6 @@ namespace TapTap2026.Game
             }
 
             view.ShowChoices(labels);
-        }
-
-        // ============================== 回顾 ==============================
-
-        private void OpenReview()
-        {
-            IDialogueView view = View;
-            if (view == null)
-            {
-                return;
-            }
-
-            _reviewOpen = true;
-            _reviewBuffer.Clear();
-            IReadOnlyList<HistoryEntry> history = _runner.History;
-            for (int i = 0; i < history.Count; i++)
-            {
-                HistoryEntry entry = history[i];
-                string name = entry.isChoiceMark ? string.Empty : DisplayNameFor(entry.speakerId);
-                _reviewBuffer.Add(new DialogueHistoryEntryView(name, entry.text, entry.isChoiceMark));
-            }
-
-            view.ShowReview(_reviewBuffer);
-        }
-
-        private void CloseReview()
-        {
-            _reviewOpen = false;
-            IDialogueView view = View;
-            if (view != null)
-            {
-                view.HideReview();
-            }
-        }
-
-        private string DisplayNameFor(string speakerId)
-        {
-            if (_characterMap.TryGetValue(speakerId, out DialogueCharacter def) && !string.IsNullOrEmpty(def.displayName))
-            {
-                return def.displayName;
-            }
-
-            return speakerId;
         }
 
         // ============================== 暂停 / 输入屏蔽 ==============================

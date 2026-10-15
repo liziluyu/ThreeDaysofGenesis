@@ -122,7 +122,6 @@ namespace TapTap2026.Tests
             Assert.AreEqual("start", runner.CurrentSegment.id);
             Assert.AreEqual(0, runner.Index);
             Assert.AreEqual("你来了。", runner.CurrentLine.text);
-            Assert.AreEqual(1, runner.History.Count);
         }
 
         [Test]
@@ -186,7 +185,6 @@ namespace TapTap2026.Tests
             Assert.AreEqual(1, runner.Index, "越界选择不应改下标");
             Assert.IsTrue(runner.IsChoicePoint, "越界选择后仍停在选项点");
             Assert.IsFalse(runner.Finished, "越界选择不应结束对话");
-            Assert.AreEqual(2, runner.History.Count, "越界选择不应写入历史");
         }
 
         [Test]
@@ -199,7 +197,6 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, runner.Index);
             Assert.AreEqual("一", runner.CurrentLine.text);
             Assert.IsFalse(runner.Finished, "非选项点 Choose 不应结束对话");
-            Assert.AreEqual(1, runner.History.Count, "非选项点 Choose 不应写入历史");
         }
 
         [Test]
@@ -241,36 +238,16 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void History_RecordsAllLinesInOrder()
-        {
-            DialogueRunner runner = Started(BranchJson);
-            runner.Next();
-            runner.Choose(0);
-
-            var history = runner.History;
-            Assert.AreEqual(4, history.Count);
-            Assert.AreEqual("你来了。", history[0].text);
-            Assert.IsFalse(history[0].isChoiceMark);
-            Assert.AreEqual("走哪边？", history[1].text);
-            Assert.IsTrue(history[2].isChoiceMark, "选择应记为历史");
-            StringAssert.Contains("左边", history[2].text);
-            Assert.AreEqual("往左。", history[3].text);
-            Assert.IsFalse(history[3].isChoiceMark);
-        }
-
-        [Test]
         public void Restart_ResetsState()
         {
             DialogueRunner runner = Started(BranchJson);
             runner.Next();
             runner.Choose(0);
-            Assert.AreEqual(4, runner.History.Count);
 
             runner.Start(Parse(BranchJson));
 
             Assert.IsFalse(runner.Finished);
             Assert.AreEqual(0, runner.Index);
-            Assert.AreEqual(1, runner.History.Count, "重启应清空历史");
             Assert.AreEqual("你来了。", runner.CurrentLine.text);
         }
 
