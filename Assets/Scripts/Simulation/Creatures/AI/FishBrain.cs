@@ -6,14 +6,18 @@ namespace TapTap2026.Simulation
     /// <remarks>
     /// <para><b>状态（<see cref="Creature.AiState"/>）：</b>0=Swim（水中巡游）、1=Stranded（离水搁浅，只能扑腾）。</para>
     /// <para><b>节奏：</b>只应被 <see cref="Creature.ShouldThink"/> 放行后以 2 Hz 调用；RNG 只在思考帧消耗。</para>
-    /// <para><b>竖直行为（体顶单格探测 + 下潜锁存）：</b>可见身体铺在世界行 <c>floor(Y) + 0 .. floor(Y) + BodyTopOffsetCells</c>
+    /// <para><b>竖直行为（体顶单格探测 + 下潜锁存 + 深度带随机上下游）：</b>可见身体铺在世界行 <c>floor(Y) + 0 .. floor(Y) + BodyTopOffsetCells</c>
     /// （偏移由生成美术数据给出）。体顶之上**那一格**不是水（含越界）即视为触面 → 置
     /// <see cref="Creature.VerticalDiveLatched"/> 并下潜；体顶之上**连续 <see cref="DiveUnlockMarginCells"/> 格全是水** → 解锁。
-    /// 解锁后离开池底 ≤ 2 格才上浮，再否则 <c>IntentVy = 0</c>——鱼是**中性浮力**
-    /// （浮力 == 重力，净竖直加速度为 0），意图为 0 时竖直速度被水阻衰减并**保持当前深度**，鱼因此停在水体中段。
-    /// 两条阈值之间因此有 <see cref="DiveUnlockMarginCells"/> 格宽的滞回窗口，水深够的开阔池里鱼会一路下潜到
-    /// 「体顶之上仍有 3 格水」的深度停住；水深 d ≤ 6 的池连身体加余量都摆不下，鱼触面后永久锁潜贴底（那时图案
-    /// 出水无解），并由运动层把它钉成「浅水伏底」不再爬行。</para>
+    /// 解锁后进入**深度带随机上下游**（v6，见 <c>docs/plan-bird-ai.md</c> §15）：参考量 <c>depth</c> = 体顶之上的连续水格数，
+    /// 目标带 = <c>[MinDepthCells, min(MaxDepthCells, geoMax)]</c>（<c>geoMax</c> = 鱼贴底时能有的 depth = 深 <c>d</c> 的池里
+    /// <c>d − 4</c>，由两次有界探针现场量出）。比目标深就上浮、比目标浅就下潜、**到达（含重摇恰好抽中当前深度）就悬停一个
+    /// 思考帧并在该帧重摇**——鱼于是沿着带**持续缓漂**，不再下潜到某个深度就冻住。带下限取 3（= 解锁余量）⇒ 目标深度永远
+    /// 给自己留出解锁所需的 3 格水，**不可能浮出水面**；池浅到 <c>geoMax &lt; MinDepthCells</c>（<c>d ≤ 6</c>）时**整段游层跳过**，
+    /// 行为与 v5 逐字相同（永久锁潜贴底、零额外摇骰）。
+    /// 两条阈值（触面 / 解锁）之间因此有 <see cref="DiveUnlockMarginCells"/> 格宽的滞回窗口，锁潜是**硬规则**、优先于带内游层。
+    /// 中性浮力仍是底色（浮力 == 重力，净竖直加速度为 0，<c>IntentVy = 0</c> 时竖直速度被水阻衰减并保持当前深度）；
+    /// 水深 d ≤ 6 的池连身体加余量都摆不下，鱼触面后永久锁潜贴底（那时图案出水无解），并由运动层把它钉成「浅水伏底」不再爬行。</para>
     /// <para><b>为什么必须是锁存（2026-10-14 修复）：</b>旧实现每个思考帧都拿「盒中心上方 8 格内有没有非水」实时比较，
     /// 于是「下潜带」与「近底上浮带」在浅水里重叠或紧邻：水深 d ≤ 8 时下潜恒真（贴底趴着），d ∈ {9,10} 时两条带
     /// 只差一格 ⇒ 逐思考帧在「上浮 / 下潜」之间交替（实测 600 帧换号 50~52 次）。锁存把下潜变成有记忆的状态，
@@ -82,6 +86,16 @@ namespace TapTap2026.Simulation
         /// 「池给不给得起身体 + 3 格余量」这条物理上自洽的界线。</para></summary>
         public const int DiveUnlockMarginCells = 3;
 
+        /// <summary>深度带下限（格）：取 <see cref="DiveUnlockMarginCells"/>——上层永远留出解锁所需的 3 格余量，
+        /// 目标深度因此不可能把体顶推到水面之上（带的最低点恰好是解锁判据的临界点：<c>depth == 本值</c> 时
+        /// 体顶之上正好连续 3 格水，锁定与带内游层无缝衔接）。见 <c>docs/plan-bird-ai.md</c> §15.1。</summary>
+        public const int MinDepthCells = DiveUnlockMarginCells;
+
+        /// <summary>深度带上限（格，受池子几何上限钳制）：8 − 3 = 振幅 5 格（屏高 5%、约 1.25× 鱼图案高 4 行）。
+        /// 比鸟的高度带（<see cref="BirdBrain.MinAltitudeCells"/>~<see cref="BirdBrain.MaxAltitudeCells"/>，振幅 18）
+        /// 小一档——鱼是缓漂不是掠飞。见 <c>docs/plan-bird-ai.md</c> §15.1。</summary>
+        public const int MaxDepthCells = 8;
+
         /// <summary>墙感知换向的前探格数：当前方向前方这么多格的**体高行内**全是水才认为畅通、保持原方向不摇骰。</summary>
         public const int AheadProbeCells = 3;
 
@@ -102,7 +116,8 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>水中巡游：前方畅通就保持当前方向、受阻才 1/3 摇骰换向；竖直按体顶单格探测 + 下潜锁存决定
-        /// 下潜 / 上浮 / 自由漂。</summary>
+        /// 锁潜（一路下潜）/ **深度带随机上下游**（比目标深就上浮、比目标浅就下潜、到达即悬停并重摇；
+        /// 池浅到摆不下带时整段跳过，落到近底上抬 / 自由漂）。</summary>
         private static void ThinkSwim(Creature creature, CreatureWorld creatures, ParticleWorld world)
         {
             creature.AiState = StateSwim;
@@ -143,13 +158,50 @@ namespace TapTap2026.Simulation
             bool nearBottom = !CreatureTerrain.IsWater(world, cx, centerRow - 1)
                 || !CreatureTerrain.IsWater(world, cx, centerRow - 2);
 
+            // 深度带随机上下游（v6，见 docs/plan-bird-ai.md §15）：参考量 depth = 体顶之上的连续水格数（水面到体顶的距离），
+            // 目标带 = [MinDepthCells, min(MaxDepthCells, geoMax)]。geoMax = 鱼贴底时能有的 depth（深 d 的池里 = d − 4），
+            // 由「体顶之上的水面行」与「脚底之下的池底行」两次有界探针现场量出（都只用局部 int 与 while ⇒ 零分配、必定终止）。
+            int surfaceRow = ProbeSurfaceRowAbove(world, cx, bodyTopRow + 1);
+            int floorRow = ProbeFloorRowBelow(world, cx, footRow - 1);
+            int maxDepth = Min(MaxDepthCells, surfaceRow - floorRow - 2 - BodyTopOffsetCells);
+
+            // 判据顺序：锁潜 > 带内上下游 > 近底上抬 > 自由漂（锁潜是硬规则，优先于游层）。
             if (creature.VerticalDiveLatched)
             {
                 creature.IntentVy = -VerticalSpeed; // 锁潜：一路下潜（浅到摆不下余量的池 ⇒ 永久贴底，运动层再让它伏底不动）
             }
+            else if (maxDepth >= MinDepthCells)
+            {
+                // 带内上下游：比目标深就上浮、比目标浅就下潜、到达即悬停一帧并重摇。
+                // 「到达即重摇」而不是逐帧摇：否则竖直意图会在带内逐思考帧抖动（旧双带实现 600 帧换号 52 次的坑，见类 remarks）。
+                // 目标无效（< 下限 / > 上限）或已达成（depth == target）时才摇一次；只在本分支摇骰，
+                // 池浅到 maxDepth < MinDepthCells 时整段跳过、一粒骰子不摇 ⇒ 浅池行为与 v5 逐字相同。
+                int depth = surfaceRow - 1 - bodyTopRow;
+                int target = creature.TargetDepthCells;
+                if (target < MinDepthCells || target > maxDepth || depth == target)
+                {
+                    target = MinDepthCells + creatures.NextInt(maxDepth - MinDepthCells + 1);
+                    creature.TargetDepthCells = target;
+                }
+
+                if (depth > target)
+                {
+                    creature.IntentVy = VerticalSpeed; // 比目标深 ⇒ 上浮
+                }
+                else if (depth < target)
+                {
+                    creature.IntentVy = -VerticalSpeed; // 比目标浅 ⇒ 下潜
+                }
+                else
+                {
+                    creature.IntentVy = 0f; // 重摇恰好抽中当前深度：悬停一个思考帧，下个思考帧再摇
+                }
+            }
             else if (nearBottom)
             {
-                creature.IntentVy = VerticalSpeed; // 未锁潜且近底 → 抬离池底
+                // 兜底（带已覆盖解锁后的全部情形：解锁 ⇒ 体顶之上 3 格水 ⇒ geoMax ≥ MinDepthCells，故此处只在
+                // 池子几何量不出带时可达）。保留原语义：未锁潜且近底 → 抬离池底。
+                creature.IntentVy = VerticalSpeed;
             }
             else
             {
@@ -199,6 +251,49 @@ namespace TapTap2026.Simulation
             }
 
             return true;
+        }
+
+        /// <summary>自 <paramref name="firstRow"/> 向上扫到第一个非水格（越界算非水）⇒ 水面行（体顶之上的第一个非水行）。
+        /// 最多扫 <c>world.Height</c> 格：扫到世界顶就是越界、<see cref="CreatureTerrain.IsWater"/> 必返回 false，
+        /// 因此必定终止（零分配，只有局部 int）。</summary>
+        /// <param name="world">粒子世界（只读）。</param>
+        /// <param name="x">脚底中点所在格 x。</param>
+        /// <param name="firstRow">起算行（体顶之上第一格）。</param>
+        /// <returns>体顶之上第一个非水行。</returns>
+        private static int ProbeSurfaceRowAbove(ParticleWorld world, int x, int firstRow)
+        {
+            int lastRow = firstRow + world.Height;
+            int y = firstRow;
+            while (y < lastRow && CreatureTerrain.IsWater(world, x, y))
+            {
+                y++;
+            }
+
+            return y;
+        }
+
+        /// <summary>自 <paramref name="startRow"/> 向下扫到第一个非水格（越界算非水）⇒ 池底行（脚底之下的第一个非水行）。
+        /// 与 <see cref="ProbeSurfaceRowAbove"/> 对称，同样必定终止。</summary>
+        /// <param name="world">粒子世界（只读）。</param>
+        /// <param name="x">脚底中点所在格 x。</param>
+        /// <param name="startRow">起算行（脚底之下第一格）。</param>
+        /// <returns>脚底之下第一个非水行。</returns>
+        private static int ProbeFloorRowBelow(ParticleWorld world, int x, int startRow)
+        {
+            int lastRow = startRow - world.Height;
+            int y = startRow;
+            while (y > lastRow && CreatureTerrain.IsWater(world, x, y))
+            {
+                y--;
+            }
+
+            return y;
+        }
+
+        /// <summary>两整数取小（不引 Mathf / Math，保持决策路径零 UnityEngine / 零 BCL 依赖）。</summary>
+        private static int Min(int a, int b)
+        {
+            return a < b ? a : b;
         }
 
         /// <summary>搁浅：停住水平移动，按 15~35 帧的间隔扑腾一跳。</summary>

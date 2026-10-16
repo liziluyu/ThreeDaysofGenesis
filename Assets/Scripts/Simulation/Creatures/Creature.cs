@@ -137,6 +137,11 @@ namespace TapTap2026.Simulation
         /// <c>docs/plan-bird-ai.md</c> §12）；其余物种恒不读、恒不写 ⇒ 零行为差异。</summary>
         public int TargetAltitudeCells;
 
+        /// <summary>鱼的目标深度（格）：**体顶之上的连续水格数**（水面到体顶的距离），Brain 写 / 读，基类只存不解释
+        /// （语义同 <see cref="AiState"/>）。默认 0 视为无效，鱼在第一个思考帧重摇（见 <c>docs/plan-bird-ai.md</c> §15）；
+        /// 不读它的物种恒不写 ⇒ 零行为差异。</summary>
+        public int TargetDepthCells;
+
         /// <summary>捕猎目标引用槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
         /// 鸟（<see cref="BirdBrain"/>）用它把当前追击的猎物（兔 / 鱼）记在这里；非空且两碰撞盒重叠时，
         /// <see cref="ApplyLocomotion"/> 第 ⑥b 段按锁存的 <see cref="HuntKillLatched"/> 结算（命中判死

@@ -285,7 +285,11 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 2. **到达即重摇**:强制 `TargetDepthCells` = 当前 `depth` ⇒ 随后若干帧内 depth 离开该值(不粘死)。
 3. **池太浅(d ≤ 6)**:行为与今天完全一致(锁潜恒真 / 竖直意图恒 0 / 贴底),且随机流**零额外消耗**。
 4. **目标越界**(置 0 / 置 99,或池变浅)⇒ 重摇后落在合法带内。
-5. **既有深池用例收尾**:`OpenDeeperPool_RestsWithoutVerticalIntent` / `OpenPool_Depth10_HoldsDepthAndHeading`
-   钉的是旧契约(「深池里竖直意图恒 0、深度不变」),按新契约改写为「深度留在带内 + 双向都出现」;
-   浅池三条(`OpenShallowPool_*` / `NarrowShallowTank_*`)与确定性 / 世界流隔离用例保持绿。
+5. **既有深池用例收尾(两个文件)**:`FishShallowWaterTests` 的
+   `OpenDeeperPool_RestsWithoutVerticalIntent` / `OpenPool_Depth10_HoldsDepthAndHeading`,以及
+   `CreatureAiTests` 鱼竖直段 5 条(`FishCruise_BodyStaysUnderWater_AndHoldsDepth` /
+   `Fish_MidWater_HoldsDepth_AndDoesNotRiseToSurface` / `Fish_NearSurface_DivesInsteadOfRising` /
+   `Fish_NearBottom_RisesAwayFromFloor` / `Fish_DroppedFromAir_SettlesFullySubmerged`)——它们钉的都是旧契约
+   (「中段保持出生深度、竖直意图恒 0」),按新契约改写为「整条没入水下(硬不变量保留) + depth 留在带内 + 双向都出现」,
+   而**不是放宽断言**;浅池三条(`OpenShallowPool_*` / `NarrowShallowTank_*`)与确定性 / 世界流隔离用例保持绿。
 6. **确定性**:同 seed 逐位重放。

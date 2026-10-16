@@ -146,6 +146,7 @@ Y += 1; rowMin++; rowMax++; 重测同一列（每帧至多抬一格）
 深度修正的力度：每逻辑帧的竖直更新是 `V ← (1 − WaterDrag) · MoveTowards(V, IntentVy, SwimAccel)`（`ApplyLocomotion` 的意图逼近**先于** `StepPhysics` 的阻尼）⇒ **稳态竖直位移/帧 = `(1 − WaterDrag) · min(VerticalSpeed, SwimAccel / WaterDrag)`** = 0.4 × min(0.1, 0.1/0.6) = **0.04 格/帧（≈ 0.8 格/秒 @20 逻辑帧/秒）**，与水平游速（0.05 格/帧 ≈ 1 格/秒）同量级。**两个常数谁小谁封顶**：`SwimAccel` 太小时（< `VerticalSpeed × WaterDrag` = 0.06）水阻每帧吃掉 60% 的逼近量，稳态被压到 0.0133 格/帧（0.27 格/秒 ⇒ 下潜 8 格要 30 秒）——2026-10-12 实测踩过这个坑，因此把 `SwimAccel` 提到 0.1 让它不再封顶。下潜 8 格约需 10 秒。
 - **Stranded**（离水，`!IsSubmerged`）：`IntentVx = 0`；思考帧摇 `NextInt(15, 36)`（15~35）作为下次蹦跳间隔，间隔到 → `WantHop = true`（扑腾）。`BeachedTicks > 200` → `Kill(Beached)`。重新入水自动回 Swim。
 - **死法**：搁浅超时 → Beached；接触火 → Burned（通用机制）；被鸟扑中时 **1/3** 概率死亡（`FishCreature.HuntDeathRoll = 3`，§14）。
+- **深度带随机上下游（v6，§15）**：竖直不再「解锁后 `IntentVy = 0` 冻在体顶之上 3 格水」——参考量 `depth` = 体顶之上的连续水格数，目标带 = `[MinDepthCells(=3), min(MaxDepthCells(=8), 水深 − 4)]`，**到达即重摇**（0.8 格/秒的缓漂，振幅 5 格）；判据顺序 = 触面锁潜 > 带内上下游 > 近底上抬 > 自由漂；浅池（`geoMax < 3`）整段跳过 ⇒ 行为与从前一字不变。
 
 ### 7.3 鸟（Perched / Fly / Flee / Hunt）
 
