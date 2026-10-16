@@ -5,33 +5,9 @@
     { "id": "mei",  "displayName": "Mei" },
     { "id": "chen", "displayName": "Chen" }
   ],
-  "segments": [
-    {
-      "id": "start",
-      "lines": [
-        { "speaker": "mei", "text": "You're finally here. The wind is strong tonight." },
-        { "speaker": "chen", "text": "I can see it - the clouds are drifting toward the shore." },
-        { "speaker": "mei", "text": "Want to come with me? Or would you rather look around on your own?",
-          "choices": [
-            { "text": "Come along", "gotoSegment": "together" },
-            { "text": "Go alone", "gotoSegment": "alone" }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "together",
-      "lines": [
-        { "speaker": "chen", "text": "Then let's go, before it gets dark." },
-        { "speaker": "mei", "text": "Keep up, don't get lost." }
-      ]
-    },
-    {
-      "id": "alone",
-      "lines": [
-        { "speaker": "chen", "text": "Alright - I'll head over to the lighthouse." },
-        { "speaker": "mei", "text": "Be back before dark." }
-      ]
-    }
+  "lines": [
+    { "speaker": "mei", "text": "You're finally here. The wind is strong tonight." },
+    { "speaker": "chen", "text": "I can see it - the clouds are drifting toward the shore." },
+    { "speaker": "mei", "text": "Want to come with me? Or would you rather look around on your own?" }
   ]
 }

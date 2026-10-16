@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace TapTap2026.Game
 {
-    /// <summary>对话文件（JSON 顶层）：一段对话，含多个命名段落（分支在段之间跳转）。</summary>
+    /// <summary>对话文件（JSON 顶层）：一段对话，从头到尾把台词按顺序播一遍。</summary>
     [Serializable]
     public sealed class DialogueFile
     {
@@ -17,8 +17,8 @@ namespace TapTap2026.Game
         /// <summary>本对话用到的角色表（speaker id → 显示名 + 立绘/头像资源名）。</summary>
         public List<DialogueCharacter> characters;
 
-        /// <summary>命名段落；默认从 <c>segments[0]</c> 开始。</summary>
-        public List<DialogueSegment> segments;
+        /// <summary>整段对话按顺序播的台词；播到尾巴就派发 <see cref="onEnd"/>。</summary>
+        public List<DialogueLine> lines;
     }
 
     /// <summary>
@@ -35,17 +35,6 @@ namespace TapTap2026.Game
         public string displayName;
     }
 
-    /// <summary>命名段落：一组台词，可被选项跳转。</summary>
-    [Serializable]
-    public sealed class DialogueSegment
-    {
-        /// <summary>段名（<see cref="DialogueChoice.gotoSegment"/> 的跳转目标）。</summary>
-        public string id;
-
-        /// <summary>逐句台词。</summary>
-        public List<DialogueLine> lines;
-    }
-
     /// <summary>一句台词。</summary>
     [Serializable]
     public sealed class DialogueLine
@@ -55,20 +44,6 @@ namespace TapTap2026.Game
 
         /// <summary>台词内容。</summary>
         public string text;
-
-        /// <summary>选项点（可选）：有此字段时本句停下等玩家选择，不再自动前进。</summary>
-        public List<DialogueChoice> choices;
-    }
-
-    /// <summary>一个选项。</summary>
-    [Serializable]
-    public sealed class DialogueChoice
-    {
-        /// <summary>选项文字。</summary>
-        public string text;
-
-        /// <summary>选中后跳转到的 <see cref="DialogueSegment.id"/>。</summary>
-        public string gotoSegment;
     }
 
     /// <summary>
@@ -106,9 +81,9 @@ namespace TapTap2026.Game
                 return false;
             }
 
-            if (parsed.segments == null || parsed.segments.Count == 0)
+            if (parsed.lines == null || parsed.lines.Count == 0)
             {
-                error = "对话缺少 segments（至少一段）。id = " + (parsed.id ?? "<null>");
+                error = "对话缺少 lines（至少一句）。id = " + (parsed.id ?? "<null>");
                 return false;
             }
 
@@ -116,22 +91,6 @@ namespace TapTap2026.Game
             if (parsed.characters == null)
             {
                 parsed.characters = new List<DialogueCharacter>();
-            }
-
-            foreach (DialogueSegment segment in parsed.segments)
-            {
-                if (segment.lines == null)
-                {
-                    segment.lines = new List<DialogueLine>();
-                }
-
-                foreach (DialogueLine line in segment.lines)
-                {
-                    if (line.choices != null && line.choices.Count == 0)
-                    {
-                        line.choices = null; // 空 choices 视为普通句
-                    }
-                }
             }
 
             file = parsed;

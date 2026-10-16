@@ -1,5 +1,4 @@
 using System;
-using UnityEngine;
 
 namespace TapTap2026.Game
 {
@@ -13,13 +12,11 @@ namespace TapTap2026.Game
         public event Action<string> OnEnd;
 
         private DialogueFile _file;
-        private DialogueSegment _segment;
         private int _index;
         private bool _finished;
         private bool _onEndFired;
 
         public DialogueFile File { get { return _file; } }
-        public DialogueSegment CurrentSegment { get { return _segment; } }
         public int Index { get { return _index; } }
         public bool Finished { get { return _finished; } }
 
@@ -28,41 +25,30 @@ namespace TapTap2026.Game
         {
             get
             {
-                if (_finished || _segment == null || _index < 0 || _index >= _segment.lines.Count)
+                if (_file == null || _index < 0 || _index >= _file.lines.Count)
                 {
                     return null;
                 }
 
-                return _segment.lines[_index];
+                return _file.lines[_index];
             }
         }
 
-        /// <summary>当前句是否带选项（需要玩家选择）。</summary>
-        public bool IsChoicePoint
-        {
-            get
-            {
-                DialogueLine line = CurrentLine;
-                return line != null && line.choices != null && line.choices.Count > 0;
-            }
-        }
-
-        /// <summary>从 <c>segments[0]</c> 开始；空段 / 无段立即结束。</summary>
+        /// <summary>从头逐句播；没有台词立即结束。</summary>
         public void Start(DialogueFile file)
         {
             _file = file;
             _finished = false;
             _onEndFired = false;
             _index = 0;
-            _segment = file != null && file.segments != null && file.segments.Count > 0 ? file.segments[0] : null;
 
-            if (_segment == null || _segment.lines.Count == 0)
+            if (_file == null || _file.lines == null || _file.lines.Count == 0)
             {
                 Finish();
             }
         }
 
-        /// <summary>前进下一句。返回是否还能继续（false = 已结束 / 正停在选项点）。</summary>
+        /// <summary>前进下一句。返回是否还能继续（false = 已到尾巴 / 已结束）。</summary>
         public bool Next()
         {
             if (_finished)
@@ -70,49 +56,8 @@ namespace TapTap2026.Game
                 return false;
             }
 
-            if (IsChoicePoint)
-            {
-                return false; // 选项点阻塞，必须等 Choose()
-            }
-
             _index++;
-            if (_index >= _segment.lines.Count)
-            {
-                Finish();
-                return false;
-            }
-
-            return true;
-        }
-
-        /// <summary>选分支并跳段。返回是否成功。</summary>
-        public bool Choose(int index)
-        {
-            if (_finished || !IsChoicePoint)
-            {
-                return false;
-            }
-
-            DialogueLine line = CurrentLine;
-            if (index < 0 || index >= line.choices.Count)
-            {
-                return false;
-            }
-
-            DialogueChoice choice = line.choices[index];
-
-            DialogueSegment target = FindSegment(choice.gotoSegment);
-            if (target == null)
-            {
-                Debug.LogWarning(
-                    $"[DialogueRunner] 选项跳转到不存在的段：{choice.gotoSegment}（对话 id = {_file.id}）。");
-                Finish();
-                return false;
-            }
-
-            _segment = target;
-            _index = 0;
-            if (_segment.lines.Count == 0)
+            if (_index >= _file.lines.Count)
             {
                 Finish();
                 return false;
@@ -138,24 +83,6 @@ namespace TapTap2026.Game
                     }
                 }
             }
-        }
-
-        private DialogueSegment FindSegment(string id)
-        {
-            if (string.IsNullOrEmpty(id) || _file == null)
-            {
-                return null;
-            }
-
-            for (int i = 0; i < _file.segments.Count; i++)
-            {
-                if (_file.segments[i].id == id)
-                {
-                    return _file.segments[i];
-                }
-            }
-
-            return null;
         }
     }
 }

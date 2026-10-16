@@ -110,8 +110,7 @@ namespace TapTap2026.Tests
 
             string[] fields =
             {
-                "_canvas", "_dialoguePanel", "_portraitImage", "_avatarImage", "_nameText",
-                "_lineText", "_choiceRoot", "_choiceButtonTemplate",
+                "_canvas", "_dialoguePanel", "_portraitImage", "_avatarImage", "_nameText", "_lineText",
                 // _font 刻意不钉：字体属用户的只读区（AGENTS.md 铁律），测试不得断言字体设置。
             };
 
@@ -121,7 +120,6 @@ namespace TapTap2026.Tests
             }
 
             Assert.IsFalse(((GameObject)Ref(view, "_dialoguePanel")).activeSelf, "对话面板的初始状态是隐藏");
-            Assert.IsFalse(((Button)Ref(view, "_choiceButtonTemplate")).gameObject.activeSelf, "选项按钮模板的初始状态是隐藏");
 
             // 台词字号 / 字体刻意不断言：字体是用户的只读区（AGENTS.md 铁律「任何情况下都不许动字体设置」）。
         }

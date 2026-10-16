@@ -348,7 +348,7 @@ namespace TapTap2026.EditorTools
         }
 
         /// <summary>
-        /// 场景必须**恰好一个** EventSystem：对话按钮、光照滑块都靠它收事件（组件不再自建）。
+        /// 场景必须**恰好一个** EventSystem：光照滑块、HUD / 投放面板按钮都靠它收事件（组件不再自建）。
         /// <para><b>为什么按组件找而不是按名字找</b>：多出来的 EventSystem（从 GameObject 菜单 / MCP 拖进来的
         /// 第二个，名字往往不叫 <c>EventSystem</c>）会静默废掉整个 UI——<see cref="EventSystem.current"/> 只认
         /// 注册表里的第一个，其余既不收指针事件也不再更新选中，表现就是「所有按钮点了没反应」。
@@ -752,7 +752,7 @@ namespace TapTap2026.EditorTools
         // ============================== Dialogue Canvas ==============================
 
         /// <summary>
-        /// 对话层级：面板（立绘 / 头像 / 名字 / 台词 / 选项容器 + 按钮模板）。布局数值逐条沿用被删掉的
+        /// 对话层级：面板（立绘 / 头像 / 名字 / 台词）。布局数值逐条沿用被删掉的
         /// <c>BuildDialoguePanel</c>，面板初始隐藏。
         /// </summary>
         private static void BuildDialogue(Transform root, Report report)
@@ -796,53 +796,12 @@ namespace TapTap2026.EditorTools
                 StyleText(name, 34f, TextAlignmentOptions.BottomLeft, Color.white);
             }
 
-            // 台词（拉伸：左让开立绘、右让开选项）
+            // 台词（拉伸：左让开立绘、四周留边）
             TMP_Text line = EnsureText(panel, "Line", report, out bool createdLine);
             if (createdLine)
             {
-                Stretch(line.rectTransform, Vector2.zero, Vector2.one, new Vector2(242f, 16f), new Vector2(-380f, -60f));
+                Stretch(line.rectTransform, Vector2.zero, Vector2.one, new Vector2(242f, 16f), new Vector2(-16f, -60f));
                 StyleText(line, 30f, TextAlignmentOptions.TopLeft, Color.white);
-            }
-
-            // 选项容器（右侧竖排）
-            RectTransform choices = EnsureUiChild(panel, "Choices", report, out bool createdChoices);
-            VerticalLayoutGroup choicesLayout = EnsureComponent<VerticalLayoutGroup>(choices.gameObject);
-            if (createdChoices)
-            {
-                Place(choices, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(1f, 0f),
-                    new Vector2(-16f, 16f), new Vector2(360f, 228f));
-                choicesLayout.childControlHeight = true;
-                choicesLayout.childControlWidth = true;
-                choicesLayout.childForceExpandHeight = false;
-                choicesLayout.childForceExpandWidth = true;
-                choicesLayout.spacing = 8f;
-                choicesLayout.childAlignment = TextAnchor.LowerRight;
-            }
-
-            BuildChoiceButtonTemplate(choices, report);
-        }
-
-        /// <summary>选项按钮模板：<see cref="DialogueDebugView.ShowChoices"/> 每次按它 Instantiate 一份，模板自身隐藏。</summary>
-        private static void BuildChoiceButtonTemplate(Transform choices, Report report)
-        {
-            RectTransform template = EnsureUiChild(choices, "ChoiceButtonTemplate", report, out bool createdTemplate);
-            Image background = EnsureComponent<Image>(template.gameObject);
-            Button button = EnsureComponent<Button>(template.gameObject);
-            LayoutElement element = EnsureComponent<LayoutElement>(template.gameObject);
-            if (createdTemplate)
-            {
-                background.color = ButtonColor;
-                button.targetGraphic = background;
-                element.minHeight = 48f;
-                element.preferredHeight = 48f;
-                template.gameObject.SetActive(false);
-            }
-
-            TMP_Text label = EnsureText(template, "Label", report, out bool createdLabel);
-            if (createdLabel)
-            {
-                Stretch(label.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 4f), new Vector2(-12f, -4f));
-                StyleText(label, 28f, TextAlignmentOptions.Center, Color.white);
             }
         }
 
@@ -965,7 +924,7 @@ namespace TapTap2026.EditorTools
             hudSo.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        /// <summary>对话视图的 11 个场景引用 + 字体（<c>_controller</c> 保持场景原样）。</summary>
+        /// <summary>对话视图的 6 个场景引用 + （不再被读写的）历史字体字段。</summary>
         private static void WireDialogue(DialogueDebugView view, GameObject dialogueRoot, TMP_FontAsset font, Report report)
         {
             if (view == null)
@@ -981,8 +940,6 @@ namespace TapTap2026.EditorTools
             SetRef(viewSo, "_avatarImage", ComponentAt<Image>(root, "DialoguePanel/Avatar"), report);
             SetRef(viewSo, "_nameText", ComponentAt<TMP_Text>(root, "DialoguePanel/Name"), report);
             SetRef(viewSo, "_lineText", ComponentAt<TMP_Text>(root, "DialoguePanel/Line"), report);
-            SetRef(viewSo, "_choiceRoot", ComponentAt<RectTransform>(root, "DialoguePanel/Choices"), report);
-            SetRef(viewSo, "_choiceButtonTemplate", ComponentAt<Button>(root, "DialoguePanel/Choices/ChoiceButtonTemplate"), report);
             SetRef(viewSo, "_font", font, report);
             viewSo.ApplyModifiedPropertiesWithoutUndo();
         }

@@ -72,9 +72,6 @@ namespace TapTap2026.Game
         // 因此输入屏蔽的恢复延后到下一帧帧首（见 Update / EndDialogue）。0 = 无待恢复。
         private int _restoreInputFrame;
 
-        // Choose 用法错误（非选项点 / 下标越界）每段对话只警告一次，避免错绑按钮每帧刷屏。
-        private bool _warnedInvalidChoose;
-
         private IDialogueView View { get { return _view != null ? _view : _sceneView; } }
 
         private void Awake()
@@ -100,7 +97,7 @@ namespace TapTap2026.Game
 
         private void OnDisable()
         {
-            // 禁用会停 Update 但**不停协程**：若不收尾，打字机会跑完并显示选项，却再也等不到输入推进（死锁），
+            // 禁用会停 Update 但**不停协程**：若不收尾，打字机会跑完，却再也等不到输入推进（对话卡住），
             // 同时 SuppressInput / 模拟暂停会永久残留。OnDestroy 前必经 OnDisable，故在此兜底。
             // 禁用后 Update 不会运行，无法走「延后一帧」的恢复路径，必须同步恢复。
             if (IsActive)
@@ -145,7 +142,7 @@ namespace TapTap2026.Game
 
             BuildCharacterMap(file);
             Begin(file);
-            Debug.Log($"[DialogueController] 开始对话：{asset.name}（{file.segments.Count} 段、{_characterMap.Count} 角色）。");
+            Debug.Log($"[DialogueController] 开始对话：{asset.name}（{file.lines.Count} 句、{_characterMap.Count} 角色）。");
             return true;
         }
 
@@ -161,7 +158,7 @@ namespace TapTap2026.Game
             return StartDialogue(asset);
         }
 
-        /// <summary>前进：打字中 → 补全本行；否则 → 下一句。选项点不前进（需 <see cref="Choose"/>）。</summary>
+        /// <summary>前进：打字中 → 补全本行；否则 → 下一句；已到尾巴 → 收尾对话。</summary>
         public void Advance()
         {
             if (!IsActive)
@@ -175,11 +172,6 @@ namespace TapTap2026.Game
                 return;
             }
 
-            if (_runner.IsChoicePoint)
-            {
-                return;
-            }
-
             if (!_runner.Next())
             {
                 EndDialogue();
@@ -187,38 +179,6 @@ namespace TapTap2026.Game
             }
 
             ShowLine();
-        }
-
-        /// <summary>选择分支（选项按钮点第 index 个时回调）。返回是否成功。</summary>
-        public bool Choose(int index)
-        {
-            if (!IsActive)
-            {
-                return false;
-            }
-
-            if (!_runner.Choose(index))
-            {
-                // Choose 返回 false 有四种：已结束 / 当前句无选项 / 下标越界 / 跳转目标缺失。
-                // 只有「已结束」（runner 内部已 Finish 并派发 onEnd，含坏跳转与空目标段）才该收尾对话；
-                // 其余是（多半错绑按钮造成的）无效选择——对话继续保持，但记一次警告，别静默吞掉。
-                if (_runner.Finished)
-                {
-                    EndDialogue();
-                }
-                else if (!_warnedInvalidChoose)
-                {
-                    _warnedInvalidChoose = true;
-                    Debug.LogWarning(
-                        $"[DialogueController] Choose({index}) 被忽略：当前不是有效选项点" +
-                        $"（IsChoicePoint={_runner.IsChoicePoint}）。对话保持进行；请检查选项按钮的绑定。");
-                }
-
-                return false;
-            }
-
-            ShowLine();
-            return true;
         }
 
         /// <summary>强制关闭当前对话（跳过 onEnd 事件）。</summary>
@@ -283,12 +243,11 @@ namespace TapTap2026.Game
             }
 
             IsActive = true;
-            _warnedInvalidChoose = false;
             _restoreInputFrame = 0; // 作废可能遗留的延后恢复——本帧即将重新屏蔽输入
             _runner.Start(file);
 
             // 先建立"对话中"的外部状态（屏蔽编辑器输入 + 暂停模拟），再显示首句——
-            // 若首句就让对话结束（空对话 / 坏跳转），ShowLine 里的 EndDialogue 会正确反向恢复。
+            // 若首句就让对话结束（空对话），ShowLine 里的 EndDialogue 会正确反向恢复。
             SetEditorSuppressed(true);
             PauseSimulation();
 
@@ -325,7 +284,6 @@ namespace TapTap2026.Game
             IDialogueView view = View;
             if (view != null)
             {
-                view.HideChoices();
                 view.CloseView();
             }
 
@@ -364,7 +322,6 @@ namespace TapTap2026.Game
             if (view != null)
             {
                 view.ShowLine(BuildLineView(line));
-                view.HideChoices();
             }
 
             _fullLine = line.text ?? string.Empty;
@@ -455,7 +412,6 @@ namespace TapTap2026.Game
 
             _typing = null;
             _isTyping = false;
-            RevealChoicesIfAny();
         }
 
         private void CompleteTyping()
@@ -472,31 +428,6 @@ namespace TapTap2026.Game
             {
                 view.SetRevealedText(_fullLine);
             }
-
-            RevealChoicesIfAny();
-        }
-
-        private void RevealChoicesIfAny()
-        {
-            if (!_runner.IsChoicePoint)
-            {
-                return;
-            }
-
-            DialogueLine line = _runner.CurrentLine;
-            IDialogueView view = View;
-            if (view == null || line.choices == null)
-            {
-                return;
-            }
-
-            var labels = new List<string>(line.choices.Count);
-            for (int i = 0; i < line.choices.Count; i++)
-            {
-                labels.Add(line.choices[i].text ?? string.Empty);
-            }
-
-            view.ShowChoices(labels);
         }
 
         // ============================== 暂停 / 输入屏蔽 ==============================

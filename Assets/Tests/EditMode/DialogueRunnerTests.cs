@@ -1,8 +1,5 @@
-using System.Text.RegularExpressions;
 using NUnit.Framework;
 using TapTap2026.Game;
-using UnityEngine;
-using UnityEngine.TestTools;
 
 namespace TapTap2026.Tests
 {
@@ -11,37 +8,20 @@ namespace TapTap2026.Tests
     /// </summary>
     public sealed class DialogueRunnerTests
     {
-        private const string BranchJson =
-            @"{ ""id"": ""intro"", ""onEnd"": ""start_simulation"", ""segments"": [" +
-            @"{ ""id"": ""start"", ""lines"": [" +
-            @"{ ""speaker"": ""mei"", ""text"": ""你来了。"" }," +
-            @"{ ""speaker"": ""chen"", ""text"": ""走哪边？"", ""choices"": [" +
-            @"{ ""text"": ""左边"", ""gotoSegment"": ""left"" }," +
-            @"{ ""text"": ""右边"", ""gotoSegment"": ""right"" } ] } ] }," +
-            @"{ ""id"": ""left"", ""lines"": [ { ""speaker"": ""chen"", ""text"": ""往左。"" } ] }," +
-            @"{ ""id"": ""right"", ""lines"": [ { ""speaker"": ""chen"", ""text"": ""往右。"" } ] } ] }";
-
         private const string LinearJson =
-            @"{ ""id"": ""lin"", ""onEnd"": ""done"", ""segments"": [" +
-            @"{ ""id"": ""a"", ""lines"": [" +
+            @"{ ""id"": ""lin"", ""onEnd"": ""done"", ""lines"": [" +
             @"{ ""speaker"": ""mei"", ""text"": ""一"" }," +
-            @"{ ""speaker"": ""chen"", ""text"": ""二"" } ] } ] }";
+            @"{ ""speaker"": ""chen"", ""text"": ""二"" } ] }";
 
         private const string LinearNoEndJson =
-            @"{ ""id"": ""lin"", ""segments"": [" +
-            @"{ ""id"": ""a"", ""lines"": [ { ""speaker"": ""mei"", ""text"": ""一"" } ] } ] }";
+            @"{ ""id"": ""lin"", ""lines"": [ { ""speaker"": ""mei"", ""text"": ""一"" } ] }";
 
-        private const string BadGotoJson =
-            @"{ ""id"": ""bad"", ""segments"": [" +
-            @"{ ""id"": ""a"", ""lines"": [ { ""speaker"": ""mei"", ""text"": ""?"", " +
-            @"""choices"": [ { ""text"": ""走"", ""gotoSegment"": ""missing"" } ] } ] } ] }";
-
-        private const string EmptySegmentJson =
-            @"{ ""id"": ""empty"", ""segments"": [ { ""id"": ""a"", ""lines"": [] } ] }";
+        private const string EmptyLinesJson =
+            @"{ ""id"": ""empty"", ""lines"": [] }";
 
         private const string CharacterJson =
             @"{ ""id"": ""c"", ""characters"": [ { ""id"": ""mei"", ""displayName"": ""Mei"" } ], " +
-            @"""segments"": [ { ""id"": ""a"", ""lines"": [ { ""speaker"": ""mei"", ""text"": ""hi"" } ] } ] }";
+            @"""lines"": [ { ""speaker"": ""mei"", ""text"": ""hi"" } ] }";
 
         private static DialogueFile Parse(string json)
         {
@@ -63,17 +43,14 @@ namespace TapTap2026.Tests
         [Test]
         public void Parse_ValidJson_RoundTrips()
         {
-            DialogueFile file = Parse(BranchJson);
+            DialogueFile file = Parse(LinearJson);
 
-            Assert.AreEqual("intro", file.id);
-            Assert.AreEqual("start_simulation", file.onEnd);
-            Assert.AreEqual(3, file.segments.Count);
-            Assert.AreEqual("start", file.segments[0].id);
-            Assert.AreEqual(2, file.segments[0].lines.Count);
-            Assert.AreEqual("mei", file.segments[0].lines[0].speaker);
-            Assert.IsNotNull(file.segments[0].lines[1].choices);
-            Assert.AreEqual(2, file.segments[0].lines[1].choices.Count);
-            Assert.AreEqual("left", file.segments[0].lines[1].choices[0].gotoSegment);
+            Assert.AreEqual("lin", file.id);
+            Assert.AreEqual("done", file.onEnd);
+            Assert.AreEqual(2, file.lines.Count);
+            Assert.AreEqual("mei", file.lines[0].speaker);
+            Assert.AreEqual("一", file.lines[0].text);
+            Assert.AreEqual("二", file.lines[1].text);
         }
 
         [Test]
@@ -104,7 +81,7 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void Parse_NoSegments_ReturnsFalse()
+        public void Parse_NoLines_ReturnsFalse()
         {
             bool ok = DialogueData.TryParse(@"{ ""id"": ""x"" }", out _, out string error);
             Assert.IsFalse(ok);
@@ -114,14 +91,13 @@ namespace TapTap2026.Tests
         // ============================== 状态机 ==============================
 
         [Test]
-        public void Start_BeginsAtFirstSegment()
+        public void Start_BeginsAtFirstLine()
         {
-            DialogueRunner runner = Started(BranchJson);
+            DialogueRunner runner = Started(LinearJson);
 
             Assert.IsFalse(runner.Finished);
-            Assert.AreEqual("start", runner.CurrentSegment.id);
             Assert.AreEqual(0, runner.Index);
-            Assert.AreEqual("你来了。", runner.CurrentLine.text);
+            Assert.AreEqual("一", runner.CurrentLine.text);
         }
 
         [Test]
@@ -132,71 +108,8 @@ namespace TapTap2026.Tests
             Assert.IsTrue(runner.Next());
             Assert.AreEqual(1, runner.Index);
             Assert.AreEqual("二", runner.CurrentLine.text);
-            Assert.IsFalse(runner.Next(), "到段尾应返回 false 并结束");
+            Assert.IsFalse(runner.Next(), "到台词尾巴应返回 false 并结束");
             Assert.IsTrue(runner.Finished);
-        }
-
-        [Test]
-        public void Next_AtChoicePoint_BlocksUntilChoose()
-        {
-            DialogueRunner runner = Started(BranchJson);
-
-            Assert.IsTrue(runner.Next()); // 进入带选项的句
-            Assert.IsTrue(runner.IsChoicePoint);
-            Assert.AreEqual(1, runner.Index);
-
-            Assert.IsFalse(runner.Next(), "选项点 Next 应阻塞");
-            Assert.AreEqual(1, runner.Index, "阻塞时下标不变");
-            Assert.IsFalse(runner.Finished);
-        }
-
-        [Test]
-        public void Choose_JumpsToSegment()
-        {
-            DialogueRunner runner = Started(BranchJson);
-            runner.Next();
-
-            Assert.IsTrue(runner.Choose(0));
-            Assert.AreEqual("left", runner.CurrentSegment.id);
-            Assert.AreEqual(0, runner.Index);
-            Assert.AreEqual("往左。", runner.CurrentLine.text);
-        }
-
-        [Test]
-        public void Choose_WithBadGoto_FinishesWithWarning()
-        {
-            DialogueRunner runner = Started(BadGotoJson);
-
-            LogAssert.Expect(LogType.Warning, new Regex("不存在的段"));
-            Assert.IsFalse(runner.Choose(0));
-            Assert.IsTrue(runner.Finished, "坏跳转应视为结束");
-        }
-
-        [Test]
-        public void Choose_WithOutOfRangeIndex_ReturnsFalseAndKeepsState()
-        {
-            DialogueRunner runner = Started(BranchJson);
-            runner.Next(); // 进入带选项的句
-            Assert.IsTrue(runner.IsChoicePoint);
-
-            Assert.IsFalse(runner.Choose(-1), "负下标应失败");
-            Assert.IsFalse(runner.Choose(2), "越界下标应失败");
-            Assert.AreEqual("start", runner.CurrentSegment.id, "越界选择不应改段");
-            Assert.AreEqual(1, runner.Index, "越界选择不应改下标");
-            Assert.IsTrue(runner.IsChoicePoint, "越界选择后仍停在选项点");
-            Assert.IsFalse(runner.Finished, "越界选择不应结束对话");
-        }
-
-        [Test]
-        public void Choose_AtNonChoicePoint_ReturnsFalseAndKeepsState()
-        {
-            DialogueRunner runner = Started(LinearJson);
-
-            Assert.IsFalse(runner.Choose(0), "非选项点 Choose 应失败");
-            Assert.AreEqual("a", runner.CurrentSegment.id);
-            Assert.AreEqual(0, runner.Index);
-            Assert.AreEqual("一", runner.CurrentLine.text);
-            Assert.IsFalse(runner.Finished, "非选项点 Choose 不应结束对话");
         }
 
         [Test]
@@ -213,7 +126,7 @@ namespace TapTap2026.Tests
             runner.Start(Parse(LinearJson));
 
             runner.Next(); // 到第二句
-            runner.Next(); // 段尾 → 结束
+            runner.Next(); // 尾巴 → 结束
 
             Assert.AreEqual(1, fired);
             Assert.AreEqual("done", received);
@@ -240,21 +153,20 @@ namespace TapTap2026.Tests
         [Test]
         public void Restart_ResetsState()
         {
-            DialogueRunner runner = Started(BranchJson);
+            DialogueRunner runner = Started(LinearJson);
             runner.Next();
-            runner.Choose(0);
 
-            runner.Start(Parse(BranchJson));
+            runner.Start(Parse(LinearJson));
 
             Assert.IsFalse(runner.Finished);
             Assert.AreEqual(0, runner.Index);
-            Assert.AreEqual("你来了。", runner.CurrentLine.text);
+            Assert.AreEqual("一", runner.CurrentLine.text);
         }
 
         [Test]
-        public void EmptySegment_FinishesImmediately()
+        public void EmptyLines_FinishesImmediately()
         {
-            DialogueRunner runner = Started(EmptySegmentJson);
+            DialogueRunner runner = Started(EmptyLinesJson);
 
             Assert.IsTrue(runner.Finished);
             Assert.IsNull(runner.CurrentLine);
