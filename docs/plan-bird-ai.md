@@ -111,3 +111,68 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 - **渲染**：零改动（攻击就是飞行帧组）。
 
 **测试清单**（进 `BirdCreatureTests.cs`）：① 视野无猎物 ⇒ 永不进 Hunt 且随机流逐位不变；② 有猎物 ⇒ 跑够帧数必进 Hunt（骰子命中）；③ 接触 ⇒ 猎物死一次、死因 Hunted、事件恰好一次、尸体物质化；④ 击杀后回 Fly 且竖直意图向上、不停留；⑤ 超时与追丢放弃；⑥ 俯冲入水杀浅层鱼且鸟不死；⑦ 同 seed 重放逐位一致；⑧ 世界随机流隔离；⑨ 兔子对鸟无感知（v1 契约）。
+
+## 12. v3 高度带随机上下巡航(2026-10-16 用户指定)
+
+**问题(现状 v1/v2 的高度带):** 只有三条竖直规则--"离下方面 < 6 格 ⇒ 上抬"、"`Y > 世界高 - 12` ⇒ 下压"、其余 ⇒ `IntentVy = 0` 悬停。后果:
+
+1. **带内高度粘死**:`Y` 一旦落在"下方面上方 6 格 ~ 世界顶下 12 格"之间就永远悬停 ⇒ 放置高度 = 永久巡航高度,既不上也不下。
+2. **单向棘轮**:越过丘陵 / 树冠后下方面变低(相对高度变大),但没有任何"相对高度过大 ⇒ 下压"的分支 ⇒ 净高度只升不降,永不回落。
+3. 恒定高度 ⇒ 掠过树冠 / 掠近地面的机会少 ⇒ 落树与捕食机会都变少。
+
+**方案:** 把高度带从"被动悬停"改成**相对正下方第一个可栖面 / 水的目标高度**主动巡航。
+
+### 12.1 新黑板槽位与常量
+
+- `Creature.TargetAltitudeCells`(int,格):**Brain 写 / Brain 读,基类只存不解释**(语义同 `HuntTarget` / `VerticalDiveLatched`)。
+  语义 = 相对"正下方第一个可栖面 / 水"的**目标高度**。
+- 常量:`MaxAltitudeCells = 12`(新增);下限沿用 `MinAltitudeCells = 6`。目标恒落在 `[6, 12]`(含端点,7 档)。
+
+### 12.2 Fly 态每思考帧的竖直决策(替换原高度带块)
+
+1. `ProbeSurfaceBelow(world, cx, footRow - 1, world.Height, out surfaceRow, out _)`;探不到(该列扫到世界底仍无支撑 / 水面) ⇒ `IntentVy = 0` 悬停,**与现状一致**。
+2. `altitude = (footRow - 1) - surfaceRow`。
+3. **天花板是硬边界**(优先于高度带):`Y > 世界高 - CeilingMarginCells` ⇒ `TargetAltitudeCells = MinAltitudeCells`(不摇骰)+ `IntentVy = -FlyVSpeed`,返回。
+   理由:天花板是物理世界边界,必须无条件下压;同时把目标收敛到下限,避免"目标在高处但被顶住 ⇒ 永远达成不了 ⇒ 无谓来回顶"。
+4. **目标无效或已达成** ⇒ 重摇:`target = MinAltitudeCells + NextInt(MaxAltitudeCells - MinAltitudeCells + 1)`。
+   无效判据 = `target < MinAltitudeCells || target > MaxAltitudeCells`(兼顾新生成实体的默认 0);
+   达成判据 = `altitude == target`。
+5. 意图:`altitude < target ⇒ IntentVy = +FlyVSpeed`;`altitude > target ⇒ IntentVy = -FlyVSpeed`;
+   `altitude == target`(重摇恰好同值,概率 1/7) ⇒ `IntentVy = 0`(悬停一个思考帧,下帧再摇)。
+
+**自动获得的三个性质:**
+
+| 情形 | 行为 |
+|---|---|
+| 放置低于 6 格 | 爬升到目标高度(∈6..12),与现状的"爬升"一致,但不再停死在 6 |
+| 放置 ≥ 6 格(含高于天花板) | 朝目标升降 ⇒ **棘轮消失**;地形抬高后下方面变低、相对高度变大 ⇒ 主动回落 |
+| 带内 | 在 6~12 格之间**上下往返**:每到达目标即重摇新目标(行程约 1~4 秒) |
+
+### 12.3 不动的部分(明确边界)
+
+- 水平:墙感知换向原样(`AheadProbeCells` / 1/3 摇骰)。
+- 降落探测:`StateTicksLeft <= 0` 且正下方 `LandProbeCells = 12` 内有**合格**栖息面 ⇒ 停水平 + 下压,`return`--**仍排在高度带之前**,下压途中不受"低于下限即上抬"干扰。
+- 天花板常量、落水自救(最高优先级)、`Flee` 的竖直上冲、`Hunt` 的"目标更低即俯冲 / 否则缓升"与 `ExitHunt` 的撤离上冲,全部原样。
+- `EnterFly`(起飞)仍给 `IntentVy = +FlyVSpeed`;`ExitHunt(retreat)` 仍给向上冲。二者的高度目标交给下一个 Fly 思考帧按 12.2 第 4 步自然处理(旧目标仍有效时先回到旧目标,达成即重摇)。
+
+### 12.4 RNG 纪律
+
+- 摇骰**只**发生在 Fly 态思考帧内;正下方无基准 / 天花板夹取 / 探不到时**零摇骰**(天花板分支显式"不摇骰")。
+- 摇骰频率 ≈ 每段行程 1 次(约 1~4 秒),远低于思考帧频率 ⇒ 对既有随机流序列的扰动最小。
+- 世界随机流(粒子世界 xorshift32)依旧零消耗:只用 `CreatureWorld.NextInt`。
+
+### 12.5 验收(测试)
+
+1. 低放(相对高度 < 6) ⇒ 上抬;到达目标后相对高度仍落在 `[6, 12]`。
+2. 高放(相对高度 > 12) ⇒ 下压进带(**棘轮修复回归**)。
+3. 带内长跑(如 600 逻辑帧):相对高度始终留在 `[6, 12]`(±1 格物理容差),且**上下两个方向都出现过**(不粘死、不悬停到底)。
+4. 地形抽走(移走脚下支柱) ⇒ 高度主动回落(**棘轮回归**)。
+5. `Y > 世界高 - 12` ⇒ 下压且 `TargetAltitudeCells == MinAltitudeCells`。
+6. 正下方无基准(空列) ⇒ `IntentVy == 0`(现状不变)。
+7. 目标无效(0 / 99) ⇒ 重摇后落在 `[6, 12]`。
+8. 既有用例保持绿:`SpawnedAboveCeiling_*`、`Determinism_SameSeed_ReplayBitExact`、`RngIsolation_*`、
+   `Rng_IsConsumedOnlyOnThinkFrames`、`ThinkPhase_*`、Hunt 全组。`AssertCreatureEqual` 增补
+   `TargetAltitudeCells` 的逐位比较。若有用例钉死"带内必须悬停" ⇒ 按新契约改写(那是被本次故意替换的旧契约)。
+9. 同 seed 逐位重放;世界随机流零消耗。
+
+**已知取舍:** 目标重摇恰好抽到当前高度时悬停一个思考帧(0.5 秒),随后立即再摇--概率 1/7,视觉上是"短暂停顿",接受。
