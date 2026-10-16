@@ -306,7 +306,7 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 - **事件声(出生/死亡)**:驱动订阅 `CreatureWorld.CreatureSpawned` / `CreatureDied(creature, cause)`(回调里**只置标志位**,不直接出声),下一次 `Pump` 统一结算;**每物种每帧最多一声**(同帧死 5 只 ⇒ 一声;跨物种各一声),避免火灾一帧烧死一群时糊成噪音。世界重建换实例时每帧对账重新订阅(照渲染层做法),`OnDisable` 退订。
 - **自己的随机流**:驱动自带一条 xorshift32(`[SerializeField] uint _seed`),**绝不触碰粒子世界与动物世界那两条流**(同 `CreatureWorld` 的做法)⇒ 确定性铁律不受影响,且同 seed 的出声时刻可复现、可测。
 - **高速模式**:`SoundController.HighSpeedSilenced` 期间 `Pump` **直接返回**——不倒计时、不摇骰、不出声、事件标志也照旧置位但不结算(退出后按当时的标志补一声);`SoundController` 本身也会丢弃,这里连骰子都不摇。
-- **每物种可序列化配置**(`[Serializable] struct CreatureVoice`):`idleClip`(音频表查询键,留空 = 该物种不发声)、`idleIntervalMin/Max`、`idleVolume`、`deathClip`(留空 = 回落用 idleClip)、`spawnClip`(同上)。
+- **每物种可序列化配置**(`[Serializable] struct CreatureVoice`):`idleClip`(音频表查询键,留空 = 该物种不发声)、`idleIntervalMin/Max`、`idleVolume`、`deathClip`(**留空 = 死亡不出声**)、`spawnClip`(**留空 = 出生不出声**)——事件路**不回落**用闲聊声(2026-10-16 用户指定:素材只用于闲聊,出生/死亡暂不要;想启用就填文件名,素材需已在 `_clips` 表里)。事件声音量暂与闲聊共用 `idleVolume`。
 
 ### 16.2 默认参数(全是序列化字段,一行可调)
 
@@ -316,7 +316,7 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 | 鸟 | `bird` | **6 ~ 12 秒**(叽喳较勤;下限取 6 与兔一致——素材长 4.99 s ⇒ 留出余量不叠) | 0.5 |
 | 鱼 | `fish` | **8 ~ 18 秒**(最稀疏) | 0.45 |
 
-死声/生声默认留空 ⇒ 回落用各自的 idleClip(想区分音色时,把 `rabbit_die.mp3` 之类的素材填进去即可,不必改代码)。
+死声/生声**默认留空 ⇒ 这两路不出声**(只出闲聊声);将来要加就把文件名填进 `deathClip`/`spawnClip`(素材需先放进 `Assets/Sounds/` 并加进 `_clips`),不必改代码。
 
 ### 16.3 验收(测试,新增 `AnimalSoundDriverTests`)
 

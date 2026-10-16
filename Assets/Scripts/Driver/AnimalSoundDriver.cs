@@ -25,6 +25,9 @@ namespace TapTap2026.Game
     /// 触发，一帧里可能连着发几十次（一场火灾烧死一群）。**直接在回调里出声**会一帧叠放几十声、糊成噪音，
     /// 也绕开了「高速静音」的统一闸门。回调只把该物种该路的标志置真；下一次 <see cref="Pump"/> 再统一结算，
     /// 每物种每路**最多一声**，多出来的折叠掉。</para>
+    /// <para><b>事件声与闲聊声互不回落</b>：<c>spawnClip</c> / <c>deathClip</c> 留空即该路不出声（也不消耗随机流），
+    /// **不会**回落到 <c>idleClip</c>；反过来闲聊声留空也不影响事件声。因此三种动物素材默认只走闲聊声，
+    /// 出生 / 死亡事件路径保留、默认静音，将来填个文件名再启用。</para>
     /// <para><b>高速模式</b>：<see cref="SoundController.HighSpeedSilenced"/> 期间整段跳过——不倒计时、不摇骰、
     /// 不结算事件（标志照旧保留，退出后按当时的标志补一声）。<see cref="SoundController"/> 本身也会丢弃，
     /// 这里连骰子都不摇是为了不给随机流留下高速模式下的消耗痕迹。</para>
@@ -34,16 +37,20 @@ namespace TapTap2026.Game
     [DisallowMultipleComponent]
     public sealed class AnimalSoundDriver : MonoBehaviour
     {
-        /// <summary>某个物种的声音配置：闲聊声 + 出生 / 死亡声（后两者留空则回落用闲聊声）。</summary>
+        /// <summary>
+        /// 某个物种的声音配置：闲聊声 + 出生 / 死亡声；事件声文件名留空 = 该路不出声（不回落到闲聊声）。
+        /// 三路互不回落：配了事件声而 <c>idleClip</c> 留空也行，反之亦然。
+        /// 事件声与闲聊声共用 <c>idleVolume</c>（将来要单独配音量再拆字段）。
+        /// </summary>
         [Serializable]
         public struct CreatureVoice
         {
             [Tooltip("闲聊声文件名（音频表查询键）；留空 = 该物种不发声")] public string idleClip;
             [Tooltip("闲聊间隔下限（秒）")] public float idleIntervalMin;
             [Tooltip("闲聊间隔上限（秒）")] public float idleIntervalMax;
-            [Tooltip("闲聊音量")] [Range(0f, 1f)] public float idleVolume;
-            [Tooltip("死亡声文件名；留空 = 回落用 idleClip")] public string deathClip;
-            [Tooltip("出生声文件名；留空 = 回落用 idleClip")] public string spawnClip;
+            [Tooltip("闲聊音量（事件声也共用它的音量；将来要单独配音量再拆字段）")] [Range(0f, 1f)] public float idleVolume;
+            [Tooltip("死亡声文件名；留空 = 死亡不出声")] public string deathClip;
+            [Tooltip("出生声文件名；留空 = 出生不出声")] public string spawnClip;
         }
 
         /// <summary>seed == 0 时的替换值（黄金比例常数，避免全零种子退化成恒零序列；与 <see cref="CreatureWorld"/> 同一兜底）。</summary>
@@ -174,13 +181,13 @@ namespace TapTap2026.Game
 
             int played = 0;
 
-            // 事件声：每物种每路最多一声（同帧死 5 只也折叠成一声）。
-            played += PlayEvent(ref _rabbitSpawned, _rabbit.spawnClip, _rabbit.idleClip, _rabbit.idleVolume);
-            played += PlayEvent(ref _rabbitDied, _rabbit.deathClip, _rabbit.idleClip, _rabbit.idleVolume);
-            played += PlayEvent(ref _birdSpawned, _bird.spawnClip, _bird.idleClip, _bird.idleVolume);
-            played += PlayEvent(ref _birdDied, _bird.deathClip, _bird.idleClip, _bird.idleVolume);
-            played += PlayEvent(ref _fishSpawned, _fish.spawnClip, _fish.idleClip, _fish.idleVolume);
-            played += PlayEvent(ref _fishDied, _fish.deathClip, _fish.idleClip, _fish.idleVolume);
+            // 事件声：每物种每路最多一声（同帧死 5 只也折叠成一声）；文件名留空的路不出声。
+            played += PlayEvent(ref _rabbitSpawned, _rabbit.spawnClip, _rabbit.idleVolume);
+            played += PlayEvent(ref _rabbitDied, _rabbit.deathClip, _rabbit.idleVolume);
+            played += PlayEvent(ref _birdSpawned, _bird.spawnClip, _bird.idleVolume);
+            played += PlayEvent(ref _birdDied, _bird.deathClip, _bird.idleVolume);
+            played += PlayEvent(ref _fishSpawned, _fish.spawnClip, _fish.idleVolume);
+            played += PlayEvent(ref _fishDied, _fish.deathClip, _fish.idleVolume);
 
             // 闲聊倒计时：存在才排程 / 倒计时，到点出声并重摇（间歇而非节拍器）。
             played += TickIdle(ref _rabbitArmed, ref _rabbitTimer, rabbit, _rabbit, deltaTime);
@@ -191,27 +198,27 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 结算一路事件声（出生或死亡）：标志置真则清账并放一声，文件名留空则回落用 <paramref name="fallback"/>。
-        /// 音量乘一个确定性的 <c>[0.9, 1]</c> 抖动（同种事件连发时不至于完全一样）。
+        /// 结算一路事件声（出生或死亡）：标志置真则先清账；文件名留空即该路不出声（**此时不消耗随机流**）。
+        /// 否则放一声并返回 1，音量乘一个确定性的 <c>[0.9, 1]</c> 抖动（同种事件连发时不至于完全一样）。
         /// </summary>
         /// <returns>本路是否出了声（0 或 1）。</returns>
-        private int PlayEvent(ref bool flag, string clip, string fallback, float volume)
+        private int PlayEvent(ref bool flag, string clip, float volume)
         {
             if (!flag)
             {
                 return 0;
             }
 
-            // 先清账：即使该物种没配任何音频，事件也不该积压到下一帧。
+            // 先清账：即使该路没配音频，事件也不该积压到下一帧。
             flag = false;
 
-            string file = !string.IsNullOrEmpty(clip) ? clip : fallback;
-            if (string.IsNullOrEmpty(file))
+            if (string.IsNullOrEmpty(clip))
             {
+                // 留空 = 该路不出声：不摇骰（随机流不因未配置的事件漂移）。
                 return 0;
             }
 
-            _sound.PlayOneShot(file, volume * NextFloat(0.9f, 1f));
+            _sound.PlayOneShot(clip, volume * NextFloat(0.9f, 1f));
             return 1;
         }
 

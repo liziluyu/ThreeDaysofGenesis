@@ -42,6 +42,8 @@ namespace TapTap2026.Tests
         private AudioClip _rabbit;
         private AudioClip _bird;
         private AudioClip _fish;
+        private AudioClip _spawn;
+        private AudioClip _death;
 
         [SetUp]
         public void SetUp()
@@ -55,13 +57,17 @@ namespace TapTap2026.Tests
             _rabbit = AudioClip.Create("rabbit", 4410, 1, 44100, false);
             _bird = AudioClip.Create("bird", 4410, 1, 44100, false);
             _fish = AudioClip.Create("fish", 4410, 1, 44100, false);
+            _spawn = AudioClip.Create("spawn", 4410, 1, 44100, false);
+            _death = AudioClip.Create("death", 4410, 1, 44100, false);
 
             var soundSerialized = new SerializedObject(_sound);
             SerializedProperty clips = soundSerialized.FindProperty("_clips");
-            clips.arraySize = 3;
+            clips.arraySize = 5;
             clips.GetArrayElementAtIndex(0).objectReferenceValue = _rabbit;
             clips.GetArrayElementAtIndex(1).objectReferenceValue = _bird;
             clips.GetArrayElementAtIndex(2).objectReferenceValue = _fish;
+            clips.GetArrayElementAtIndex(3).objectReferenceValue = _spawn;
+            clips.GetArrayElementAtIndex(4).objectReferenceValue = _death;
             soundSerialized.ApplyModifiedPropertiesWithoutUndo();
 
             var serialized = new SerializedObject(_driver);
@@ -80,6 +86,8 @@ namespace TapTap2026.Tests
             Object.DestroyImmediate(_rabbit);
             Object.DestroyImmediate(_bird);
             Object.DestroyImmediate(_fish);
+            Object.DestroyImmediate(_spawn);
+            Object.DestroyImmediate(_death);
         }
 
         /// <summary>没有动物世界可观察时不响。</summary>
@@ -148,6 +156,9 @@ namespace TapTap2026.Tests
         [Test]
         public void Pump_DisappearThenReappear_WaitsAFullInterval()
         {
+            // 出生声不再回落闲聊声：显式注入出生素材，重现那一帧才有一声事件声可断言。
+            InjectEventClips("_rabbit", "spawn", "death");
+
             CreatureWorld creatures = new CreatureWorld(3u);
             ParticleWorld world = BuildWorld(3u);
             creatures.Spawn(new RabbitCreature(), world, 8f, 8f);
@@ -192,6 +203,9 @@ namespace TapTap2026.Tests
         [Test]
         public void Pump_SpawnEvent_PlaysOnceOnNextPump()
         {
+            // 出生声不再回落闲聊声：显式注入出生素材。
+            InjectEventClips("_rabbit", "spawn", "death");
+
             CreatureWorld creatures = new CreatureWorld(5u);
             ParticleWorld world = BuildWorld(5u);
 
@@ -209,6 +223,9 @@ namespace TapTap2026.Tests
         [Test]
         public void Pump_FiveDeathsInOneFrame_PlaysOnce()
         {
+            // 出生 / 死亡声不再回落闲聊声：显式注入两条事件素材。
+            InjectEventClips("_rabbit", "spawn", "death");
+
             CreatureWorld creatures = new CreatureWorld(5u);
             ParticleWorld world = BuildWorld(5u);
 
@@ -238,6 +255,10 @@ namespace TapTap2026.Tests
         [Test]
         public void Pump_RabbitAndBirdDieInSameFrame_PlaysTwice()
         {
+            // 出生 / 死亡声不再回落闲聊声：兔与鸟各自显式注入事件素材。
+            InjectEventClips("_rabbit", "spawn", "death");
+            InjectEventClips("_bird", "spawn", "death");
+
             CreatureWorld creatures = new CreatureWorld(5u);
             ParticleWorld world = BuildWorld(5u);
 
@@ -259,6 +280,33 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(2, _driver.Pump(creatures, Dt), "兔与鸟同帧各死一只 ⇒ 两声");
             Assert.AreEqual(afterSpawn + 2, _sound.OneShotPlayCount);
+        }
+
+        /// <summary>
+        /// 出生 / 死亡素材名留空 ⇒ 该路**不出声**（不再回落闲聊声）：出生一只 + 杀一只，<see cref="AnimalSoundDriver.Pump"/>
+        /// 返回 0、<c>OneShotPlayCount</c> 不增；事件标志照旧被清洗，不积压到下一帧。
+        /// </summary>
+        [Test]
+        public void Pump_SpawnAndDeathClipsEmpty_PlayNothing()
+        {
+            // SetUp 里 spawnClip / deathClip 默认留空（idleClip 仍为 "rabbit"）。
+            CreatureWorld creatures = new CreatureWorld(5u);
+            ParticleWorld world = BuildWorld(5u);
+
+            Assert.AreEqual(0, _driver.Pump(creatures, Dt), "先推一帧完成订阅");
+
+            Creature rabbit = new RabbitCreature();
+            creatures.Spawn(rabbit, world, 8f, 8f);
+            Assert.AreEqual(0, _driver.Pump(creatures, Dt), "出生声留空 ⇒ 该路静音");
+            Assert.AreEqual(0, _sound.OneShotPlayCount, "出生事件不该起播");
+
+            rabbit.Kill(CreatureDeathCause.OldAge);
+            creatures.Step(world);
+            Assert.AreEqual(0, _driver.Pump(creatures, Dt), "死亡声留空 ⇒ 该路静音");
+            Assert.AreEqual(0, _sound.OneShotPlayCount, "死亡事件不该起播");
+
+            Assert.AreEqual(0, _driver.Pump(creatures, Dt), "标志已清洗，不积压到下一帧");
+            Assert.AreEqual(0, _sound.OneShotPlayCount);
         }
 
         /// <summary>
@@ -292,6 +340,9 @@ namespace TapTap2026.Tests
                 var soundSerialized = new SerializedObject(_sound);
                 soundSerialized.FindProperty("_driver").objectReferenceValue = simulation;
                 soundSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                // 出生声不再回落闲聊声：显式注入出生素材，退出静音后才有积压的出生声可断言。
+                InjectEventClips("_rabbit", "spawn", "death");
 
                 CreatureWorld creatures = new CreatureWorld(4u);
                 ParticleWorld world = BuildWorld(4u);
@@ -443,6 +494,19 @@ namespace TapTap2026.Tests
             serialized.FindProperty(root + ".idleVolume").floatValue = volume;
             serialized.FindProperty(root + ".deathClip").stringValue = string.Empty;
             serialized.FindProperty(root + ".spawnClip").stringValue = string.Empty;
+        }
+
+        /// <summary>
+        /// 用 <see cref="SerializedObject"/> 给某物种注入出生 / 死亡事件素材名（<c>SetVoice</c> 默认留空 = 该路静音）。
+        /// 名字必须与 <see cref="SoundController._clips"/> 里的资产名匹配，否则 <see cref="SoundController.PlayOneShot"/>
+        /// 只会 <c>LogWarning</c> 而不计数，用例会白盒。
+        /// </summary>
+        private void InjectEventClips(string root, string spawn, string death)
+        {
+            var serialized = new SerializedObject(_driver);
+            serialized.FindProperty(root + ".spawnClip").stringValue = spawn;
+            serialized.FindProperty(root + ".deathClip").stringValue = death;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>反射读私有 <c>_state</c>（随机流状态；不是 <c>[SerializeField]</c>，<see cref="SerializedObject"/> 看不见）。</summary>
