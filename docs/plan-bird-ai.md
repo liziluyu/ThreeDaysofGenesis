@@ -293,3 +293,47 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
    (「中段保持出生深度、竖直意图恒 0」),按新契约改写为「整条没入水下(硬不变量保留) + depth 留在带内 + 双向都出现」,
    而**不是放宽断言**;浅池三条(`OpenShallowPool_*` / `NarrowShallowTank_*`)与确定性 / 世界流隔离用例保持绿。
 6. **确定性**:同 seed 逐位重放。
+
+## 16. 动物声音:按物种存在与否的间歇一次性音(2026-10-16 用户指定)
+
+**动机:** 现有四条声音里三条是**连续循环声床**(水/火/落沙)、一条是一次性事件(闪电),**没有任何动物声音**。用户要求:动物的声音要**间歇地产生**——口径明确为「**只要检测到场上存在该类动物,就间歇放一段该动物的声音,不需要每只都放**」,因此**不新增声床、不动 `SoundController`**,完全复用既有的一次性播放路径。
+
+### 16.1 架构:新驱动 `AnimalSoundDriver`(Game 层,纯观察者)
+
+- 与既有四个驱动同形:`Update()` → `Pump(CreatureWorld creatures, float deltaTime)`(`Pump` 公开 + 显式 dt ⇒ EditMode 测试可脱离帧循环确定性驱动),dt 取 `Time.unscaledDeltaTime` 并经 `SoundController.ClampDeltaTime`。
+- **动物枚举**:每帧 `for` 下标遍历 `CreatureWorld.Creatures`(零分配、零 LINQ),用 `is RabbitCreature/FishCreature/BirdCreature` 得出**每物种是否存在**(只取存在性,不数只数、不逐只发声)。
+- **每物种一个倒计时**:该物种不存在 ⇒ 计时器**解除武装**(重新出现时按新间隔起算,不会一出现就响);存在 ⇒ `tim -= dt`,到点 ⇒ `PlayOneShot(该物种 idleClip, idleVolume)`,然后**重摇**下一次间隔 ∈ `[idleIntervalMin, idleIntervalMax]` ⇒ 间歇而非节拍器。
+- **事件声(出生/死亡)**:驱动订阅 `CreatureWorld.CreatureSpawned` / `CreatureDied(creature, cause)`(回调里**只置标志位**,不直接出声),下一次 `Pump` 统一结算;**每物种每帧最多一声**(同帧死 5 只 ⇒ 一声;跨物种各一声),避免火灾一帧烧死一群时糊成噪音。世界重建换实例时每帧对账重新订阅(照渲染层做法),`OnDisable` 退订。
+- **自己的随机流**:驱动自带一条 xorshift32(`[SerializeField] uint _seed`),**绝不触碰粒子世界与动物世界那两条流**(同 `CreatureWorld` 的做法)⇒ 确定性铁律不受影响,且同 seed 的出声时刻可复现、可测。
+- **高速模式**:`SoundController.HighSpeedSilenced` 期间 `Pump` **直接返回**——不倒计时、不摇骰、不出声、事件标志也照旧置位但不结算(退出后按当时的标志补一声);`SoundController` 本身也会丢弃,这里连骰子都不摇。
+- **每物种可序列化配置**(`[Serializable] struct CreatureVoice`):`idleClip`(音频表查询键,留空 = 该物种不发声)、`idleIntervalMin/Max`、`idleVolume`、`deathClip`(留空 = 回落用 idleClip)、`spawnClip`(同上)。
+
+### 16.2 默认参数(全是序列化字段,一行可调)
+
+| 物种 | idleClip | 间隔区间 | 音量 |
+|---|---|---|---|
+| 兔 | `rabbit` | **6 ~ 14 秒** | 0.5 |
+| 鸟 | `bird` | **5 ~ 12 秒**(叽喳较勤) | 0.5 |
+| 鱼 | `fish` | **8 ~ 18 秒**(最稀疏) | 0.45 |
+
+死声/生声默认留空 ⇒ 回落用各自的 idleClip(想区分音色时,把 `rabbit_die.mp3` 之类的素材填进去即可,不必改代码)。
+
+### 16.3 验收(测试,新增 `AnimalSoundDriverTests`)
+
+可观测量沿用既有手法:`SoundController.OneShotPlayCount` + `Pump` 的返回值(本驱动返回**本次出声数**)。
+
+1. 场上无动物 ⇒ 连续 `Pump` 零出声、零摇骰。
+2. 有兔 ⇒ 恰在摇出的间隔窗口内响一声(间隔恒 ∈ `[min, max]`);连续三声的**间隔不完全相同**(间歇而非节拍器)。
+3. 动物消失 ⇒ 计时器解除武装:重新出现时**不会立刻**出声(要等一个完整间隔)。
+4. 事件声:出生一只 ⇒ 下一 `Pump` 一声;同帧死 5 只 ⇒ 只一声;兔与鸟同帧各死一只 ⇒ 两声。
+5. 高速静音期间:`Pump` 零出声、且**随机流一位都不前进**(与同 seed 的另一实例比对);退出后按标志补一声、计时从原进度继续。
+6. 不消耗模拟随机流:`Pump` 前后粒子世界/动物世界的流与未动过的世界逐位一致。
+7. 确定性:同 seed 两次运行的出声帧号序列完全一致。
+
+### 16.4 接线清单(需要素材就位后一次做完)
+
+1. 把三条 mp3 放进 `Assets/Sounds/`(文件名 = 查询键:`rabbit.mp3` / `bird.mp3` / `fish.mp3`),导入设置照抄现有四条(Vorbis / quality 100 / DecompressOnLoad / PreserveSampleRate / preloadAudioData 关);
+2. **追加**进 `MainScene.unity` 里 `SoundController` 的 `_clips` 数组(Inspector 拖,或写幂等编辑器菜单;不要手改 YAML);
+3. 场景新增一个空物体挂 `AnimalSoundDriver`,`_sound` 指向 `SoundController`,`_driver` 留空(自动取同物体/场景里的 `ParticleSimulationDriver`),三物种的 `idleClip` 填 `rabbit`/`bird`/`fish`。
+
+素材未就位时驱动**不会报错**:`SoundController` 对未知名只 `LogWarning` 一次、不抛、不动其它声床。
