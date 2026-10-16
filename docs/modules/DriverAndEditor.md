@@ -32,12 +32,13 @@
 
 `SoundController`：每条音频一条独立循环声床（与 `_clips` 下标一一对应、惰性建源、永久复用）+ 一个一次性音效源。`SetAmbience(文件名, 目标响度)`/`StopAmbience(文件名)` 只作用点名声床（水火同响）；`PlayOneShot` 走独立 `loop=false` 声源、累计 `OneShotPlayCount`。查询 `TargetLoudness`/`CurrentLoudness`/`IsPlaying`/`FindClip`（最后一段、去扩展名、大小写不敏感，未知名只警告一次）。`ClampDeltaTime`（上限 0.25s）防异常 dt 跳变；纯数学 `NextVolume`/`MapLoudness`/`Ema` 公开静态供各驱动复用。高速模式整层静音（见上）：目标响度照记、退出后原样淡入。`OnDisable` 归零目标并 `StopAllSources` 硬停、`OnDestroy` 销毁自建子物体；声源一律 2D + `HideFlags.DontSave`。
 
-四个声音驱动（每帧读世界观察者 → `SetAmbience`/`PlayOneShot`）：
+五个声音驱动（每帧读世界观察者 → `SetAmbience`/`PlayOneShot`）：
 
 - `LiquidFlowSoundDriver`：`world.LiquidMotion.MovingRatio` → Reset → 死区 0.15 + 滞回 0.03 → 比例→响度（满响 0.6）→ EMA 0.25s。
 - `FireSoundDriver`：`world.Counts.Count(ParticleIds.Fire)` 火格数（不是比例）→ `MapLoudness(0..40)` → EMA 0.25s。
 - `LightningSoundDriver`：每帧**无条件** `ConsumeCreated(ParticleIds.Lightning)` 先清账再判开关，`> 0` 就 `PlayOneShot` 一声（created 是格数——一次起爆几十格，故一帧最多一声）。
 - `FallingSandSoundDriver`：`world.SolidMotion.MovingCount` 绝对运动格数 → `MapLoudness(0..40)`。**无 EMA/滞回**——固体落地即静止、无噪声底；口径 = Solid 且非 Organic（落叶/种子不触发）。
+- `AnimalSoundDriver`（动物声音，§16）：**按物种存在与否**间歇放一次性音——每帧 `for` 遍历 `CreatureWorld.Creatures` 只判「该物种在不在场」，每物种一个倒计时，到点 `PlayOneShot(idleClip, 音量)` 并**重摇** `[min, max]` 间隔（间歇而非节拍器）；物种消失即解除武装（重现要等完整间隔）。另接 `CreatureSpawned`/`CreatureDied` 各一声（**每物种每路每帧最多一声**，同帧死 5 只折叠成一声；死声/生声文件名留空回落用闲聊声）。`Pump(creatures, dt)` 公开（返回本次出声数）供测试脱离帧循环驱动；**自带一条 xorshift32**（不碰粒子/动物两条流）；`HighSpeedSilenced` 期间整段跳过（不倒计时、不摇骰、事件留到退出后补）。默认 兔 6~14s / 鸟 5~12s / 鱼 8~18s。
 
 ## 沙箱演示
 
