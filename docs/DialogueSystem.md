@@ -125,7 +125,9 @@ public void CloseDialogue();                   // 强制关闭（跳过 onEnd）
 
 1. 场景里已有 `Dialogue Controller` 对象（挂 `DialogueController`），已接线 `_driver` / `_editor`。
 2. **首次使用 TMP**：`Window > TextMeshPro > Import TMP Essential Resources`。
-3. **中文字体**：把中文 TMP 字体资产拖到 **`DialogueDebugView`** 的 `Font` 字段（不接则中文显示成豆腐块 □；真实 UI 有自己的字体配置）。
+3. **中文字体**：字体在**场景里逐个 `TMP_Text` 设**（`DialogueDebugView` 不再套字体，见下）。注意字体是用户的**只读区**（`AGENTS.md` 铁律「任何情况下都不许动字体设置」）：不要改字体资产、导入设置、`TMP Settings`，也不要改任何 `TMP_Text` 的字体引用与字号。
+   > 2026-10-16 起 `DialogueDebugView.Awake` 里那段「把整张对话画布下每个 `TMP_Text` 统一改成 `_font`」的代码**已删除**（它会抹平逐组件设的字体）。`_font` 字段保留（保住场景里的原有接线）但**不再被读写**。清单见 `docs/modules/ProjectSetup.md`「字体」。
+   > 中文字体缺字时显示豆腐块 □——若出现，是场景里那个 `TMP_Text` 的字体没覆盖到该字，属用户的字体配置范畴。
 4. **角色图**：立绘放 `Assets/Resources/Characters/Portraits/`、头像放 `Assets/Resources/Characters/Avatars/`，**两个文件夹里用同一个文件名 = 角色 id**（= JSON 里 `characters[].id`，也就是 `lines[].speaker`）（导入类型 **Sprite (Single)**）。缺图会自动用占位色块，不会报错。
 5. 可选：把 `example_dialogue.json` 拖到 `Debug Dialogue`（或 `Dialogue File`），按 `T` 即可播示例。
 6. 其它脚本触发对话：`GetComponent<DialogueController>().StartDialogue("intro")`（或 `StartDialogue(textAsset)`）。

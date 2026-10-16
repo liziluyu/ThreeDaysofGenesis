@@ -1,0 +1,29 @@
+{
+  "description": "第二日：草地继续扩张，湿度既不干也不涝。",
+  "nextPhaseId": "phase_04",
+  "sandboxWidth": 200,
+  "sandboxHeight": 100,
+  "availableParticles": [
+    "SandParticle",
+    "WaterParticle",
+    "SoilParticle",
+    "GrassSeedParticle",
+    "FireParticle"
+  ],
+  "victory": {
+    "minSurfaceTemperature": 5.0,
+    "maxSurfaceTemperature": 40.0,
+    "minAverageHumidity": 0.3,
+    "maxAverageHumidity": 0.85,
+    "particles": [
+      {
+        "type": "GrassParticle",
+        "minBirths": 60
+      },
+      {
+        "type": "WaterParticle",
+        "minBirths": 8
+      }
+    ]
+  }
+}

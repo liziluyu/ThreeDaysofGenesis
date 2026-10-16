@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-TapTap2026 是一个 **Unity 2022.3.62f1** 项目（URP 14.0.12 + 2D Renderer，2D 模式）：一个**落沙类粒子模拟游戏**——纯 C# 元胞自动机内核 + 单 quad 渲染 + 两级固定步长驱动 + 动物实体层 + 对话/阶段流程，配 630 个 EditMode 测试。
+TapTap2026 是一个 **Unity 2022.3.62f1** 项目（URP 14.0.12 + 2D Renderer，2D 模式）：一个**落沙类粒子模拟游戏**——纯 C# 元胞自动机内核 + 单 quad 渲染 + 两级固定步长驱动 + 动物实体层 + 对话/阶段流程，配 600+ 个 EditMode 测试（当前计数见 `docs/modules/Testing.md`）。
 
 ## 分层（程序集边界即架构边界）
 
@@ -30,10 +30,14 @@ TapTap2026 是一个 **Unity 2022.3.62f1** 项目（URP 14.0.12 + 2D Renderer，
 
 ## 铁律（经常踩的）
 
+- **字体：任何情况下都不许动用户的字体设置（2026-10-16 用户指定，最高优先级）。**
+  禁止创建 / 替换 / 删除 / 重新生成任何字体资产；禁止改任何 TMP 组件的字体引用、字号、字体材质；禁止改字体资产的导入设置；禁止改 `TMP Settings`。字体归用户手工维护，**需要换字体由用户自己做**——agent 只能读、不能写。
+  受保护清单：`Assets/Data/Fonts/**`（`8px.asset` / `10px.asset` / `12px.asset` 像素字体资产 + `fusion-pixel-*.ttf` 源字体 + `LICENSES/` + 全部 `.meta`）、`Assets/Data/CjkDynamicFont.asset`、`Assets/TextMesh Pro/Resources/TMP Settings.asset`，以及**两个场景里每个 `TMP_Text` 的字体相关字段**。
+  ⚠️ 2026-10-16 起 `DialogueDebugView.Awake` 里**覆盖整张对话画布字体**的那段已删除（`texts[i].font = _font`）——场景里每个 `TMP_Text` 各自设的字体就是最终结果，运行期不再被抹平。全工程因此**只剩一条**会写字体（`TMP_Text.font`）的代码路径：`SceneUiScaffolder` 的字体步骤（`EnsureCjkFont` 会重新生成 `CjkDynamicFont.asset`、`ApplyFont`/`EnsureText` 覆盖两个画布下每个 `TMP_Text` 的字体与字号 ⇒ **禁止运行该工具**）。除它外，任何新代码 / 脚本 / 工具都**不得**写字体字段。详见 `docs/modules/ProjectSetup.md`「字体」。
 - **确定性**：模拟只认 `world.Tick` 与世界 xorshift32；禁止 `UnityEngine.Random`/`Time.*`/`Input`。同种子同命令序列逐格可复现。
 - **输入**：仅 legacy Input Manager；**禁止** `using UnityEngine.InputSystem;`。
 - **测试**：只跑受影响的测试类（增量）；**全量测试必须用户明确授权**，绝不擅自跑（任何途径，含 `script-execute`）。详见 `docs/modules/Testing.md`。
-- **场景**：`MainScene.unity` 是唯一 build 场景，破坏它 = 破坏唯一 build。
+- **场景**：`MainScene.unity`（build 下标 0）+ `LevelSelect.unity`（下标 1）是两个 build 场景；破坏任一 = 破坏 build。
 - **生成物**：`Library/`、`Temp/`、`obj/`、`Logs/`、`UserSettings/`、`*.csproj`、`*.sln` 永不读、改、提交。
 - **Unity 版本**：只用 `D:\Unity\2022.3.62f1` 打开。
 - 粒子类型注册只能**追加**（顺序是存档兼容性），清单在 `ParticleRegistration.cs`。

@@ -5,7 +5,13 @@
 ## 编辑器工具
 
 - `SystemProxyGuard`：系统代理 Mono 解析失败时把 `WebRequest.DefaultWebProxy` 钉为直连（保 Unity-MCP 连通，见下）。
-- `SceneUiScaffolder`：**场景 UI 脚手架**——菜单 `Tools/TapTap2026/Scene UI Setup（补缺失+接线）` / 批处理 `-executeMethod TapTap2026.EditorTools.SceneUiScaffolder.Run`；**幂等**补齐 `HUD Canvas`（含暂停/光照/高速三按钮）/`Dialogue Canvas`/`EventSystem`/`ParticleGridQuad`/`ParticleBrushOverlay`/`ScreenBackdrop` 并接好全部引用（三按钮 `onClick` 接成指向 `ParticleEditor` 的持久监听）、刷新沙箱预览 mesh 与相机编辑态取景、建中文动态 TMP 字体并套用；已存在的对象不动布局。
+- `SceneUiScaffolder`：**场景 UI 脚手架**——菜单 `Tools/TapTap2026/Scene UI Setup（补缺失+接线）` / 批处理 `-executeMethod TapTap2026.EditorTools.SceneUiScaffolder.Run`；**幂等**补齐 `HUD Canvas`（含暂停/光照/高速三按钮、光照面板的强度滑块（0..30）、白天 / 夜晚秒读数与「白天 / 夜晚」±1秒/±5秒 步进按钮——那 8 颗按钮的 `onClick` 接成指向 `SandboxHud` 的**整型**持久监听，秒数写进监听参数）/`Dialogue Canvas`/`EventSystem`/`ParticleGridQuad`/`ParticleBrushOverlay`/`ScreenBackdrop` 并接好全部引用（三按钮 `onClick` 接成指向 `ParticleEditor` 的持久监听）、刷新沙箱预览 mesh 与相机编辑态取景、~~建中文动态 TMP 字体并套用~~（**该步骤已被禁用，见下**）；已存在的对象不动布局。
+
+  > 🚫 **禁止运行这个工具**（菜单与批处理都算）：它的**字体步骤**会违反 `AGENTS.md` 铁律「**任何情况下都不许动用户的字体设置**」（2026-10-16 用户指定），而且是本工程里唯一会**批量改写字体**的代码路径：
+  > - `EnsureCjkFont`（常量 `FontAssetPath = Assets/Data/CjkDynamicFont.asset`、`FontFolderPath = Assets/Data/Fonts`）在该资产缺失时会从系统字体（硬编码候选 `simhei` / `NotoSansSC-VF`）**重新生成** `CjkDynamicFont.asset` 及其材质 / 图集（`AssetDatabase.CreateAsset`）。
+  > - `ApplyFont(GameObject canvasRoot, TMP_FontAsset font)` 会把两个画布下**每一个** `TMP_Text`（含隐藏面板里的读数）的 `fontAsset` 覆盖成上面那个字体——用户手工设的像素字体（`Assets/Data/Fonts/{8,10,12}px.asset`）会被整片抹掉。
+  >
+  > 需要它做的其它事情（补 UI 对象、接引用）请手工做，或改代码绕开这两个方法。字体资产与 `TMP Settings` 属**只读区**，清单见 `docs/modules/ProjectSetup.md`「字体」一节。
 - `CreatureArtGenerator`：菜单 `Tools/Animals/Regenerate Creature Art Data`——从 `Assets/Images/Animals/*/1/*.png` + 切片 pivot 生成 `CreatureArtData.g.cs`（尸体轮廓/pivot/不透明行区间），美术变更后重跑（`CreatureArtDataTests` 对拍守卫）。
 - `BirdSpriteWiring`：菜单 `Tools/Animals/Wire Bird Sprites`——把鸟切片定点写进场景的 `_birdIdleFrames`，幂等、场景 YAML 不手改。
 
@@ -18,4 +24,7 @@
 
 ## 场景
 
-`Assets/Scenes/MainScene.unity` 是唯一 build 场景（Main Camera + Global Light 2D + `ScreenBackdrop`）。`Particle Sandbox` 物体上挂：`ParticleSimulationDriver` + `ParticleRenderer` + `ParticleSandboxSeeder` + `ParticleEditor` + `ParticleLightDriver`（光照开关/亮暗刻数/强度/云层消光/昼夜天空色/夜晚亮度）+ `SoundController` + `LiquidFlowSoundDriver` + `FireSoundDriver` + `LightningSoundDriver` + `FallingSandSoundDriver`。UI 结构详见 `docs/modules/Rendering.md`。**破坏 `MainScene.unity` 等于破坏唯一 build 场景。**
+- `Assets/Scenes/MainScene.unity`：**游戏场景**（build 下标 0）。Main Camera + Global Light 2D + `ScreenBackdrop`。`Particle Sandbox` 物体上挂：`ParticleSimulationDriver` + `ParticleRenderer` + `ParticleSandboxSeeder` + `ParticleEditor` + `ParticleLightDriver`（光照开关/亮暗刻数/强度/云层消光/昼夜天空色/夜晚亮度）+ `SoundController` + `LiquidFlowSoundDriver` + `FireSoundDriver` + `LightningSoundDriver` + `FallingSandSoundDriver`；场景根另有 `Game Controller`（`GameController`）。UI 结构详见 `docs/modules/Rendering.md`。
+- `Assets/Scenes/LevelSelect.unity`：**关卡选择场景**（build 下标 1）。根对象 `Canvas`（五颗关卡按钮 `Day0`..`Day3` + `Sandbox`，外加悬停描述用的 `ProbeText`，初始隐藏）与 `Level Select Controller`（`LevelSelectController`，逐条接好 `_levels` → 上述按钮 / `phase_01..05`，`_probeText` → `Canvas/ProbeText`，`_phases` → 五个阶段 JSON）。选关流程见 `docs/GameFlow.md` §9。
+
+**破坏这两个场景中任何一个都会破坏 build。**

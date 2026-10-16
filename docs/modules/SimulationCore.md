@@ -13,6 +13,7 @@
 
 - 温度是导出量 `T = Q / 类型热容`；热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 就地继承 Q）。
 - `StepLogic` 每逻辑帧在粒子扫描后做：全格四邻热传导（传导界内守恒）+ 两条散热路（顶行向虚空 `VoidHeatLoss`、只作用于暴露面并按材料辐射率 ε 缩放的辐射 `RadiativeLoss`）+ 湿度输送（扩散 + 温度定向：水平冷→热、竖直越热越向上）与降雨，再由光照向「每列最上面的非气体粒子（光打到水面就停）」施热，且按光路湿度做 Beer–Lambert 衰减——云越厚地表越晒不到。持续受热的暴露格就近收敛到 `T ≈ 输入功率 / (RadiativeLoss · ε)`。
+- 光照的每列「挡光顶 + 光路湿度」是**增量缓存**（`LightController`）：首次挂到世界上建一次（O(W·H)），此后 `Set` / `SetPhase`（类型换掉）与 `Swap`（换位）在提交格与湿度之后通知世界侧缓存，湿度场的每次真值改动（含输送与降雨的搬运）经 `HumidityField.ChangedHook` 报「下标 + Δ」按「是否在挡光顶之上」平移该列的和。**施热因此是 O(宽) 的逐列循环、每逻辑帧没有任何竖直扫描**；抬顶 O(1)，只有挡光顶被抹掉 / 有挡光格换位时才对受影响的列重扫（罕见、摊销 O(1)）。稳态逻辑帧零分配（实测 200 帧 0 字节）。
 - 蒸发/凝结按 `HumidityField.LatentHeat(T)` 显式结算潜热（蒸发冷却、凝结放热）；气体竖直 Swap 按 `HeatMap.AdiabaticLapse` 做绝热直减（上升冷却/下沉增温）；静止的水比正上方暖 0.5° 就上浮一格（`TryLiquidConvect`，海洋翻转——「夜间海面比陆地暖」与海陆风昼夜换向的机制）。
 - 水沸腾时把水汽集中成一小片（可见白汽）；平时慢蒸发只把水汽摊薄进空气（不可见，只在液面）——可见水蒸气只在沸腾时出现；低温饱和处凝结成雨。
 - 两个 O(W·H) 浮点 pass（`HeatMap.Step`、`HumidityField.Step`）跑在 Burst（`[BurstCompile(FloatMode = FloatMode.Strict)]` 指针内核，类级 `[BurstCompile]` + 直调（DirectCall）；`#if UNITY_2022_3_OR_NEWER` / `#else` 走同一内核的 managed 分支）。**不要用 `CompileFunctionPointer`**——本机编辑器 entry point 发现不可靠。热传导 job 化已实测否决（~0.2ms/帧，调度开销吃掉全部收益），刻意保持串行直调；湿度因 budget 读改写 + pair 顺序即语义同样串行。
@@ -34,6 +35,7 @@
 - **运动帧 60 Hz**（`world.StepMotion()`）与**逻辑帧 20 Hz**（`world.StepLogic()`，每 `LogicTicksPerMotionTick` 个运动帧一次）。
 - 运动休眠默认开启：只求值候选格——写入格按 `MotionReadReach` 盒反转并集唤醒（生产表 151 格）+ 温度变化格按紧凑脏索引逐格置位半径 2 Chebyshev 球（⊇ 实际温度读距）；静止粒子整块跳过；`MotionSleepEnabled=false` 回退全网格旧路径。
 - 逻辑帧混合扫描：休眠开启时运动候选格跑完整「先逻辑后运动」、其余带 `Info.HasLogic` 的格只跑 `OnLogic`（`OnLogic` 含随机重掷/相变，**永不休眠**）；扫描进行中的热/湿度写入经 `DirtiedHook` **同帧**并入候选位图（否则晚一帧、逐位发散）。再跑随机刻/热传导/湿度/降水/光照。
+- 湿度场的两个回调位**互相独立、各自可再加消费者**：`DirtiedHook`（下标，温度唤醒）与 `ChangedHook`（下标 + Δ，光照的列缓存）。世界绑前者、光照绑后者，都不互相覆盖。
 
 ## 确定性
 

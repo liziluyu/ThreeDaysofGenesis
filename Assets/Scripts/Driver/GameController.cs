@@ -22,8 +22,8 @@ namespace TapTap2026.Game
     /// <para>胜负**不在本类上屏**：结论经只读属性 <see cref="HasVerdict"/> / <see cref="LastResult"/> / <see cref="LastReason"/> 暴露，
     /// 由 <see cref="ParticleEditor"/> 在高速模式结算面板里显示（过关绿 / 未过关红）。
     /// 本类只管开关场景里的「全部阶段完成」横幅（<see cref="_completionBanner"/>）——不画任何 IMGUI。</para>
-    /// <para>存档：每次成功启动阶段都把当前阶段 id 与**已解锁阶段集合**写进
-    /// <c>Path.Combine(Application.persistentDataPath, _saveFileName)</c>——刻意只存进度与解锁，不存世界状态。</para>
+    /// <para>存档：每次成功启动阶段都把当前阶段 id 与**已解锁阶段集合**写进 <see cref="SavePathFor(string)"/> 给出的文件
+    /// （<c>persistentDataPath</c> + 存档文件名）——刻意只存进度与解锁，不存世界状态。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     // 必须先于 ParticleEditor 的 Update 观察 HighSpeedSession.Completed：
@@ -54,7 +54,7 @@ namespace TapTap2026.Game
 
         /// <summary>存档 DTO：记进度（当前阶段 id）+ 已解锁阶段集合，不存世界。字段名即 JSON 键。</summary>
         [Serializable]
-        private sealed class SaveData
+        public sealed class SaveData
         {
             public string currentPhaseId;
 
@@ -65,8 +65,8 @@ namespace TapTap2026.Game
         /// <summary>已解锁阶段 id 集合（成功 <see cref="StartPhase"/> 过即加入）；<see cref="Start"/> 读档时回填。</summary>
         private readonly HashSet<string> _unlockedPhases = new HashSet<string>(StringComparer.Ordinal);
 
-        /// <summary>阶段 id → 阶段 JSON 的映射；在 <see cref="Awake"/> 里构建，解析失败的条目记错误并跳过。</summary>
-        private readonly Dictionary<string, TextAsset> _phaseAssets = new Dictionary<string, TextAsset>();
+        /// <summary>阶段 id → 阶段 JSON 的映射；在 <see cref="Awake"/> 里经 <see cref="CollectPhaseAssets"/> 构建，解析失败的条目记错误并跳过。</summary>
+        private Dictionary<string, TextAsset> _phaseAssets;
 
         /// <summary>当前阶段的解析结果；仅在 <see cref="StartPhase"/> 成功时更新。</summary>
         private GamePhaseData _currentPhase;
@@ -76,6 +76,9 @@ namespace TapTap2026.Game
 
         /// <summary>是否已经见过本会话的结算（<see cref="HighSpeedSession.Completed"/>）。</summary>
         private bool _sessionCompletedSeen;
+
+        /// <summary>本次结算是否真的求过胜利条件（沙盒阶段没有 victory，跳过判定时为 false）。</summary>
+        private bool _sessionHadVerdict;
 
         /// <summary>缓存的胜利判定结论（仅在结算那一刻求值一次）。</summary>
         private bool _lastResult;
@@ -89,9 +92,9 @@ namespace TapTap2026.Game
         /// <summary>当前阶段 id；尚未成功启动任何阶段时为空串。</summary>
         public string CurrentPhaseId { get; private set; } = string.Empty;
 
-        /// <summary>本次结算是否已出结论（高速会话进过 <see cref="HighSpeedSession.Completed"/>、本类已求值一次）。
-        /// 结算面板据此决定是否显示胜负行。</summary>
-        public bool HasVerdict => _sessionCompletedSeen;
+        /// <summary>本次结算是否已出结论（高速会话进过 <see cref="HighSpeedSession.Completed"/>、本类已求值一次）；
+        /// 沙盒阶段（无 victory）恒为 false。结算面板据此决定是否显示胜负行。</summary>
+        public bool HasVerdict => _sessionCompletedSeen && _sessionHadVerdict;
 
         /// <summary>缓存的胜负结论：true = 过关。仅在 <see cref="HasVerdict"/> 为真时有意义。</summary>
         public bool LastResult => _lastResult;
@@ -159,28 +162,10 @@ namespace TapTap2026.Game
         /// </summary>
         private void Start()
         {
-            SaveData data = LoadSave();
-            if (data != null)
-            {
-                if (data.unlockedPhases != null)
-                {
-                    for (int i = 0; i < data.unlockedPhases.Count; i++)
-                    {
-                        string unlocked = data.unlockedPhases[i];
-                        if (!string.IsNullOrEmpty(unlocked))
-                        {
-                            _unlockedPhases.Add(unlocked);
-                        }
-                    }
-                }
+            SaveData data = LoadSave(_saveFileName);
 
-                // 旧档兼容：unlockedPhases 缺失（或为空）时，把当前阶段本身当作已解锁回填。
-                string saved = data.currentPhaseId;
-                if (!string.IsNullOrEmpty(saved))
-                {
-                    _unlockedPhases.Add(saved);
-                }
-            }
+            // 回填规则见 CollectUnlockedPhaseIds：unlockedPhases 里每个非空 id + currentPhaseId（旧档兼容）。
+            _unlockedPhases.UnionWith(CollectUnlockedPhaseIds(data));
 
             string id = data != null ? data.currentPhaseId : null;
             if (string.IsNullOrEmpty(id))
@@ -210,8 +195,9 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 高速模式的轮询（每帧一次，纯观察）：会话一进入「Active 且 Completed」就评估一次胜利条件并缓存结论；
-        /// 随后观察到会话退出（Active 变 false）且确实结算过，就按缓存结论推进流程（下一阶段 / 重来 / 全部完成）。
+        /// 高速模式的轮询（每帧一次，纯观察）：会话一进入「Active 且 Completed」就评估一次胜利条件并缓存结论
+        /// （阶段没有 <c>victory</c> = 沙盒，跳过判定、不置 <see cref="HasVerdict"/>）；
+        /// 随后观察到会话退出（Active 变 false）且确实求过胜负，才按缓存结论推进流程（下一阶段 / 重来 / 全部完成）。
         /// 会话被世界重建丢弃（从未结算）时不采取任何行动。
         /// </summary>
         private void Update()
@@ -234,11 +220,24 @@ namespace TapTap2026.Game
             if (active && session.Completed && !_sessionCompletedSeen)
             {
                 _sessionCompletedSeen = true;
-                _lastResult = VictoryEvaluator.Evaluate(
-                    _currentPhase != null ? _currentPhase.victory : null,
-                    BuildSnapshot(session),
-                    out string reason);
-                _lastReason = reason;
+
+                if (_currentPhase != null && _currentPhase.victory != null)
+                {
+                    _sessionHadVerdict = true;
+                    _lastResult = VictoryEvaluator.Evaluate(
+                        _currentPhase.victory,
+                        BuildSnapshot(session),
+                        out string reason);
+                    _lastReason = reason;
+                }
+                else
+                {
+                    // 沙盒阶段（没有 victory）：不判定、不推进，结算面板也不显示胜负行。
+                    _sessionHadVerdict = false;
+                    _lastResult = false;
+                    _lastReason = null;
+                    Debug.Log($"[GameController] 阶段 \"{CurrentPhaseId}\" 本阶段没有胜利条件（沙盒），高速模式结束后不做判定与推进。");
+                }
             }
 
             // 退出那一刻：上一帧还在高速模式、本帧不在了，且确实进过结算 → 按缓存结论推进流程。
@@ -247,7 +246,14 @@ namespace TapTap2026.Game
             {
                 _sessionWasActive = false;
                 _sessionCompletedSeen = false;
-                ApplyResult();
+
+                // 只有真求过胜负才推进流程（沙盒阶段到此为止，不判过关也不重来）。
+                if (_sessionHadVerdict)
+                {
+                    ApplyResult();
+                }
+
+                _sessionHadVerdict = false;
                 return;
             }
 
@@ -315,12 +321,13 @@ namespace TapTap2026.Game
             }
 
             _unlockedPhases.Add(id);
-            SaveProgress(id);
+            WriteSave(_saveFileName, id, new List<string>(_unlockedPhases));
 
             _currentPhase = phase;
             CurrentPhaseId = id;
             _sessionWasActive = false;
             _sessionCompletedSeen = false;
+            _sessionHadVerdict = false;
             _lastReason = null;
             _allPhasesCompleted = false;
             SetCompletionBannerVisible(false);
@@ -333,11 +340,11 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 跳转到阶段 <paramref name="id"/>（供控制台 / 调试或后续关卡选择 UI 的代码入口）。
+        /// 跳转到阶段 <paramref name="id"/>（供关卡选择界面与控制台 / 调试调用的代码入口）。
         /// 门槛：空 id 或不在阶段表 → <c>LogError</c> + <c>false</c>；尚未解锁 → <c>LogWarning</c> + <c>false</c>；
         /// 通过则由 <see cref="StartPhase"/> 实际启动（它自己会再校验一次）并返回 <c>true</c>。
         /// </summary>
-        /// <remarks>刻意不做关卡选择 UI（见 docs/GameFlow.md §8）——这里只提供代码入口与解锁门槛。</remarks>
+        /// <remarks>供 <see cref="LevelSelectController"/>（关卡选择界面）与控制台 / 调试调用——解锁门槛与阶段表校验都在这层。</remarks>
         public bool JumpToPhase(string id)
         {
             if (string.IsNullOrEmpty(id) || !_phaseAssets.ContainsKey(id))
@@ -436,22 +443,33 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 构建阶段 id → JSON 的映射（id = TextAsset 文件名去扩展名）。解析失败的条目记错误并跳过——
+        /// 构建阶段 id → JSON 的映射。建表规则见 <see cref="CollectPhaseAssets"/>——
         /// 这样 <see cref="Start"/> 的起始阶段查找天然跳过坏条目，不会拿一段读不懂的 JSON 启动流程。
         /// </summary>
         private void BuildPhaseMap()
         {
-            _phaseAssets.Clear();
+            _phaseAssets = CollectPhaseAssets(_phases);
+        }
 
-            if (_phases == null || _phases.Length == 0)
+        /// <summary>
+        /// 按 <see cref="TextAsset.name"/>（= 阶段 id，去扩展名）建 id → 资产表。
+        /// null 条目 / 无文件名 / 重复 id / JSON 解析失败 一律记错误并跳过该条目（顺序 = 入参数组顺序）。
+        /// 供本类建内部阶段表与关卡选择界面读阶段元数据（如 description）共用，
+        /// 「id = 文件名」这条约定只此一处。
+        /// </summary>
+        public static Dictionary<string, TextAsset> CollectPhaseAssets(TextAsset[] phases)
+        {
+            var assets = new Dictionary<string, TextAsset>();
+
+            if (phases == null || phases.Length == 0)
             {
                 Debug.LogError("[GameController] 未配置任何阶段 JSON（_phases 为空），游戏流程无法启动。");
-                return;
+                return assets;
             }
 
-            for (int i = 0; i < _phases.Length; i++)
+            for (int i = 0; i < phases.Length; i++)
             {
-                TextAsset asset = _phases[i];
+                TextAsset asset = phases[i];
                 if (asset == null)
                 {
                     Debug.LogWarning($"[GameController] _phases[{i}] 为 null，已跳过。");
@@ -465,7 +483,7 @@ namespace TapTap2026.Game
                     continue;
                 }
 
-                if (_phaseAssets.ContainsKey(id))
+                if (assets.ContainsKey(id))
                 {
                     Debug.LogError($"[GameController] 阶段 id \"{id}\" 重复（_phases[{i}]），该条目已跳过。");
                     continue;
@@ -478,39 +496,30 @@ namespace TapTap2026.Game
                 }
 
                 phase.id = id;
-                _phaseAssets[id] = asset;
+                assets[id] = asset;
             }
+
+            return assets;
         }
 
         /// <summary>
-        /// 把当前阶段 id + 已解锁阶段集合写进存档；解锁集合复制成 List 后按序号排序（同一集合产出稳定文件）。
-        /// IO 失败记错误但**不中断**流程（进度丢了也还能玩）。
+        /// 存档的完整路径：<c>Application.persistentDataPath</c> + 文件名
+        /// （<paramref name="saveFileName"/> 为空时回退 <see cref="DefaultSaveFileName"/>）。
         /// </summary>
-        private void SaveProgress(string phaseId)
+        public static string SavePathFor(string saveFileName)
         {
-            var unlocked = new List<string>(_unlockedPhases);
-            unlocked.Sort(StringComparer.Ordinal);
-
-            string path = SavePath;
-            try
-            {
-                File.WriteAllText(
-                    path,
-                    JsonUtility.ToJson(new SaveData { currentPhaseId = phaseId, unlockedPhases = unlocked }));
-            }
-            catch (Exception exception)
-            {
-                Debug.LogError($"[GameController] 写存档失败（{path}）：{exception.Message}");
-            }
+            return Path.Combine(
+                Application.persistentDataPath,
+                string.IsNullOrEmpty(saveFileName) ? DefaultSaveFileName : saveFileName);
         }
 
         /// <summary>
         /// 读存档 DTO；文件不存在 / 读取失败 / 反序列化失败（含坏 JSON）都返回 null
         /// （由调用方回退起始阶段，并跳过解锁集合回填）。
         /// </summary>
-        private SaveData LoadSave()
+        public static SaveData LoadSave(string saveFileName)
         {
-            string path = SavePath;
+            string path = SavePathFor(saveFileName);
             try
             {
                 if (!File.Exists(path))
@@ -527,10 +536,63 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>存档的完整路径：<c>Application.persistentDataPath</c> + <see cref="_saveFileName"/>。</summary>
-        private string SavePath
+        /// <summary>
+        /// 从存档里收「已解锁」的阶段 id：<see cref="SaveData.unlockedPhases"/> 里每个非空 id，
+        /// **外加** <see cref="SaveData.currentPhaseId"/>——旧档没有 unlockedPhases 时，当前阶段本身即已解锁。
+        /// <paramref name="data"/> 为 null 时返回空列表；结果已去重（顺序 = unlockedPhases 顺序，当前阶段补在末尾）。
+        /// </summary>
+        public static List<string> CollectUnlockedPhaseIds(SaveData data)
         {
-            get { return Path.Combine(Application.persistentDataPath, _saveFileName); }
+            var unlocked = new List<string>();
+            if (data == null)
+            {
+                return unlocked;
+            }
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            if (data.unlockedPhases != null)
+            {
+                for (int i = 0; i < data.unlockedPhases.Count; i++)
+                {
+                    string id = data.unlockedPhases[i];
+                    if (!string.IsNullOrEmpty(id) && seen.Add(id))
+                    {
+                        unlocked.Add(id);
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(data.currentPhaseId) && seen.Add(data.currentPhaseId))
+            {
+                unlocked.Add(data.currentPhaseId);
+            }
+
+            return unlocked;
+        }
+
+        /// <summary>
+        /// 写存档：<paramref name="unlockedPhaseIds"/> 复制成 List 后按序号排序（同一集合产出稳定文件），
+        /// 与 <paramref name="currentPhaseId"/> 一起 <see cref="JsonUtility.ToJson(object)"/> 写出。
+        /// IO 失败记错误但**不抛**（进度丢了也还能玩）。
+        /// </summary>
+        public static void WriteSave(string saveFileName, string currentPhaseId, IList<string> unlockedPhaseIds)
+        {
+            var unlocked = unlockedPhaseIds != null
+                ? new List<string>(unlockedPhaseIds)
+                : new List<string>();
+            unlocked.Sort(StringComparer.Ordinal);
+
+            string path = SavePathFor(saveFileName);
+            try
+            {
+                File.WriteAllText(
+                    path,
+                    JsonUtility.ToJson(new SaveData { currentPhaseId = currentPhaseId, unlockedPhases = unlocked }));
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"[GameController] 写存档失败（{path}）：{exception.Message}");
+            }
         }
     }
 }

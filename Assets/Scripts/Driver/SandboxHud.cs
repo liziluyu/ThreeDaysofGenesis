@@ -1,6 +1,7 @@
 using System.Globalization;
 using TMPro;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 namespace TapTap2026.Game
@@ -13,12 +14,14 @@ namespace TapTap2026.Game
     /// <remarks>
     /// <para>层级与布局都是**场景里的可编辑对象**（<c>HUD Canvas</c> 下，编辑模式可见可选中）：本组件只持引用、
     /// 不建对象，因此全部引用都能在 Inspector 里拖。未接线的引用对应的推送整段跳过（可选依赖，不报错）。</para>
-    /// <para>光照面板的三个输入框直接写 <c>ParticleLightDriver</c> 的强度 / 亮相位刻数 / 暗相位刻数：
-    /// 驱动器是这三个值的唯一配置面（它每帧把字段写回 <c>world.Light</c>，直接写世界会被下一帧覆盖）。
-    /// 解析一律用不变文化；非法输入（相位不是非负整数 / 强度不是有限浮点）标红且**不提交**，
-    /// 失焦后回填驱动真值——与旧 IMGUI 面板逐条同义。</para>
+    /// <para>光照面板直接写 <c>ParticleLightDriver</c> 的强度 / 亮相位刻数 / 暗相位刻数：驱动器是这三个值的
+    /// 唯一配置面（它每帧把字段写回 <c>world.Light</c>，直接写世界会被下一帧覆盖）。面板 = 一个 0..30 的
+    /// **强度滑块** + 两行**秒读数**（白天 / 夜晚，把相位刻数按当前逻辑帧速率换算成秒）
+    /// + 两行按秒步进按钮（<see cref="AddLitSeconds"/> / <see cref="AddDarkSeconds"/>，把秒换算成
+    /// **当前逻辑帧速率**刻数再加）。滑块的回调只往驱动器写值（不解析文本）；
+    /// 滑块的显示值与两行读数每帧回填**驱动真值**——运行期在 Inspector 改值 / 世界重建后读数跟着走。</para>
     /// <para>本组件**不读任何热键**：暂停 / 高速 / 平移 / 画笔仍归 <see cref="ParticleEditor"/>；
-    /// 编辑器通过 <see cref="LightFieldFocused"/> 判断「输入框是不是正拿着键盘」，据此把键盘热键让给输入框。</para>
+    /// 面板里已经没有文本输入，<see cref="ParticleEditor"/> 的键盘热键因此不必再为它让位。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class SandboxHud : MonoBehaviour
@@ -29,16 +32,14 @@ namespace TapTap2026.Game
         /// <summary>结算面板胜负行的红色（未过关）。</summary>
         private static readonly Color FailColor = new Color(1f, 0.35f, 0.35f);
 
-        /// <summary>光照输入框解析不出合法值时的文本色（值不会被提交）。</summary>
-        private static readonly Color InvalidLightColor = new Color(1f, 0.45f, 0.45f);
-
-        /// <summary>光照输入框的正常文本色。</summary>
-        private static readonly Color ValidLightColor = Color.white;
-
         /// <summary>结算行数组为空时的占位（只为免掉一次每帧分配）。</summary>
         private static readonly string[] EmptyReportLines = new string[0];
 
-        [Tooltip("光照面板三个输入框的写入口。留空则 Awake 里 GetComponent → FindObjectOfType 兜底；" +
+        /// <summary>找不到模拟驱动器时的逻辑帧速率兜底（= <see cref="ParticleSimulationSettings"/> 的默认
+        /// <c>_logicRate</c>）。真实速率一律从驱动器读，20 只是没有驱动器时的近似。</summary>
+        private const int DefaultLogicRate = 20;
+
+        [Tooltip("光照面板的写入口（强度滑块 + 两行相位秒读数）。留空则 Awake 里 GetComponent → FindObjectOfType 兜底；" +
                  "仍找不到就隐藏光照面板——没有写入口的面板画出来只会误导。")]
         [SerializeField] private ParticleLightDriver _lightDriver;
 
@@ -76,17 +77,27 @@ namespace TapTap2026.Game
                  "点按钮不会顺带在底下画一笔（与光照面板同一条判据）。")]
         [SerializeField] private RectTransform _buttonPanel;
 
-        [Tooltip("光照强度输入框（可写，任意有限浮点；负值 = 制冷）。")]
-        [SerializeField] private TMP_InputField _lightIntensity;
+        [Tooltip("光照强度滑块（0..30 整数档）；拖动即写驱动器的强度，负数制冷只能在 Inspector 上设。")]
+        [SerializeField] private Slider _lightIntensity;
 
-        [Tooltip("亮相位刻数输入框（可写，非负整数）。")]
-        [SerializeField] private TMP_InputField _lightLitTicks;
+        [Tooltip("强度滑块右侧的数值读数（显示驱动真值，滑块只夹在自身范围里）。")]
+        [SerializeField] private TMP_Text _lightIntensityValue;
 
-        [Tooltip("暗相位刻数输入框（可写，非负整数）。")]
-        [SerializeField] private TMP_InputField _lightDarkTicks;
+        [Tooltip("亮相位秒读数（刻数按当前逻辑帧速率换算成秒）。")]
+        [SerializeField] private TMP_Text _lightLitTicks;
+
+        [Tooltip("暗相位秒读数（刻数按当前逻辑帧速率换算成秒）。留空则 Awake 里按对象名 \"" + DarkTicksObjectName + "\" 在场景里搜（含隐藏面板下的）。")]
+        [SerializeField] private TMP_Text _lightDarkTicks;
+
+        /// <summary>暗相位秒读数在场景里的**固定对象名**：未接线时 <see cref="Awake"/> 按它搜索文本框。</summary>
+        private const string DarkTicksObjectName = "DarkTicks";
 
         /// <summary>光照面板的 CanvasGroup（变灰 / 屏蔽点击的载体）；场景里没挂时 <see cref="Awake"/> 补一个。</summary>
         private CanvasGroup _lightPanelGroup;
+
+        /// <summary>逻辑帧速率的来源（懒解析、非序列化）：秒读数与按秒步进都按它换算成逻辑帧刻数。
+        /// 从光照驱动器所在的对象上取，取不到就退回 <see cref="DefaultLogicRate"/>。</summary>
+        private ParticleSimulationDriver _simDriver;
 
         /// <summary>HUD 的开关状态（<see cref="SetHudVisible"/>）。鼠标跟随组据此决定要不要因
         /// <see cref="SetCursorHint"/> 而现身——否则它会绕过整体开关自己冒出来。</summary>
@@ -102,17 +113,6 @@ namespace TapTap2026.Game
         private bool _reportVerdictPass;
         private bool _reportCached;
 
-        /// <summary>三个光照输入框里是否有任一正持有键盘焦点（<see cref="ParticleEditor"/> 据此让出键盘热键）。</summary>
-        public bool LightFieldFocused
-        {
-            get
-            {
-                return (_lightIntensity != null && _lightIntensity.isFocused)
-                    || (_lightLitTicks != null && _lightLitTicks.isFocused)
-                    || (_lightDarkTicks != null && _lightDarkTicks.isFocused);
-            }
-        }
-
         private void Awake()
         {
             // 光照值的写入口；找不到就没有可写的面板（可选依赖，不报错）。
@@ -124,6 +124,16 @@ namespace TapTap2026.Game
             if (_lightDriver == null)
             {
                 _lightDriver = FindObjectOfType<ParticleLightDriver>();
+            }
+
+            // 暗相位秒读数：未接线时按**对象名**在场景里搜（面板收起时对象未激活，因此搜索必须含未激活）。
+            if (_lightDarkTicks == null)
+            {
+                _lightDarkTicks = FindSceneText(DarkTicksObjectName);
+                if (_lightDarkTicks == null)
+                {
+                    Debug.LogWarning($"[SandboxHud] 场景里找不到名为 \"{DarkTicksObjectName}\" 的文本框，暗相位秒读数不显示。");
+                }
             }
 
             if (_lightPanel != null)
@@ -144,19 +154,6 @@ namespace TapTap2026.Game
             if (_lightIntensity != null)
             {
                 _lightIntensity.onValueChanged.AddListener(OnIntensityChanged);
-                _lightIntensity.onEndEdit.AddListener(OnIntensityEndEdit);
-            }
-
-            if (_lightLitTicks != null)
-            {
-                _lightLitTicks.onValueChanged.AddListener(OnLitTicksChanged);
-                _lightLitTicks.onEndEdit.AddListener(OnLitTicksEndEdit);
-            }
-
-            if (_lightDarkTicks != null)
-            {
-                _lightDarkTicks.onValueChanged.AddListener(OnDarkTicksChanged);
-                _lightDarkTicks.onEndEdit.AddListener(OnDarkTicksEndEdit);
             }
         }
 
@@ -280,9 +277,23 @@ namespace TapTap2026.Game
             _lightPanelGroup.alpha = interactable ? 1f : 0.6f;
         }
 
+        /// <summary>亮相位刻数按**秒**步进：参数是秒（可负），1 秒 = 当前逻辑帧速率刻，
+        /// 结果钳制到 ≥ 0 后写回驱动器的亮相位刻数（写驱动器而不是 <c>world.Light</c>——
+        /// 驱动器每帧把字段写回世界，直接写世界会被下一帧覆盖）。</summary>
+        public void AddLitSeconds(int seconds)
+        {
+            AddSeconds(seconds, true);
+        }
+
+        /// <summary>暗相位刻数按**秒**步进：语义与 <see cref="AddLitSeconds"/> 相同，只是落在暗相位刻数上。</summary>
+        public void AddDarkSeconds(int seconds)
+        {
+            AddSeconds(seconds, false);
+        }
+
         /// <summary>
         /// 指针是否落在**会吃掉点击的 HUD 面板**上（光照面板或按钮面板）。编辑器据此屏蔽左键投放 / 擦除——
-        /// 点按钮、点输入框时指针同时也在网格上，不挡就会既改 UI 又在底下画一笔。
+        /// 点按钮、拖滑块时指针同时也在网格上，不挡就会既改 UI 又在底下画一笔。
         /// 隐藏的面板不挡（没画出来的东西不该挡画笔）；未接线的面板恒不挡。
         /// </summary>
         public bool IsPointerOverPanel(Vector2 screenPosition)
@@ -299,12 +310,12 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 把**失焦**的输入框文本同步回驱动器的真值——运行期在 Inspector 改值 / 世界重建后仍显示真值。
-        /// 文本已等值时不动它（稳态不重新格式化、零分配）；**聚焦中的那个框不碰**，免得吃掉正在敲的草稿。
+        /// 把**驱动器真值**同步给面板——运行期在 Inspector 改值 / 世界重建后显示跟着走。
+        /// 强度滑块夹到自身范围后回填（不等才写，免得拖动时与滑块自己打架），三个读数文本等值不动（零分配）。
         /// </summary>
         private void Update()
         {
-            SyncLightTexts();
+            SyncLightValues();
         }
 
         /// <summary>
@@ -323,139 +334,88 @@ namespace TapTap2026.Game
             _cursorHint.position = new Vector3(mouse.x + 18f, mouse.y, 0f);
         }
 
-        private void SyncLightTexts()
+        /// <summary>
+        /// 面板回填驱动器真值：强度滑块夹到 <c>[minValue, maxValue]</c> 后写（近似相等就不写——
+        /// 拖动中滑块的当前值本来就等于驱动器值，重复写只会打架）；三个读数文本走 <see cref="SetText"/>。
+        /// 强度读数显示**驱动器真值**：Inspector 里超出 0..30 时读数照显真值，滑块只是被夹在端点。
+        /// </summary>
+        private void SyncLightValues()
         {
             if (_lightDriver == null)
             {
                 return;
             }
 
-            if (_lightIntensity != null && !_lightIntensity.isFocused
-                && !(TryParseLightScalar(_lightIntensity.text, out float intensity)
-                     && intensity == _lightDriver.Intensity))
+            if (_lightIntensity != null)
             {
-                SetLightText(_lightIntensity, FormatIntensity(_lightDriver.Intensity));
+                float target = Mathf.Clamp(_lightDriver.Intensity, _lightIntensity.minValue, _lightIntensity.maxValue);
+                if (!Mathf.Approximately(_lightIntensity.value, target))
+                {
+                    _lightIntensity.SetValueWithoutNotify(target);
+                }
             }
 
-            if (_lightLitTicks != null && !_lightLitTicks.isFocused
-                && !(TryParseLightTicks(_lightLitTicks.text, out int litTicks)
-                     && litTicks == _lightDriver.LitTicks))
-            {
-                SetLightText(_lightLitTicks, FormatTicks(_lightDriver.LitTicks));
-            }
-
-            if (_lightDarkTicks != null && !_lightDarkTicks.isFocused
-                && !(TryParseLightTicks(_lightDarkTicks.text, out int darkTicks)
-                     && darkTicks == _lightDriver.DarkTicks))
-            {
-                SetLightText(_lightDarkTicks, FormatTicks(_lightDriver.DarkTicks));
-            }
+            SetText(_lightIntensityValue, FormatIntensity(_lightDriver.Intensity));
+            SetText(_lightLitTicks, FormatSeconds(_lightDriver.LitTicks));
+            SetText(_lightDarkTicks, FormatSeconds(_lightDriver.DarkTicks));
         }
 
-        /// <summary>强度输入框内容变化：解析成有限浮点就提交（写驱动器），否则文本标红不提交。</summary>
-        private void OnIntensityChanged(string text)
+        /// <summary>
+        /// 按秒步进相位刻数（<paramref name="lit"/> 选亮 / 暗行），钳制到 <c>[0, int.MaxValue]</c>。
+        /// 全程用 <see cref="long"/> 算，避免「秒 × 速率」或「刻数 + 增量」在 int 上溢出。
+        /// </summary>
+        private void AddSeconds(int seconds, bool lit)
         {
-            if (!TryParseLightScalar(text, out float value))
+            if (_lightDriver == null || seconds == 0)
             {
-                SetLightTextColor(_lightIntensity, InvalidLightColor);
                 return;
             }
 
+            long delta = (long)seconds * TicksPerSecond;
+            long value = (lit ? _lightDriver.LitTicks : _lightDriver.DarkTicks) + delta;
+            if (value < 0)
+            {
+                value = 0;
+            }
+            else if (value > int.MaxValue)
+            {
+                value = int.MaxValue;
+            }
+
+            if (lit)
+            {
+                _lightDriver.LitTicks = (int)value;
+            }
+            else
+            {
+                _lightDriver.DarkTicks = (int)value;
+            }
+        }
+
+        /// <summary>当前逻辑帧速率（每秒多少刻）：从模拟驱动器读，取不到就用 <see cref="DefaultLogicRate"/>；
+        /// 至少 1——否则按秒步进会变成空操作、秒读数会除零。</summary>
+        private int TicksPerSecond
+        {
+            get
+            {
+                if (_simDriver == null && _lightDriver != null)
+                {
+                    _simDriver = _lightDriver.GetComponent<ParticleSimulationDriver>();
+                }
+
+                int rate = _simDriver != null ? Mathf.RoundToInt(_simDriver.LogicRate) : DefaultLogicRate;
+                return rate < 1 ? 1 : rate;
+            }
+        }
+
+        /// <summary>强度滑块的值变化：原样写进驱动器（写驱动器而不是 <c>world.Light</c>——
+        /// 驱动器每帧把字段写回世界，直接写世界会被下一帧覆盖）。未接线时无事发生。</summary>
+        private void OnIntensityChanged(float value)
+        {
             if (_lightDriver != null)
             {
                 _lightDriver.Intensity = value;
             }
-
-            SetLightTextColor(_lightIntensity, ValidLightColor);
-        }
-
-        /// <summary>亮相位刻数输入框内容变化：解析成非负整数就提交，否则标红不提交。</summary>
-        private void OnLitTicksChanged(string text)
-        {
-            if (!TryParseLightTicks(text, out int value))
-            {
-                SetLightTextColor(_lightLitTicks, InvalidLightColor);
-                return;
-            }
-
-            if (_lightDriver != null)
-            {
-                _lightDriver.LitTicks = value;
-            }
-
-            SetLightTextColor(_lightLitTicks, ValidLightColor);
-        }
-
-        /// <summary>暗相位刻数输入框内容变化：解析成非负整数就提交，否则标红不提交。</summary>
-        private void OnDarkTicksChanged(string text)
-        {
-            if (!TryParseLightTicks(text, out int value))
-            {
-                SetLightTextColor(_lightDarkTicks, InvalidLightColor);
-                return;
-            }
-
-            if (_lightDriver != null)
-            {
-                _lightDriver.DarkTicks = value;
-            }
-
-            SetLightTextColor(_lightDarkTicks, ValidLightColor);
-        }
-
-        /// <summary>强度框失焦：文本回填驱动真值（旧「失焦弹回真值」语义——非法草稿不留在框里）。</summary>
-        private void OnIntensityEndEdit(string text)
-        {
-            if (_lightDriver == null || _lightIntensity == null)
-            {
-                return;
-            }
-
-            if (!TryParseLightScalar(text, out float value) || value != _lightDriver.Intensity)
-            {
-                SetLightText(_lightIntensity, FormatIntensity(_lightDriver.Intensity));
-            }
-        }
-
-        /// <summary>亮相位数框失焦：文本回填驱动真值。</summary>
-        private void OnLitTicksEndEdit(string text)
-        {
-            if (_lightDriver == null || _lightLitTicks == null)
-            {
-                return;
-            }
-
-            if (!TryParseLightTicks(text, out int value) || value != _lightDriver.LitTicks)
-            {
-                SetLightText(_lightLitTicks, FormatTicks(_lightDriver.LitTicks));
-            }
-        }
-
-        /// <summary>暗相位框失焦：文本回填驱动真值。</summary>
-        private void OnDarkTicksEndEdit(string text)
-        {
-            if (_lightDriver == null || _lightDarkTicks == null)
-            {
-                return;
-            }
-
-            if (!TryParseLightTicks(text, out int value) || value != _lightDriver.DarkTicks)
-            {
-                SetLightText(_lightDarkTicks, FormatTicks(_lightDriver.DarkTicks));
-            }
-        }
-
-        /// <summary>光照强度文本 → 有限浮点（NaN / 无穷非法，与 <c>LightController.Intensity</c> 的钳制一致）。</summary>
-        private static bool TryParseLightScalar(string text, out float value)
-        {
-            return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
-                   && !float.IsNaN(value) && !float.IsInfinity(value);
-        }
-
-        /// <summary>相位刻数文本 → 非负整数（与 <c>LightController.LitTicks</c> 的钳制语义一致）。</summary>
-        private static bool TryParseLightTicks(string text, out int value)
-        {
-            return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value) && value >= 0;
         }
 
         /// <summary>强度的显示格式：最多三位小数、去掉多余的零（整数看起来就是整数）。</summary>
@@ -464,37 +424,10 @@ namespace TapTap2026.Game
             return intensity.ToString("0.###", CultureInfo.InvariantCulture);
         }
 
-        /// <summary>相位刻数的显示格式（不变文化，免得其他区域设置插进千位分隔符）。</summary>
-        private static string FormatTicks(int ticks)
+        /// <summary>相位刻数的**秒**读数：1 秒 = 当前逻辑帧速率刻，就近取整（<see cref="TicksPerSecond"/> 变了读数跟着变）。</summary>
+        private string FormatSeconds(int ticks)
         {
-            return ticks.ToString(CultureInfo.InvariantCulture);
-        }
-
-        /// <summary>写输入框文本（等值不动）并把文本色恢复成正常色——回填的都是**驱动真值**，必然合法。</summary>
-        private static void SetLightText(TMP_InputField field, string text)
-        {
-            if (field == null)
-            {
-                return;
-            }
-
-            if (field.text != text)
-            {
-                field.text = text;
-            }
-
-            SetLightTextColor(field, ValidLightColor);
-        }
-
-        /// <summary>给输入框的文本组件上色（等值不动，省掉 TMP 的网格重建）。</summary>
-        private static void SetLightTextColor(TMP_InputField field, Color color)
-        {
-            if (field == null || field.textComponent == null || field.textComponent.color == color)
-            {
-                return;
-            }
-
-            field.textComponent.color = color;
+            return Mathf.RoundToInt(ticks / (float)TicksPerSecond) + "秒";
         }
 
         /// <summary>写 TMP 文本；null / 空串当空文本，等值不重复赋值（TMP 每次赋值都会重解析并重排）。</summary>
@@ -555,6 +488,29 @@ namespace TapTap2026.Game
 
                 SetActive(_reportVerdict.gameObject, showVerdict);
             }
+        }
+
+        /// <summary>
+        /// 在**当前活动场景**里按对象名找一个 <see cref="TMP_Text"/>（找的是物体名，不是组件名）。
+        /// 用 <c>GetComponentsInChildren(..., true)</c> 逐根对象铺开，因此**未激活**的对象（收起的光照面板）
+        /// 一样能命中——<c>GameObject.Find</c> 只认已激活对象，用不了。找不到返回 null。
+        /// </summary>
+        private static TMP_Text FindSceneText(string objectName)
+        {
+            GameObject[] roots = SceneManager.GetActiveScene().GetRootGameObjects();
+            for (int i = 0; i < roots.Length; i++)
+            {
+                TMP_Text[] texts = roots[i].GetComponentsInChildren<TMP_Text>(true);
+                for (int j = 0; j < texts.Length; j++)
+                {
+                    if (texts[j].gameObject.name == objectName)
+                    {
+                        return texts[j];
+                    }
+                }
+            }
+
+            return null;
         }
     }
 }

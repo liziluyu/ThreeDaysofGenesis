@@ -18,14 +18,17 @@ namespace TapTap2026.EditorTools
     /// <summary>
     /// 场景 UI 脚手架：把原本「运行期动态创建」的那批对象补齐到 <c>MainScene</c> 里并接好线——
     /// 粒子网格 quad 与笔刷叠层、主相机取景、EventSystem、HUD Canvas（<see cref="SandboxHud"/> 的层级 +
-    /// 暂停 / 光照 / 高速三颗按钮 + 正中央显示相机画面的 <c>SandboxView</c>）、
+    /// 暂停 / 光照 / 高速三颗按钮、光照面板里强度滑块 + 白天 / 夜晚两行秒读数 + 两行按秒步进按钮
+    /// + 正中央显示相机画面的 <c>SandboxView</c>）、
     /// 投放面板（<c>ParticlePanel</c>）的按钮接线、
     /// Dialogue Canvas（<see cref="DialogueDebugView"/> 的层级）、中文字体资产、屏幕背板。
     /// </summary>
     /// <remarks>
     /// <para><b>幂等</b>：对象一律按名字 / 路径找，缺才建。**已存在对象的 RectTransform、文本内容与其它外观参数
     /// 一概不动**——用户手调过的布局、文案、字号不会被跑一次脚手架抹掉。每次重跑都会做的只有：
-    /// 引用接线、三个按钮的 <c>onClick</c> 持久监听、显示图的「居中 + 底层 + 不吃点击」三条契约、
+    /// 引用接线、三个按钮与光照面板八颗按秒步进按钮的 <c>onClick</c> 持久监听、
+    /// 强度滑块的三个 rect 接线与 0..30 整数档范围（面板契约，不算外观）、
+    /// 显示图的「居中 + 底层 + 不吃点击」三条契约、
     /// 预览 mesh 的尺寸刷新、笔刷叠层的 <c>sortingOrder</c>、相机的编辑态取景、
     /// 两个 Canvas 的渲染模式 / 排序 / 缩放参数（层级契约，见 <see cref="BuildCanvas"/>）与字体套用、
     /// 以及**清掉多余的 <c>EventSystem</c>**（同场景多个会让 UI 全哑，见 <see cref="EnsureEventSystem"/>）。</para>
@@ -74,6 +77,24 @@ namespace TapTap2026.EditorTools
         private static readonly Color HintColor = new Color(0.75f, 0.8f, 0.9f, 1f);
         private static readonly Color BannerTextColor = new Color(0.05f, 0.06f, 0.09f, 1f);
 
+        /// <summary>光照面板行标签相对面板左边的偏移（x）——与场景里手调过的行标签一致；只作用于**新建**对象。</summary>
+        private const float LightRowLabelX = 17f;
+
+        /// <summary>光照面板行标签的颜色（用户手调的深灰，压在浅色面板底上）——只作用于**新建**对象；
+        /// 已存在的行标签一律不动。</summary>
+        private static readonly Color LightLabelColor = new Color(0.275f, 0.275f, 0.275f, 1f);
+
+        /// <summary>强度面板的范围与默认值：**0..30（整数档）**——负数制冷只能在 Inspector 上设，面板不给负档；
+        /// 默认 10。只作用于**新建**的滑块（值只在首次创建时套用，范围与整数档是面板契约、每次都套）。</summary>
+        private const float LightIntensityMin = 0f;
+        private const float LightIntensityMax = 30f;
+        private const float LightIntensityDefault = 10f;
+
+        /// <summary>强度滑块三条轨道的平色（与面板里其它控件的平色风格一致：背景深、填充亮、滑块近白）。</summary>
+        private static readonly Color SliderBackgroundColor = new Color(0.10f, 0.12f, 0.18f, 0.9f);
+        private static readonly Color SliderFillColor = new Color(0.62f, 0.72f, 0.92f, 1f);
+        private static readonly Color SliderHandleColor = new Color(0.95f, 0.96f, 1f, 1f);
+
         [MenuItem("Tools/TapTap2026/Scene UI Setup（补缺失+接线)")]
         public static void Run()
         {
@@ -120,6 +141,7 @@ namespace TapTap2026.EditorTools
             WireDialogue(view, dialogueRoot, font, report);
             WireGameController(scene, FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hud, report);
             WireButtons(FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hudRoot, report);
+            WireLightStepButtons(hud, hudRoot.transform, report);
             WireParticlePanel(FindComponent<ParticleEditor>(scene, "Particle Sandbox"), hudRoot, report);
             EnsureScreenFeed(scene, hudRoot, report);
 
@@ -326,7 +348,7 @@ namespace TapTap2026.EditorTools
         }
 
         /// <summary>
-        /// 场景必须**恰好一个** EventSystem：对话按钮、光照输入框都靠它收事件（组件不再自建）。
+        /// 场景必须**恰好一个** EventSystem：对话按钮、光照滑块都靠它收事件（组件不再自建）。
         /// <para><b>为什么按组件找而不是按名字找</b>：多出来的 EventSystem（从 GameObject 菜单 / MCP 拖进来的
         /// 第二个，名字往往不叫 <c>EventSystem</c>）会静默废掉整个 UI——<see cref="EventSystem.current"/> 只认
         /// 注册表里的第一个，其余既不收指针事件也不再更新选中，表现就是「所有按钮点了没反应」。
@@ -482,21 +504,25 @@ namespace TapTap2026.EditorTools
                     new Vector2(6f, -30f), new Vector2(330f, 30f));
             }
 
-            BuildButton(panel, "PauseButton", "暂停", 0f, report);
-            BuildButton(panel, "LightButton", "光照", 110f, report);
-            BuildButton(panel, "HighSpeedButton", "高速", 220f, report);
+            BuildButton(panel, "PauseButton", "暂停", new Vector2(0f, 0f), new Vector2(100f, 30f), 16f, report);
+            BuildButton(panel, "LightButton", "光照", new Vector2(110f, 0f), new Vector2(100f, 30f), 16f, report);
+            BuildButton(panel, "HighSpeedButton", "高速", new Vector2(220f, 0f), new Vector2(100f, 30f), 16f, report);
         }
 
-        /// <summary>按钮面板里的一颗按钮：背景图（收点击）+ 居中文本；<paramref name="x"/> 是相对面板左边的偏移。</summary>
-        private static void BuildButton(Transform panel, string name, string label, float x, Report report)
+        /// <summary>
+        /// 一颗按钮：背景图（收点击）+ 居中文本；布局相对面板**左上角**
+        /// （<paramref name="anchoredPosition"/> = 相对该角的偏移、<paramref name="size"/> = 尺寸）。
+        /// 布局值只在**首次创建**时套用，已存在的对象一律不动。
+        /// </summary>
+        private static void BuildButton(Transform panel, string name, string label, Vector2 anchoredPosition,
+            Vector2 size, float fontSize, Report report)
         {
             RectTransform rect = EnsureUiChild(panel, name, report, out bool created);
             Image background = EnsureComponent<Image>(rect.gameObject);
             Button button = EnsureComponent<Button>(rect.gameObject);
             if (created)
             {
-                Place(rect, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
-                    new Vector2(x, 0f), new Vector2(100f, 30f));
+                Place(rect, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), anchoredPosition, size);
                 background.color = ButtonColor;
                 button.targetGraphic = background;
             }
@@ -505,12 +531,17 @@ namespace TapTap2026.EditorTools
             if (createdText)
             {
                 Stretch(text.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 2f), new Vector2(-6f, -2f));
-                StyleText(text, 16f, TextAlignmentOptions.Center, Color.white);
+                StyleText(text, fontSize, TextAlignmentOptions.Center, Color.white);
                 text.text = label;
             }
         }
 
-        /// <summary>右上角光照面板：标题 + 三行「标签 + 输入框」，整体挂 CanvasGroup 供 SandboxHud 变灰 / 屏蔽点击。</summary>
+        /// <summary>
+        /// 右上角光照面板：标题 + 一行「标签 + **强度滑块** + 数值读数」+ 两行「标签 + 相位**秒读数**」
+        /// + 两行按秒步进按钮（白天 / 夜晚，各四颗「−5秒 / −1秒 / +1秒 / +5秒」），
+        /// 整体挂 CanvasGroup 供 <see cref="SandboxHud"/> 变灰 / 屏蔽点击。
+        /// 步进按钮的 <c>onClick</c> 由 <see cref="WireLightStepButtons"/> 接成指向 <see cref="SandboxHud"/> 的持久监听。
+        /// </summary>
         private static void BuildLightPanel(Transform root, Report report)
         {
             RectTransform panel = EnsureUiChild(root, "LightPanel", report, out bool createdPanel);
@@ -519,7 +550,7 @@ namespace TapTap2026.EditorTools
             if (createdPanel)
             {
                 Place(panel, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f),
-                    new Vector2(-6f, -4f), new Vector2(240f, 96f));
+                    new Vector2(-6f, -4f), new Vector2(240f, 150f));
                 background.color = DialoguePanelColor;
             }
 
@@ -532,34 +563,105 @@ namespace TapTap2026.EditorTools
                 title.text = "光照";
             }
 
-            BuildLightRow(panel, "IntensityLabel", "Intensity", "强度", 0, report);
-            BuildLightRow(panel, "LitTicksLabel", "LitTicks", "亮刻", 1, report);
-            BuildLightRow(panel, "DarkTicksLabel", "DarkTicks", "暗刻", 2, report);
+            BuildLightSliderRow(panel, "IntensityLabel", "强度", 0, report);
+            BuildLightValueRow(panel, "LitTicksLabel", "LitTicks", "白天", 1, report);
+            BuildLightValueRow(panel, "DarkTicksLabel", "DarkTicks", "夜晚", 2, report);
+
+            BuildLightStepRow(panel, "LitTicksStepLabel", "白天", -100f, report);
+            BuildLightStepRow(panel, "DarkTicksStepLabel", "夜晚", -122f, report);
         }
 
         /// <summary>
-        /// 光照面板的一行：左侧标签（同时也是这一行的容器）+ 输入框（**挂在标签下**、四向拉伸到右侧 ——
-        /// 与场景里调好的层级一致，重跑不会在面板下另建一份平级的输入框）。
-        /// 行顶 y = −26 − 22 × <paramref name="row"/>；布局值只在**首次创建**时套用，已存在的对象一律不动。
+        /// 光照面板的一行行标签（同时也是这一行的容器）：行顶 y = −26 − 22 × <paramref name="row"/>；
+        /// x 取 <see cref="LightRowLabelX"/>、颜色取 <see cref="LightLabelColor"/>（与场景里手调过的行标签一致）；
+        /// 布局与文案只在该标签**首次创建**时套用，已存在的一律不动（与各行的子件同款）。
         /// </summary>
-        private static void BuildLightRow(Transform panel, string labelName, string fieldName, string label, int row, Report report)
+        private static TMP_Text BuildLightRowLabel(Transform panel, string labelName, string label, int row, Report report)
         {
-            float y = -26f - 22f * row;
+            TMP_Text rowLabel = EnsureText(panel, labelName, report, out bool createdLabel);
+            if (createdLabel)
+            {
+                Place(rowLabel.rectTransform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
+                    new Vector2(LightRowLabelX, -26f - 22f * row), new Vector2(40f, 20f));
+                StyleText(rowLabel, 15f, TextAlignmentOptions.Left, LightLabelColor);
+                rowLabel.text = label;
+            }
+
+            return rowLabel;
+        }
+
+        /// <summary>
+        /// 光照面板的**强度行**：行标签 + 强度滑块（<c>Intensity</c>，挂在标签下）+ 右侧数值读数
+        /// （<c>IntensityValue</c>，也挂在标签下）。滑块与读数的布局只在**首次创建**时套用。
+        /// </summary>
+        private static void BuildLightSliderRow(Transform panel, string labelName, string label, int row, Report report)
+        {
+            TMP_Text rowLabel = BuildLightRowLabel(panel, labelName, label, row, report);
+
+            Slider slider = EnsureSlider(rowLabel.transform, "Intensity", report, out bool createdSlider);
+            if (createdSlider)
+            {
+                Place((RectTransform)slider.transform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+                    new Vector2(0f, 0.5f), new Vector2(41f, 0f), new Vector2(120f, 14f));
+            }
+
+            TMP_Text value = EnsureText(rowLabel.transform, "IntensityValue", report, out bool createdValue);
+            if (createdValue)
+            {
+                Place(value.rectTransform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+                    new Vector2(166f, 0f), new Vector2(44f, 16f));
+                StyleText(value, 15f, TextAlignmentOptions.Left, Color.white);
+            }
+        }
+
+        /// <summary>
+        /// 光照面板的一行**相位读数**：行标签 + 秒读数文本（<paramref name="valueName"/>，挂在标签下）。
+        /// 文本的布局与初始内容只在**首次创建**时套用——内容运行期由 <see cref="SandboxHud"/> 每帧写。
+        /// </summary>
+        private static void BuildLightValueRow(Transform panel, string labelName, string valueName, string label,
+            int row, Report report)
+        {
+            TMP_Text rowLabel = BuildLightRowLabel(panel, labelName, label, row, report);
+
+            TMP_Text value = EnsureText(rowLabel.transform, valueName, report, out bool createdValue);
+            if (createdValue)
+            {
+                Place(value.rectTransform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+                    new Vector2(41f, 0f), new Vector2(120f, 20f));
+                StyleText(value, 15f, TextAlignmentOptions.Left, Color.white);
+            }
+        }
+
+        /// <summary>步进按钮的后缀名与标签文本（顺序即摆放顺序，x = 41 + 45 × i）。</summary>
+        private static readonly string[] LightStepSuffixes = { "Minus5", "Minus1", "Plus1", "Plus5" };
+        private static readonly string[] LightStepLabels = { "-5秒", "-1秒", "+1秒", "+5秒" };
+
+        /// <summary>步进行标签名的固定后缀：按钮名前缀 = 标签名去掉它（"LitTicksStepLabel" → "Lit"）。</summary>
+        private const string LightStepLabelSuffix = "TicksStepLabel";
+
+        /// <summary>
+        /// 光照面板的一行步进按钮：左侧标签（同时也是这一行的容器）+ 四颗「−5秒 / −1秒 / +1秒 / +5秒」按钮，
+        /// 按钮相对**标签左上角**横排（x = 41 + 45 × i）。按钮结构与 <see cref="BuildButton"/> 完全同构。
+        /// 布局值只在**首次创建**时套用，已存在的对象一律不动（与 <see cref="BuildLightRowLabel"/> 同款）。
+        /// </summary>
+        private static void BuildLightStepRow(Transform panel, string labelName, string label, float y, Report report)
+        {
+            // 按钮名 = 行前缀（Lit / Dark）+ 步长后缀，行前缀由标签名给出。
+            string prefix = labelName.Substring(0, labelName.Length - LightStepLabelSuffix.Length);
 
             TMP_Text rowLabel = EnsureText(panel, labelName, report, out bool createdLabel);
             if (createdLabel)
             {
                 Place(rowLabel.rectTransform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
-                    new Vector2(10f, y), new Vector2(40f, 20f));
-                StyleText(rowLabel, 15f, TextAlignmentOptions.Left, Color.white);
+                    new Vector2(LightRowLabelX, y), new Vector2(40f, 20f));
+                StyleText(rowLabel, 15f, TextAlignmentOptions.Left, LightLabelColor);
                 rowLabel.text = label;
             }
 
-            TMP_InputField field = EnsureInputField(rowLabel.transform, fieldName, report, out bool createdField);
-            if (createdField)
+            for (int i = 0; i < LightStepSuffixes.Length; i++)
             {
-                Stretch((RectTransform)field.transform, Vector2.zero, Vector2.one,
-                    new Vector2(42f, 0f), new Vector2(180f, 0f));
+                BuildButton(rowLabel.transform, prefix + LightStepSuffixes[i], LightStepLabels[i],
+                    new Vector2(41f + 45f * i, 0f), new Vector2(44f, 20f), 13f, report);
             }
         }
 
@@ -823,7 +925,7 @@ namespace TapTap2026.EditorTools
             return fontAsset;
         }
 
-        /// <summary>把字体套到画布下所有 TMP 文本上（含隐藏面板与输入框的 <c>textComponent</c>）。</summary>
+        /// <summary>把字体套到画布下所有 TMP 文本上（含隐藏面板里的读数）。</summary>
         private static void ApplyFont(GameObject canvasRoot, TMP_FontAsset font)
         {
             TMP_Text[] texts = canvasRoot.GetComponentsInChildren<TMP_Text>(true);
@@ -835,7 +937,7 @@ namespace TapTap2026.EditorTools
 
         // ============================== 接线 ==============================
 
-        /// <summary>HUD 的全部引用：读数、鼠标跟随组、光照面板与三个输入框、结算面板。</summary>
+        /// <summary>HUD 的全部引用：读数、鼠标跟随组、光照面板（强度滑块 + 数值读数 + 两行秒读数）、结算面板。</summary>
         private static void WireHud(SandboxHud hud, GameObject hudRoot, GameObject sandbox, Report report)
         {
             if (hud == null)
@@ -856,9 +958,10 @@ namespace TapTap2026.EditorTools
             SetRef(hudSo, "_reportVerdict", ComponentAt<TMP_Text>(root, "ReportPanel/Verdict"), report);
             SetRef(hudSo, "_lightPanel", ComponentAt<RectTransform>(root, "LightPanel"), report);
             SetRef(hudSo, "_buttonPanel", ComponentAt<RectTransform>(root, "ButtonPanel"), report);
-            SetRef(hudSo, "_lightIntensity", ComponentAt<TMP_InputField>(root, "LightPanel/IntensityLabel/Intensity"), report);
-            SetRef(hudSo, "_lightLitTicks", ComponentAt<TMP_InputField>(root, "LightPanel/LitTicksLabel/LitTicks"), report);
-            SetRef(hudSo, "_lightDarkTicks", ComponentAt<TMP_InputField>(root, "LightPanel/DarkTicksLabel/DarkTicks"), report);
+            SetRef(hudSo, "_lightIntensity", ComponentAt<Slider>(root, "LightPanel/IntensityLabel/Intensity"), report);
+            SetRef(hudSo, "_lightIntensityValue", ComponentAt<TMP_Text>(root, "LightPanel/IntensityLabel/IntensityValue"), report);
+            SetRef(hudSo, "_lightLitTicks", ComponentAt<TMP_Text>(root, "LightPanel/LitTicksLabel/LitTicks"), report);
+            SetRef(hudSo, "_lightDarkTicks", ComponentAt<TMP_Text>(root, "LightPanel/DarkTicksLabel/DarkTicks"), report);
             hudSo.ApplyModifiedPropertiesWithoutUndo();
         }
 
@@ -1033,6 +1136,49 @@ namespace TapTap2026.EditorTools
             report.Wired();
         }
 
+        /// <summary>光照面板八颗按秒步进按钮的接线表：按钮路径（相对 <c>HUD Canvas</c>）、
+        /// <see cref="SandboxHud"/> 上的方法名、秒参数（顺序与摆放一致）。</summary>
+        private static readonly (string ButtonPath, string MethodName, int Seconds)[] LightStepBindings =
+        {
+            ("LightPanel/LitTicksStepLabel/LitMinus5", nameof(SandboxHud.AddLitSeconds), -5),
+            ("LightPanel/LitTicksStepLabel/LitMinus1", nameof(SandboxHud.AddLitSeconds), -1),
+            ("LightPanel/LitTicksStepLabel/LitPlus1", nameof(SandboxHud.AddLitSeconds), 1),
+            ("LightPanel/LitTicksStepLabel/LitPlus5", nameof(SandboxHud.AddLitSeconds), 5),
+            ("LightPanel/DarkTicksStepLabel/DarkMinus5", nameof(SandboxHud.AddDarkSeconds), -5),
+            ("LightPanel/DarkTicksStepLabel/DarkMinus1", nameof(SandboxHud.AddDarkSeconds), -1),
+            ("LightPanel/DarkTicksStepLabel/DarkPlus1", nameof(SandboxHud.AddDarkSeconds), 1),
+            ("LightPanel/DarkTicksStepLabel/DarkPlus5", nameof(SandboxHud.AddDarkSeconds), 5),
+        };
+
+        /// <summary>
+        /// 八颗按秒步进按钮的 <c>onClick</c> 接到 <see cref="SandboxHud.AddLitSeconds"/> /
+        /// <see cref="SandboxHud.AddDarkSeconds"/> 上（整型参数的持久监听，落进场景）。
+        /// **幂等**：先清掉按钮上的全部持久监听再加一条——「清后加」是既有先例（投放面板就是这么做的）。
+        /// </summary>
+        private static void WireLightStepButtons(SandboxHud hud, Transform root, Report report)
+        {
+            if (hud == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < LightStepBindings.Length; i++)
+            {
+                (string path, string methodName, int seconds) = LightStepBindings[i];
+                Button button = ComponentAt<Button>(root, path);
+                if (button == null)
+                {
+                    continue;
+                }
+
+                ClearPersistentListeners(button, report);
+                UnityEventTools.AddIntPersistentListener(button.onClick,
+                    (UnityAction<int>)System.Delegate.CreateDelegate(typeof(UnityAction<int>), hud, methodName), seconds);
+                EditorUtility.SetDirty(button);
+                report.Wired();
+            }
+        }
+
         /// <summary>面板子物体名 → 它选中的投放项显示名（<see cref="ParticleSelectionEntry.DisplayName"/>）。
         /// 固定顺序即 <c>_bindings</c> 的顺序；面板按钮的名字与这个表对不上时报错，不静默跳过。</summary>
         private static readonly (string Button, string SelectionName)[] ParticlePanelBindings =
@@ -1083,7 +1229,8 @@ namespace TapTap2026.EditorTools
             ClearPersistentListeners(ComponentAt<Button>(root, "ParticlePanel/Erease"), report);
         }
 
-        /// <summary>清掉按钮上全部持久监听（面板点击由 <see cref="ParticleSelectionPanel"/> 运行期绑定）。</summary>
+        /// <summary>清掉按钮上的全部持久监听（投放面板的点击由 <see cref="ParticleSelectionPanel"/> 运行期绑定、
+        /// 光照步进按钮由 <see cref="WireLightStepButtons"/> 重新接一条——两者都是「先清后绑」）。</summary>
         private static void ClearPersistentListeners(Button button, Report report)
         {
             if (button == null)
@@ -1100,7 +1247,7 @@ namespace TapTap2026.EditorTools
             if (count > 0)
             {
                 EditorUtility.SetDirty(button);
-                report.Notice("清掉了「" + button.name + "」上 " + count + " 条旧的 onClick 持久监听（点击改由 ParticleSelectionPanel 运行期绑定）。");
+                report.Notice("清掉了「" + button.name + "」上 " + count + " 条旧的 onClick 持久监听。");
             }
         }
 
@@ -1251,29 +1398,69 @@ namespace TapTap2026.EditorTools
         }
 
         /// <summary>
-        /// 光照值输入框：自身 Image（背景）+ TMP_InputField + 子文本（四向拉伸、左右各留 4px）。
-        /// <c>textComponent</c> 每次都重挂——它是接线，不是布局。
+        /// 光照强度滑块：背景 + 填充区（含 Fill）+ 滑块区（含 Handle）三段，全是**纯色 Image、无 sprite**
+        /// （与面板里其它控件的平色风格一致）。三个 rect 接线（<c>fillRect</c> / <c>handleRect</c> / <c>targetGraphic</c>）
+        /// 与范围 / 整数档 / 方向**每次都重挂**——它们是接线与面板契约，不是外观；滑块值只在首次创建时给默认值。
         /// </summary>
-        private static TMP_InputField EnsureInputField(Transform parent, string name, Report report, out bool created)
+        private static Slider EnsureSlider(Transform parent, string name, Report report, out bool created)
         {
             RectTransform rect = EnsureUiChild(parent, name, report, out created);
-            Image background = EnsureComponent<Image>(rect.gameObject);
-            TMP_InputField field = EnsureComponent<TMP_InputField>(rect.gameObject);
+            Slider slider = EnsureComponent<Slider>(rect.gameObject);
+
+            // 背景：铺满整条轨道，收点击（拖动的指针事件由它进到滑块根上）。
+            RectTransform background = EnsureUiChild(rect, "Background", report, out bool createdBackground);
+            Image backgroundImage = EnsureComponent<Image>(background.gameObject);
+            if (createdBackground)
+            {
+                Stretch(background, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+                backgroundImage.color = SliderBackgroundColor;
+            }
+
+            // 填充区：竖直居中留出上下各 1/4，左右按背景内缩（右端让开滑块宽度）。
+            RectTransform fillArea = EnsureUiChild(rect, "Fill Area", report, out bool createdFillArea);
+            if (createdFillArea)
+            {
+                Stretch(fillArea, new Vector2(0f, 0.25f), new Vector2(1f, 0.75f),
+                    new Vector2(3f, 0f), new Vector2(-12f, 0f));
+            }
+
+            RectTransform fill = EnsureUiChild(fillArea, "Fill", report, out bool createdFill);
+            Image fillImage = EnsureComponent<Image>(fill.gameObject);
+            if (createdFill)
+            {
+                Stretch(fill, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+                fillImage.color = SliderFillColor;
+            }
+
+            // 滑块区：左右各让开半个滑块宽度，Handle 才能贴到两条端点上。
+            RectTransform handleArea = EnsureUiChild(rect, "Handle Slide Area", report, out bool createdHandleArea);
+            if (createdHandleArea)
+            {
+                Stretch(handleArea, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f));
+            }
+
+            RectTransform handle = EnsureUiChild(handleArea, "Handle", report, out bool createdHandle);
+            Image handleImage = EnsureComponent<Image>(handle.gameObject);
+            if (createdHandle)
+            {
+                Place(handle, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0.5f, 0.5f),
+                    Vector2.zero, new Vector2(10f, 14f));
+                handleImage.color = SliderHandleColor;
+            }
+
+            slider.fillRect = fill;
+            slider.handleRect = handle;
+            slider.targetGraphic = handleImage;
+            slider.direction = Slider.Direction.LeftToRight;
+            slider.minValue = LightIntensityMin;
+            slider.maxValue = LightIntensityMax;
+            slider.wholeNumbers = true;
             if (created)
             {
-                background.color = ButtonColor;
+                slider.value = LightIntensityDefault;
             }
 
-            RectTransform textRect = EnsureUiChild(rect, "Text", report, out bool createdText);
-            TMP_Text text = EnsureComponent<TextMeshProUGUI>(textRect.gameObject);
-            if (createdText)
-            {
-                Stretch(textRect, Vector2.zero, Vector2.one, new Vector2(4f, 0f), new Vector2(-4f, 0f));
-                StyleText(text, 15f, TextAlignmentOptions.Left, Color.white);
-            }
-
-            field.textComponent = text;
-            return field;
+            return slider;
         }
 
         private static T EnsureComponent<T>(GameObject target) where T : Component

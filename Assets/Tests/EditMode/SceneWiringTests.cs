@@ -111,7 +111,8 @@ namespace TapTap2026.Tests
             string[] fields =
             {
                 "_canvas", "_dialoguePanel", "_portraitImage", "_avatarImage", "_nameText",
-                "_lineText", "_choiceRoot", "_choiceButtonTemplate", "_font",
+                "_lineText", "_choiceRoot", "_choiceButtonTemplate",
+                // _font 刻意不钉：字体属用户的只读区（AGENTS.md 铁律），测试不得断言字体设置。
             };
 
             for (int i = 0; i < fields.Length; i++)
@@ -122,8 +123,7 @@ namespace TapTap2026.Tests
             Assert.IsFalse(((GameObject)Ref(view, "_dialoguePanel")).activeSelf, "对话面板的初始状态是隐藏");
             Assert.IsFalse(((Button)Ref(view, "_choiceButtonTemplate")).gameObject.activeSelf, "选项按钮模板的初始状态是隐藏");
 
-            TMP_Text line = (TMP_Text)Ref(view, "_lineText");
-            Assert.AreEqual(30f, line.fontSize, 0.001f, "台词字号应当沿用旧面板的 30");
+            // 台词字号 / 字体刻意不断言：字体是用户的只读区（AGENTS.md 铁律「任何情况下都不许动字体设置」）。
         }
 
         [Test]
@@ -137,7 +137,7 @@ namespace TapTap2026.Tests
             {
                 "_lightDriver", "_probeText", "_cursorHint", "_cursorSwatch", "_cursorLabel", "_highSpeedStatus",
                 "_reportPanel", "_reportBody", "_reportVerdict", "_lightPanel", "_buttonPanel",
-                "_lightIntensity", "_lightLitTicks", "_lightDarkTicks",
+                "_lightIntensity", "_lightIntensityValue", "_lightLitTicks", "_lightDarkTicks",
             };
 
             for (int i = 0; i < fields.Length; i++)
@@ -149,17 +149,88 @@ namespace TapTap2026.Tests
             Assert.IsFalse(hudRoot.transform.Find("CompletionBanner").gameObject.activeSelf,
                 "通关横幅的初始状态是隐藏");
 
-            TMP_InputField[] inputs =
+            // 强度行：滑块（0..30 整数档）必须挂齐三条 rect 接线。运行时监听在 Awake 里挂、场景里读不到，
+            // 因此这里只断组件与接线，不断持久监听数。
+            Transform intensityTransform = hudRoot.transform.Find("LightPanel/IntensityLabel/Intensity");
+            Assert.IsNotNull(intensityTransform, "找不到「LightPanel/IntensityLabel/Intensity」");
+            Assert.IsNull(intensityTransform.GetComponent<TMP_InputField>(),
+                "光照面板不该再有输入框：强度件应当是滑块");
+
+            Slider intensity = intensityTransform.GetComponent<Slider>();
+            Assert.IsNotNull(intensity, "光照面板的强度件上没有 Slider");
+            Assert.AreSame(intensity, Ref(hud, "_lightIntensity"), "SandboxHud._lightIntensity 没接上强度滑块");
+            Assert.AreEqual(0f, intensity.minValue, 0.0001f, "强度滑块的下限是 0");
+            Assert.AreEqual(30f, intensity.maxValue, 0.0001f, "强度滑块的上限是 30");
+            Assert.IsTrue(intensity.wholeNumbers, "强度滑块只走整数档");
+            Assert.IsNotNull(intensity.fillRect, "强度滑块没接 fillRect");
+            Assert.IsNotNull(intensity.handleRect, "强度滑块没接 handleRect");
+            Assert.IsNotNull(intensity.targetGraphic, "强度滑块没接 targetGraphic");
+
+            // 三个读数（强度数值 / 白天秒 / 夜晚秒）：普通 TMP_Text，且都不再是输入框。
+            (string Path, string Field)[] readouts =
             {
-                (TMP_InputField)Ref(hud, "_lightIntensity"),
-                (TMP_InputField)Ref(hud, "_lightLitTicks"),
-                (TMP_InputField)Ref(hud, "_lightDarkTicks"),
+                ("LightPanel/IntensityLabel/IntensityValue", "_lightIntensityValue"),
+                ("LightPanel/LitTicksLabel/LitTicks", "_lightLitTicks"),
+                ("LightPanel/DarkTicksLabel/DarkTicks", "_lightDarkTicks"),
             };
 
-            for (int i = 0; i < inputs.Length; i++)
+            for (int i = 0; i < readouts.Length; i++)
             {
-                Assert.IsNotNull(inputs[i].GetComponent<Image>(), "光照输入框自身要有 Image 才能收点击");
-                Assert.IsNotNull(inputs[i].textComponent, "光照输入框的 textComponent 没接上");
+                (string path, string field) = readouts[i];
+
+                Transform readoutTransform = hudRoot.transform.Find(path);
+                Assert.IsNotNull(readoutTransform, "找不到「" + path + "」");
+
+                TMP_Text readout = readoutTransform.GetComponent<TMP_Text>();
+                Assert.IsNotNull(readout, "「" + path + "」上没有 TMP_Text");
+                Assert.AreSame(readout, Ref(hud, field), "SandboxHud." + field + " 没接上「" + path + "」");
+                Assert.IsNull(readoutTransform.GetComponent<TMP_InputField>(),
+                    "光照面板不该再有输入框：「" + path + "」");
+            }
+
+            // 光照面板的两行按秒步进按钮：结构齐备（Button + 自身 Image + 子 Label），各**恰好一条**持久监听，
+            // 指向 SandboxHud 的 AddLitSeconds / AddDarkSeconds，整型参数就是该按钮的秒数。
+            (string Path, string MethodName, int Seconds)[] steps =
+            {
+                ("LightPanel/LitTicksStepLabel/LitMinus5", "AddLitSeconds", -5),
+                ("LightPanel/LitTicksStepLabel/LitMinus1", "AddLitSeconds", -1),
+                ("LightPanel/LitTicksStepLabel/LitPlus1", "AddLitSeconds", 1),
+                ("LightPanel/LitTicksStepLabel/LitPlus5", "AddLitSeconds", 5),
+                ("LightPanel/DarkTicksStepLabel/DarkMinus5", "AddDarkSeconds", -5),
+                ("LightPanel/DarkTicksStepLabel/DarkMinus1", "AddDarkSeconds", -1),
+                ("LightPanel/DarkTicksStepLabel/DarkPlus1", "AddDarkSeconds", 1),
+                ("LightPanel/DarkTicksStepLabel/DarkPlus5", "AddDarkSeconds", 5),
+            };
+
+            for (int i = 0; i < steps.Length; i++)
+            {
+                (string path, string methodName, int seconds) = steps[i];
+
+                Transform buttonTransform = hudRoot.transform.Find(path);
+                Assert.IsNotNull(buttonTransform, "找不到步进按钮「" + path + "」");
+
+                Button button = buttonTransform.GetComponent<Button>();
+                Assert.IsNotNull(button, "「" + path + "」上没有 Button（点击靠自身 Image 收）");
+                Assert.IsNotNull(buttonTransform.GetComponent<Image>(), "「" + path + "」上没有背景 Image 收点击");
+
+                Transform labelTransform = buttonTransform.Find("Label");
+                Assert.IsNotNull(labelTransform, "「" + path + "」下没有 Label 子对象");
+                Assert.IsNotNull(labelTransform.GetComponent<TMP_Text>(), "「" + path + "/Label」上没有 TMP_Text");
+
+                Assert.AreEqual(1, button.onClick.GetPersistentEventCount(),
+                    "「" + path + "」上应当恰好一条 onClick 持久监听");
+                Assert.AreSame(hud, button.onClick.GetPersistentTarget(0),
+                    "「" + path + "」的监听目标应当是 HUD Canvas 上的 SandboxHud");
+                Assert.AreEqual(methodName, button.onClick.GetPersistentMethodName(0),
+                    "「" + path + "」的监听方法应当是 SandboxHud." + methodName);
+
+                SerializedProperty calls = new SerializedObject(button)
+                    .FindProperty("m_OnClick.m_PersistentCalls.m_Calls");
+                Assert.IsNotNull(calls, "「" + path + "」上读不到 onClick 的持久监听数组");
+                Assert.AreEqual(1, calls.arraySize, "「" + path + "」的持久监听数组应当只有一条");
+                Assert.AreEqual(seconds,
+                    calls.GetArrayElementAtIndex(0).FindPropertyRelative("m_Arguments.m_IntArgument").intValue,
+                    "「" + path + "」的整型监听参数应当是 " + seconds + " 秒");
             }
         }
 

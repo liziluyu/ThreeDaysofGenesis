@@ -640,20 +640,288 @@ namespace TapTap2026.Tests
             Assert.Throws<System.ArgumentNullException>(() => field.Step(null));
         }
 
+        // ==================== 光照的每列缓存：挡光顶 / 光路湿度增量维护 ====================
+
+        /// <summary>
+        /// 挡光顶的抬升 / 下降 / 露出：世界在写入后增量维护每列缓存，施热因此始终落在**当前**最上方的固/液格；
+        /// 撤掉上顶会露出下面那层挡光格，整列都变成气体时一格都不受光。
+        /// </summary>
+        [Test]
+        public void Light_ColumnCacheFollowsTheTopBlockerRisingFallingAndBeingRevealed()
+        {
+            ParticleWorld world = LightWorld(1, 4);
+
+            Assert.AreEqual(ColumnLightIntensity, LightHeatDelta(world, 0, 0), 1e-3f, "光落在唯一的地表格上");
+
+            // 抬顶：在更高处放一块固体，光改打到新顶，旧地表被挡住。
+            world.Set(0, 2, 2);
+            Assert.AreEqual(2, ReferenceBlockerY(world, 0), "挡光顶抬到 y=2");
+            Assert.AreEqual(ColumnLightIntensity, LightHeatDelta(world, 0, 2), 1e-3f, "施热跟到新顶");
+            Assert.AreEqual(0f, LightHeatDelta(world, 0, 0), 1e-3f, "被挡在下面的旧地表不再受光");
+
+            // 降顶：撤掉上面那块 → 露出下面的挡光格。
+            world.Clear(0, 2);
+            Assert.AreEqual(0, ReferenceBlockerY(world, 0), "挡光顶回到 y=0");
+            Assert.AreEqual(ColumnLightIntensity, LightHeatDelta(world, 0, 0), 1e-3f, "撤掉上顶后露出下面的地表");
+            Assert.AreEqual(0f, LightHeatDelta(world, 0, 2), 1e-3f, "原顶位置已是气体，不受光");
+
+            // 整列都是气体：没有挡光格，一格都不注入热量（与旧行为一致）。
+            world.Clear(0, 0);
+            Assert.AreEqual(-1, ReferenceBlockerY(world, 0));
+            float before = ColumnHeatTotal(world, 0);
+            world.StepLogic();
+            Assert.AreEqual(before, ColumnHeatTotal(world, 0), 1e-3f, "全列无挡光格：光不落在任何格上");
+            AssertColumnThicknessMatchesLightPath(world);
+        }
+
+        /// <summary>
+        /// 同列内的类型换位 / 换型：<see cref="ParticleWorld.Swap"/> 把挡光格在列内搬家、<see cref="ParticleWorld.SetPhase"/>
+        /// 把最上面的气体就地变成固体，两者都必须让缓存跟着走（挡光顶与光路湿度）。
+        /// </summary>
+        [Test]
+        public void Light_ColumnCacheFollowsTypeSwapsWithinTheColumn()
+        {
+            ParticleWorld world = LightWorld(1, 4);
+            world.Humidity.Set(0, 3, 0.25f); // 光路（顶格）上的云
+
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-4f,
+                "尚未挂到世界（没跑过逻辑帧）时恒为 0 的旧契约");
+
+            world.StepLogic(); // 建缓存
+            float attenuated = ColumnLightIntensity
+                * (float)System.Math.Exp(-LightController.DefaultCloudExtinction * 0.25f);
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(0), 1e-4f, "光路上的湿度计入列云厚");
+            Assert.AreEqual(attenuated, LightHeatDelta(world, 0, 0), 1e-3f, "受光处按光路云量衰减");
+
+            // 同列换位：固体从 y=0 搬到 y=1（原位换成气体）。光路湿度没动，挡光顶跟着物质上去。
+            world.Swap(0, 0, 0, 1);
+            Assert.AreEqual(1, ReferenceBlockerY(world, 0), "挡光顶跟物质走");
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(0), 1e-4f, "云还在光路上");
+            Assert.AreEqual(attenuated, LightHeatDelta(world, 0, 1), 1e-3f, "光打在新位置");
+            Assert.AreEqual(0f, LightHeatDelta(world, 0, 0), 1e-3f, "原位只剩气体，不受光");
+
+            // 换型：最上面的气体就地变固体（相变），顶升到 y=3、其水汽被推给下方气体（不再在光路上）。
+            world.SetPhase(0, 3, 2);
+            Assert.AreEqual(3, ReferenceBlockerY(world, 0), "相变后的固体成为新顶");
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-4f, "水汽已退出光路（新顶之上无湿度）");
+            Assert.AreEqual(ColumnLightIntensity, LightHeatDelta(world, 0, 3), 1e-3f, "新顶之上无云，拿满光照");
+            AssertColumnThicknessMatchesLightPath(world);
+        }
+
+        /// <summary>
+        /// 只算**光路**：顶棚（中间那层挡光格）之下的洞穴湿度不遮光，顶棚之上的云才遮光。
+        /// </summary>
+        [Test]
+        public void Light_CloudThicknessCountsOnlyTheLightPathAboveTheBlocker()
+        {
+            ParticleWorld world = LightWorld(1, 4);
+            world.Set(0, 2, 2);                       // 顶棚：y=1 因此成为洞穴
+            world.Humidity.Set(0, 1, 0.25f);          // 洞穴里的湿气
+            world.Humidity.Set(0, 3, 0.25f);          // 顶棚之上的云
+
+            world.StepLogic();
+
+            Assert.AreEqual(2, ReferenceBlockerY(world, 0), "光打在顶棚上");
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(0), 1e-4f, "洞穴湿度不计入光路");
+            float expected = ColumnLightIntensity
+                * (float)System.Math.Exp(-LightController.DefaultCloudExtinction * 0.25f);
+            Assert.AreEqual(expected, LightHeatDelta(world, 0, 2), 1e-3f, "顶棚只被自己上面的云衰减");
+            Assert.AreEqual(0f, LightHeatDelta(world, 0, 0), 1e-3f, "洞穴下的地表不受光");
+        }
+
+        /// <summary>
+        /// 湿度的位置口径：光路（挡光顶**之上**）的改动进出列云厚；挡光顶自身及其下方（洞穴 / 地下水）的改动不影响。
+        /// </summary>
+        [Test]
+        public void Light_ColumnCacheIgnoresHumidityAtOrBelowTheBlocker()
+        {
+            ParticleWorld world = LightWorld(1, 5); // y=0 是地表，y=1..4 是大气
+            world.StepLogic();                     // 建缓存（挡光顶 = y=0）
+
+            world.Humidity.Set(0, 3, 0.25f);       // 光路上
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(0), 1e-4f, "光路上的湿度计入");
+
+            world.Humidity.Set(0, 0, 0.25f);       // 挡光格自身：口径上是「顶」而非「顶之上」
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(0), 1e-4f, "挡光格自身的湿度不遮光");
+
+            world.Humidity.Set(0, 1, 0.25f);       // 顶之上（低处但仍在光路上）
+            Assert.AreEqual(0.5f, world.Light.GetCloudThickness(0), 1e-4f, "顶之上的湿度都计入");
+            AssertColumnThicknessMatchesLightPath(world);
+
+            // 抬顶到 y=4（那格没有湿度，不留疏散歧义）：y1 / y3 的湿度全部退出光路。
+            world.Set(0, 4, 2);
+            Assert.AreEqual(4, ReferenceBlockerY(world, 0), "挡光顶抬到 y=4");
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-4f, "新顶之上没有湿度");
+            AssertColumnThicknessMatchesLightPath(world);
+
+            // 降顶回 y=0：中间那几格的湿度重新回到光路上，逐格精确补回。
+            world.Clear(0, 4);
+            Assert.AreEqual(0, ReferenceBlockerY(world, 0), "挡光顶回落地表");
+            Assert.AreEqual(0.5f, world.Light.GetCloudThickness(0), 1e-4f, "y=1 与 y=3 的湿度重新计为云");
+            AssertColumnThicknessMatchesLightPath(world);
+        }
+
+        /// <summary>
+        /// 跨列换位：云跟着气体搬家、挡光格搬到邻列，两列的缓存都要跟着变（含挡光格参与换位时对那一列的重扫）。
+        /// </summary>
+        [Test]
+        public void Light_ColumnCacheFollowsSwapsAcrossColumns()
+        {
+            ParticleWorld world = LightWorld(2, 3);
+            world.Humidity.Set(0, 2, 0.25f); // 左列顶上的云
+            world.StepLogic();
+
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(0), 1e-4f);
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(1), 1e-4f, "右列无云");
+
+            // 两格都是气体：云随风整体搬到右列。
+            world.Swap(0, 2, 1, 2);
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-4f, "云跟着气体走了");
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(1), 1e-4f, "落在右列顶上");
+            AssertColumnThicknessMatchesLightPath(world);
+
+            // 挡光格跨界换位：左列在 y=1 放一块固体，再与右列 y=1 的空气互换 ——
+            // 固体搬到右列（右列顶抬到 y=1），左列拿回空气（顶回落到地表）；云一直在右列光路的 y=2 上。
+            world.Set(0, 1, 2);
+            world.StepLogic();
+            Assert.AreEqual(1, ReferenceBlockerY(world, 0), "左列加了固体，顶抬到 y=1");
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(1), 1e-4f, "云在右列光路上");
+
+            world.Swap(0, 1, 1, 1);
+            Assert.AreEqual(0, ReferenceBlockerY(world, 0), "左列顶回落到地表");
+            Assert.AreEqual(1, ReferenceBlockerY(world, 1), "右列顶抬到换来的固体");
+            Assert.AreEqual(0f, world.Light.GetCloudThickness(0), 1e-4f, "左列顶之上没有湿度");
+            Assert.AreEqual(0.25f, world.Light.GetCloudThickness(1), 1e-4f, "云仍在新顶之上，照旧遮光");
+            AssertColumnThicknessMatchesLightPath(world);
+        }
+
+        /// <summary>
+        /// 湿度输送与降雨也必须把改动报到缓存：多逻辑帧后逐列比对公开读数与独立 oracle（这是缓存契约的核心）。
+        /// </summary>
+        [Test]
+        public void Light_ColumnCacheStaysExactThroughHumidityTransportAndRain()
+        {
+            ParticleWorld world = new ParticleWorld(6, 6, 7u);
+            for (int x = 0; x < 6; x++)
+            {
+                world.Set(x, 0, ParticleIds.Stone); // 不透光的地板
+                for (int y = 1; y < 6; y++)
+                {
+                    world.Set(x, y, ParticleIds.Atmosphere);
+                }
+            }
+
+            // 一片水汽（总量 < 1，避免首帧就碰并成雨；输送与抬升会把它摊开、部分上冻降雨）。
+            for (int x = 1; x <= 3; x++)
+            {
+                for (int y = 4; y <= 5; y++)
+                {
+                    world.Humidity.Set(x, y, 0.2f);
+                }
+            }
+
+            world.Heat.Conductivity = 0f;
+            world.Heat.VoidHeatLoss = 0f;
+            world.Heat.RadiativeLoss = 0f;
+            world.Heat.AirThermalConductivity = 0f;
+            world.Light.Enabled = true;
+            world.Light.LitTicks = 100000;
+            world.Light.DarkTicks = 0;
+            world.Light.Intensity = ColumnLightIntensity;
+
+            for (int tick = 0; tick < 40; tick++)
+            {
+                world.StepLogic();
+                AssertColumnThicknessMatchesLightPath(world);
+            }
+        }
+
         private const float ColumnLightIntensity = 5f;
+
+        /// <summary>
+        /// 受光测试世界：每列底格是静态地表（<see cref="TestStaticParticle"/>，光照吸收率 1），上面全是大气；
+        /// 光照打开、其余一切热量 / 湿度输运关掉，断言因此只反映「光照 × 光路云量」。
+        /// </summary>
+        private static ParticleWorld LightWorld(int width, int height)
+        {
+            ParticleType[] types = TestTables.Build(new AtmosphereParticle(), new TestStaticParticle());
+            var world = new ParticleWorld(width, height, 7u, types);
+            for (int x = 0; x < width; x++)
+            {
+                world.Set(x, 0, 2); // 地表
+                for (int y = 1; y < height; y++)
+                {
+                    world.Set(x, y, 1); // 大气
+                }
+            }
+
+            IsolateLighting(world);
+            return world;
+        }
 
         /// <summary>1 列 3 高的受光世界：底格是地表（静态固体、热容 1），上面两格空气；两格空气各含湿度 humidityPerAirCell。</summary>
         private static ParticleWorld LightingColumn(float humidityPerAirCell)
         {
-            ParticleType[] types = TestTables.Build(new AtmosphereParticle(), new TestStaticParticle());
-            var world = new ParticleWorld(1, 3, 7u, types);
-            world.Set(0, 0, 2); // 地表（TestStaticParticle）
-            world.Set(0, 1, 1); // 大气
-            world.Set(0, 2, 1);
+            ParticleWorld world = LightWorld(1, 3);
             world.Humidity.Set(0, 1, humidityPerAirCell);
             world.Humidity.Set(0, 2, humidityPerAirCell);
-            IsolateLighting(world);
             return world;
+        }
+
+        /// <summary>参考真值（**独立 oracle**）：按公开口径逐格扫描出的该列挡光顶（Solid | Liquid）；-1 = 全列无挡光格。</summary>
+        private static int ReferenceBlockerY(ParticleWorld world, int x)
+        {
+            for (int y = world.Height - 1; y >= 0; y--)
+            {
+                if (ParticleRules.BlocksLight(world, x, y))
+                {
+                    return y;
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>参考真值：该列**光路**（挡光顶之上）的湿度总和。</summary>
+        private static float ReferenceCloudThickness(ParticleWorld world, int x)
+        {
+            float thickness = 0f;
+            for (int y = world.Height - 1; y > ReferenceBlockerY(world, x); y--)
+            {
+                thickness += world.Humidity.Get(x, y);
+            }
+
+            return thickness;
+        }
+
+        /// <summary>逐列比对公开读数 <see cref="LightController.GetCloudThickness"/> 与独立 oracle——缓存的唯一契约就是这个口径。</summary>
+        private static void AssertColumnThicknessMatchesLightPath(ParticleWorld world)
+        {
+            for (int x = 0; x < world.Width; x++)
+            {
+                Assert.AreEqual(ReferenceCloudThickness(world, x), world.Light.GetCloudThickness(x), 1e-4f,
+                    $"第 {x} 列的列云厚必须等于光路上的湿度总和");
+            }
+        }
+
+        /// <summary>本刻该格**由光照新注入**的热量 = StepLogic 前后的 Q 差（其它热输运已在 <see cref="IsolateLighting"/> 里关掉）。</summary>
+        private static float LightHeatDelta(ParticleWorld world, int x, int y)
+        {
+            float before = world.Heat.GetHeat(x, y);
+            world.StepLogic();
+            return world.Heat.GetHeat(x, y) - before;
+        }
+
+        /// <summary>整列热量之和（用于断言「全列都是气体 ⇒ 一格都不受光」）。</summary>
+        private static float ColumnHeatTotal(ParticleWorld world, int x)
+        {
+            float total = 0f;
+            for (int y = 0; y < world.Height; y++)
+            {
+                total += world.Heat.GetHeat(x, y);
+            }
+
+            return total;
         }
 
         /// <summary>关掉除光照以外的一切热量/湿度输运，让断言只反映「光照 × 云层透过率」。</summary>

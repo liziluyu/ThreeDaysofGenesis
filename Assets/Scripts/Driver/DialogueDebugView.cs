@@ -23,7 +23,8 @@ namespace TapTap2026.Game
         [Tooltip("留空则自动取同物体上的 DialogueController（用于选项按钮回调）。")]
         [SerializeField] private DialogueController _controller;
 
-        [Tooltip("TMP 字体资产（中文字体）。留空 = 中文显示成豆腐块。")]
+        [Tooltip("历史字段（不再被本组件使用）：旧实现用它把整张对话画布的字体统一覆盖掉。" +
+                 "字体归用户手工维护（只读区），场景里每个 TMP_Text 各自设字体——本组件不再读写字体，此字段仅为保住场景里的原有接线。")]
         [SerializeField] private TMP_FontAsset _font;
 
         [Tooltip("对话 UI 的根画布（overlay）。它的显隐 = 是否在对话：不在对话时整根关闭。")]
@@ -70,15 +71,9 @@ namespace TapTap2026.Game
                     "请在场景里放置 EventSystem + StandaloneInputModule。");
             }
 
-            if (_font != null && _canvas != null)
-            {
-                // 场景里摆好的 TMP 组件不会自动认字体资产，接线时统一套一遍（含隐藏面板下的那些）。
-                TMP_Text[] texts = _canvas.GetComponentsInChildren<TMP_Text>(true);
-                for (int i = 0; i < texts.Length; i++)
-                {
-                    texts[i].font = _font;
-                }
-            }
+            // 刻意**不**在这里套字体：字体属用户的只读区（AGENTS.md 铁律「任何情况下都不许动字体设置」），
+            // 场景里每个 TMP_Text 各自设好的字体就是最终结果，运行期不再覆盖。
+            // （旧实现会把整张对话画布的字体统一改成 _font，会抹平逐组件的字体设置。）
 
             // 运行初态：**整张画布先关掉**（还没在对话），面板与选项模板也各自收起——
             // 场景里因此可以临时把它们激活来做可视化编辑，运行时切回由这里保证。

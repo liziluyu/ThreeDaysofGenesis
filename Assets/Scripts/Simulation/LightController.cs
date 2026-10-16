@@ -5,6 +5,7 @@ namespace TapTap2026.Simulation
     /// <summary>
     /// 光照控制器：一个按时序通断的光源，照亮时向**每一列最上面的非气体粒子**（固体或液体——光打到水面就停）注入热量。
     /// 纯 C#、无 Unity 依赖，由 <see cref="ParticleWorld.StepLogic"/> 每逻辑帧驱动一次（与模拟同频、确定性）。
+    /// 每列「挡光顶」与「光路湿度」以增量缓存维护（见 <see cref="Attach"/>），施热因此是 O(宽) 的。
     /// </summary>
     /// <remarks>
     /// <para>通断是**占空比循环**：<see cref="Enabled"/> 打开后，先亮相位持续 <see cref="LitTicks"/> 刻，
@@ -14,14 +15,18 @@ namespace TapTap2026.Simulation
     /// <item><see cref="DarkTicks"/> = 0：一直照亮（只有白天）。</item>
     /// <item><see cref="Enabled"/> = false：总开关关闭，不注入热量、相位也不推进。</item>
     /// </list>
-    /// <para>照亮时对每个 x 从 (x, Height-1) 向下扫，遇到第一个带 <see cref="ParticleTags.Solid"/> 或
-    /// <see cref="ParticleTags.Liquid"/> 标签的格，就往那格加 <see cref="Intensity"/> 的热量 Q
+    /// <para>照亮时对每个 x 向该列**最上方的固/液格**（增量维护的「挡光顶」）加 <see cref="Intensity"/> 的热量 Q
     /// （不是温度——升温多少还取决于该物质的热容）。光只穿过气体：海洋是表面被晒热、表面蒸发，
     /// 而不是被穿透过热海底。</para>
+    /// <para><b>每列缓存**：挡光顶与「光路上的湿度」都是增量维护的——世界在 <c>Set</c> / <c>SetPhase</c>
+    /// （类型换掉）与 <c>Swap</c>（两格换位）之后通知本控制器，湿度场在每次真值改动后报增量，因此施热是
+    /// O(宽) 的逐列循环，**没有任何竖直扫描**；只有缓存顶格被抹掉时才重扫那一列（罕见）。首次挂到世界上时
+    /// 建一次缓存（O(W·H)）。</para>
     /// <para>**材料光照吸收率**：到达格子的能量还要乘上该材料的光照吸收率
     /// <see cref="ParticleTypeInfo.LightAbsorption"/> ∈ [0,1]（1 = 完全吸收；0 = 全反射、光照不升温）。
     /// 用来表达「浅色 / 反光的表面（如草）在阳光下升温更慢」——草取 0.8（略减弱）。</para>
-    /// <para>**云会遮光**：施热时自顶向下逐格累加**光路上**的湿度（遇第一个固/液格即止），
+    /// <para>**云会遮光**：施热用每列缓存好的**光路**湿度（该列最上方挡光格之上的湿度总和，
+    /// 由每次湿度真值改动后的增量通知维护），
     /// 按 Beer–Lambert 衰减，到达地表的能量是
     /// <c>Intensity × exp(-<see cref="CloudExtinction"/> × 光路湿度)</c>（即 <see cref="GetCloudTransmittance"/>）。
     /// 因此云厚的那一列地表凉、云薄的那一列地表热——这给水循环加了一条负反馈
@@ -44,6 +49,13 @@ namespace TapTap2026.Simulation
         private float _cloudExtinction = DefaultCloudExtinction;
         private ParticleWorld _world;
         private int _elapsed;
+
+        // ── 每列增量缓存 ──
+        // 与 ParticleWorld 网格同宽（宽 / 高不变，故一次分配、随世界挂载复用；换世界尺寸不同则重建）。
+        private int[] _columnTops;         // 每列**最上方挡光格**（Solid | Liquid）的 y；-1 = 该列全是气体 / 空
+        private float[] _columnThickness;  // 每列**光路上**的湿度总量 = Σ humidity(y > _columnTops[x])
+        private int _cachedWidth;          // 缓存当前的列数（0 = 尚未建缓存，对应 _world == null）
+        private int _cachedHeight;         // 缓存当前的高度（换世界尺寸时用于重建）
 
         /// <summary>是否光照（总开关）。关闭时不注入热量，相位也不推进。</summary>
         public bool Enabled
@@ -86,8 +98,9 @@ namespace TapTap2026.Simulation
 
         /// <summary>
         /// 第 <paramref name="x"/> 列的**云层厚度** = 光从网格顶竖直下落到第一个固/液格这一段路上
-        /// 累加的湿度（只有非固非液格持有湿度，所以就是光程上的云量）。按需计算；越界 / 尚未
-        /// <see cref="Step"/> 过返回 0。
+        /// 累加的湿度（只有非固非液格持有湿度，所以就是光程上的云量）。
+        /// 缓存建好（见 <see cref="Attach"/>）之后是 O(1) 读；**尚未挂到世界**上（从未 <see cref="Step"/> 过）时
+        /// 与旧行为一致返回 0，越界同样返回 0。
         /// </summary>
         public float GetCloudThickness(int x)
         {
@@ -97,6 +110,12 @@ namespace TapTap2026.Simulation
                 return 0f;
             }
 
+            if (_columnTops != null && _cachedWidth == world.Width && _cachedHeight == world.Height)
+            {
+                return _columnThickness[x];
+            }
+
+            // 未挂世界：按需扫描（与缓存建立时同一口径）。
             int width = world.Width;
             HumidityField humidity = world.Humidity;
             float thickness = 0f;
@@ -224,7 +243,229 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>把相位拨回起点（下一个逻辑帧从亮相位开始）。</summary>
+        /// <summary>
+        /// 把本控制器挂到 <paramref name="world"/> 上并建缓存（O(W·H)，只此一次）。
+        /// 由 <see cref="Step"/> 在首次（或换了世界时）调用；缓存建好之后，类型与湿度的每一次改动都由世界 /
+        /// 湿度场增量通知（<see cref="OnTypesReplaced"/> / <see cref="OnColumnsSwapped"/> / <see cref="OnHumidityChanged"/>），
+        /// <see cref="Step"/> 自身不再做任何扫描。
+        /// </summary>
+        /// <remarks>
+        /// **缓存建立必须基于世界加载完成之后的状态**（<see cref="ParticleWorld"/> 的构造 / <c>Set</c> 都早于
+        /// 第一次 <c>StepLogic</c>）。同一世界重复调用是空操作。
+        /// </remarks>
+        /// <exception cref="ArgumentNullException"><paramref name="world"/> 为 null。</exception>
+        public void Attach(ParticleWorld world)
+        {
+            if (world == null)
+            {
+                throw new ArgumentNullException(nameof(world));
+            }
+
+            if (ReferenceEquals(_world, world) && _columnTops != null)
+            {
+                return; // 同一世界重复挂载是空操作：缓存一直由增量通知保持精确。
+            }
+
+            _world = world;
+            int width = world.Width;
+            int height = world.Height;
+            _cachedWidth = width;
+            _cachedHeight = height;
+            if (_columnTops == null || _columnTops.Length != width)
+            {
+                _columnTops = new int[width];
+                _columnThickness = new float[width];
+            }
+
+            HumidityField humidity = world.Humidity;
+            for (int x = 0; x < width; x++)
+            {
+                float thickness = 0f;
+                int top = -1;
+                for (int y = height - 1; y >= 0; y--)
+                {
+                    if (ParticleRules.BlocksLight(world, x, y))
+                    {
+                        top = y;
+                        break;
+                    }
+
+                    thickness += humidity.GetAt(y * width + x);
+                }
+
+                _columnTops[x] = top;
+                _columnThickness[x] = thickness;
+            }
+        }
+
+        /// <summary>
+        /// 世界刚把 (x,y) 的类型由 <paramref name="oldTypeId"/> 换成 <paramref name="newTypeId"/>（写完格子后调用）。
+        /// 只维护该列缓存：新格挡光且高过当前顶 ⇒ O(1) 抬顶；原顶被抹成不挡光 ⇒ 罕见地重扫该列（摊销 O(1)）。
+        /// 被抬 / 被抹过的新顶之上的光路湿度随之加减，因此这一步是**精确**的，不需要标脏。
+        /// </summary>
+        public void OnTypesReplaced(ushort oldTypeId, ushort newTypeId, int x, int y)
+        {
+            if (_columnTops == null || (uint)x >= (uint)_cachedWidth || (uint)y >= (uint)_cachedHeight)
+            {
+                return;
+            }
+
+            bool wasBlocking = BlocksLight(oldTypeId);
+            bool nowBlocking = BlocksLight(newTypeId);
+            int currentTop = _columnTops[x];
+
+            if (nowBlocking)
+            {
+                // 新格挡光：只有高于当前顶（或本列原本无顶）才改变「光打到哪一格」，因而只需 O(1) 移位。
+                if (currentTop < 0 || y > currentTop)
+                {
+                    SetTop(x, y);
+                }
+
+                return;
+            }
+
+            // 新格不挡光：只有它原本就是这一列的顶，才需要重扫（否则顶上那格还在，光路不变）。
+            if (wasBlocking && currentTop == y)
+            {
+                Rescan(x);
+            }
+        }
+
+        /// <summary>
+        /// 世界刚把 (x0,y0) 与 (x1,y1) 两格整体换位（写完格子与湿度之后调用）。
+        /// 被移动的挡光格可能改变**光路本身**，故受影响的两列（同行时是同一列，只处理一次）整体重扫；
+        /// 两格都不挡光时换位只是把湿度在两格之间搬了家，那由湿度场的增量通知
+        /// （<see cref="OnHumidityChanged"/>）按新旧值精确平移，这里无需动作。
+        /// </summary>
+        public void OnColumnsSwapped(ushort type0, ushort type1, int x0, int y0, int x1, int y1)
+        {
+            if (_columnTops == null)
+            {
+                return;
+            }
+
+            bool movedBlocker = BlocksLight(type0) || BlocksLight(type1);
+            HandleSwapColumn(x0, movedBlocker);
+            if (x1 != x0)
+            {
+                HandleSwapColumn(x1, movedBlocker);
+            }
+        }
+
+        /// <summary>
+        /// 湿度场刚把 <paramref name="index"/> 处的湿度改了 <paramref name="delta"/>（提交后调用）。
+        /// 只有该格在**光路上**（高于该列缓存的挡光顶）才平移该列的和——挡光顶及其下方的湿度不参与光路，
+        /// 调温器的缓存因此保持精确。越界 / 未挂世界时是空操作。
+        /// </summary>
+        public void OnHumidityChanged(int index, float delta)
+        {
+            int width = _cachedWidth;
+            if (_columnTops == null || width <= 0 || (uint)index >= (uint)(width * _cachedHeight))
+            {
+                return;
+            }
+
+            int y = index / width;
+            int x = index - y * width;
+
+            // 光路 = 挡光顶**之上**（含顶格本身：顶格是气体 / 空时它也在光路上；挡光格自身湿不参与）。
+            if (y > _columnTops[x])
+            {
+                _columnThickness[x] += delta;
+            }
+        }
+
+        /// <summary>换位后单列的缓存维护。<paramref name="movedBlocker"/> 为 true（任一换位格挡光）时无法从增量推出新光路，重扫。</summary>
+        private void HandleSwapColumn(int x, bool movedBlocker)
+        {
+            // 有挡光格参与换位：光路本身可能改变（谁挡光、挡光顶之上有哪些湿度都变了），增量推不出来 ⇒ 重扫该列。
+            // 两格都不挡光时换位只是把湿度在两格之间搬了家 —— 那由湿度场的换位通知（<see cref="OnHumidityChanged"/>）
+            // 按新旧值精确平移，这里无需动作。
+            if (movedBlocker)
+            {
+                Rescan(x);
+            }
+        }
+
+        /// <summary>
+        /// 把该列的挡光顶抬 / 降到 <paramref name="y"/>：只结算**原顶与新顶之间**那几格对光路的影响
+        /// （光路是「顶之上」的集合，两个集合的差就是这一段），因此抬顶 / 降顶都不是整列重扫。
+        /// </summary>
+        private void SetTop(int x, int y)
+        {
+            ParticleWorld world = _world;
+            int oldTop = _columnTops[x];
+            float thickness = _columnThickness[x];
+
+            if (y > oldTop)
+            {
+                // 新顶更高（含原本无顶的 -1）：原顶与它之间（含新顶自身）原本在光路上，现在被挡在外面。
+                for (int h = oldTop + 1; h <= y; h++)
+                {
+                    thickness -= world.Humidity.GetAt(h * world.Width + x);
+                }
+            }
+            else
+            {
+                // 新顶更低：新顶与旧顶之间（含旧顶——挡光格不持湿度，那一项恒为 0）重新回到光路上。
+                for (int h = y + 1; h <= oldTop; h++)
+                {
+                    thickness += world.Humidity.GetAt(h * world.Width + x);
+                }
+            }
+
+            _columnTops[x] = y;
+            _columnThickness[x] = thickness;
+        }
+
+        /// <summary>重扫第 <paramref name="x"/> 列：从顶向下找最上方挡光格，并累加它之上的湿度（挡光顶被抹掉时才会走到）。</summary>
+        private void Rescan(int x)
+        {
+            ParticleWorld world = _world;
+            if (world == null)
+            {
+                return;
+            }
+
+            int width = world.Width;
+            HumidityField humidity = world.Humidity;
+            int top = -1;
+            float thickness = 0f;
+            for (int y = world.Height - 1; y >= 0; y--)
+            {
+                if (ParticleRules.BlocksLight(world, x, y))
+                {
+                    top = y;
+                    break;
+                }
+
+                thickness += humidity.GetAt(y * width + x);
+            }
+
+            _columnTops[x] = top;
+            _columnThickness[x] = thickness;
+        }
+
+        /// <summary>typeId 是否挡光（Solid / Liquid）。空气与越界 id 为 false——写入路径上只有这些 id 会出现。</summary>
+        private bool BlocksLight(ushort typeId)
+        {
+            if (typeId == ParticleRegistry.AirTypeId || _world == null)
+            {
+                return false;
+            }
+
+            ParticleType[] types = _world.Types;
+            if (typeId >= types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = types[typeId];
+            return type != null && (type.Info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0;
+        }
+
+        /// <summary>把相位拨回起点（下一个逻辑帧从亮相位开始）。不触碰每列缓存——缓存描述的是**世界**的状态。</summary>
         public void Reset()
         {
             _elapsed = 0;
@@ -242,7 +483,7 @@ namespace TapTap2026.Simulation
                 throw new ArgumentNullException(nameof(world));
             }
 
-            _world = world; // 供 GetCloudThickness / GetCloudTransmittance 按需扫描，不参与施热。
+            Attach(world); // 首帧建缓存（O(W·H)），此后是空操作。
 
             if (!_enabled)
             {
@@ -278,34 +519,32 @@ namespace TapTap2026.Simulation
             return types[id].Info.LightAbsorption;
         }
 
+        /// <summary>
+        /// 施热：O(宽) 的逐列循环，**没有竖直扫描**——每列的挡光顶与光路湿度直接读缓存。
+        /// 该列没有挡光格（缓存顶 = -1）时不注入热量（与旧行为一致：不透明的空列收不到光照）。
+        /// </summary>
         private void ApplyHeat(ParticleWorld world, float amount)
         {
             HeatMap heat = world.Heat;
-            HumidityField humidity = world.Humidity;
             int width = world.Width;
-            int height = world.Height;
+            int[] tops = _columnTops;
+            float[] thickness = _columnThickness;
 
             for (int x = 0; x < width; x++)
             {
-                // 云层遮蔽：自顶向下边走边累加**光路上**的湿度（遇第一个固/液格即止），
-                // 到达该格的能量按 Beer–Lambert 衰减（透过率 = exp(-k × 光路湿度)）。
-                // 只算光路上，洞内 / 顶棚下方的湿度因此不遮光。
-                float thickness = 0f;
-                for (int y = height - 1; y >= 0; y--)
+                int y = tops[x];
+                if (y < 0)
                 {
-                    if (ParticleRules.BlocksLight(world, x, y))
-                    {
-                        // 按本格材料的光照吸收率缩放（浅色 / 反光表面升温更慢；草用 0.8）。
-                        float reach = amount * CloudTransmittance(thickness) * LightAbsorptionAt(world, x, y);
-                        if (reach > 0f)
-                        {
-                            heat.AddHeat(x, y, reach);
-                        }
+                    continue;
+                }
 
-                        break;
-                    }
-
-                    thickness += humidity.GetAt(y * width + x);
+                // 云层遮蔽：光路湿度取缓存（= 该列挡光顶之上的湿度总和），按 Beer–Lambert 衰减
+                // （透过率 = exp(-k × 光路湿度)）。洞内 / 顶棚下方的湿度不在光路上，因此不遮光。
+                // 再按本格材料的光照吸收率缩放（浅色 / 反光表面升温更慢；草用 0.8）。
+                float reach = amount * CloudTransmittance(thickness[x]) * LightAbsorptionAt(world, x, y);
+                if (reach > 0f)
+                {
+                    heat.AddHeat(x, y, reach);
                 }
             }
         }

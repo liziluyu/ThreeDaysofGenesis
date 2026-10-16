@@ -1,4 +1,5 @@
 {
+  "description": "入职日：认识沙盒与投放操作，让沙地上长出第一片草地。",
   "dialogueId": "phase_01_intro",
   "repeatDialogueId": "phase_01_retry",
   "nextPhaseId": "phase_02",

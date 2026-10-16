@@ -257,6 +257,18 @@ namespace TapTap2026.Simulation
         internal Action<int> DirtiedHook;
 
         /// <summary>
+        /// 每有一格湿度**实际改变**时回调（参数 = 扁平下标、本次增量 <c>Δ ≠ 0</c>）。默认 <c>null</c>。
+        /// </summary>
+        /// <remarks>
+        /// 与 <see cref="DirtiedHook"/> 是**两个独立的消费者位**，不合并成一个委托：后者只关心「哪些格变过」
+        /// （温度唤醒），本钩子还要增量本身——<see cref="LightController"/> 的每列光路湿度缓存按 <c>Δ</c> 平移，
+        /// 拿不到旧值就算不出增量。所有真值改动（<see cref="Set"/> / <see cref="Add"/> / <see cref="AddAt"/> /
+        /// <see cref="ResetAt"/> / <see cref="Swap"/> 与 <see cref="Step"/> 输送）都在提交之后经
+        /// <see cref="MarkDirty"/> 报到，因此**先提交、后通知**。
+        /// </remarks>
+        internal Action<int, float> ChangedHook;
+
+        /// <summary>
         /// 湿度场的内容版本：任何一次真正改动湿度值（<see cref="Set"/> / <see cref="Add"/> /
         /// <see cref="AddAt"/> / <see cref="Swap"/> / <see cref="ResetAt"/> 或 <see cref="Step"/> 的输送）
         /// 都自增。热图的不动点跳过（见 <see cref="HeatMap.Step"/>）用它判断「湿度自上次热 pass 以来有没有变」。
@@ -294,8 +306,9 @@ namespace TapTap2026.Simulation
             _anyDirty = false;
         }
 
-        /// <summary>把扁平下标标成脏格（湿度已精确变化）。热路径：一次字节读 + 两次写 + 一次委托判空，无分配。</summary>
-        private void MarkDirty(int index)
+        /// <summary>把扁平下标标成脏格（湿度已精确变化，<paramref name="delta"/> = 本次增量）。
+        /// 热路径：一次字节读 + 两次写 + 两次委托判空，无分配。</summary>
+        private void MarkDirty(int index, float delta)
         {
             if (_dirty[index] == 0)
             {
@@ -306,6 +319,9 @@ namespace TapTap2026.Simulation
 
             // 扫描进行中（世界已绑定 hook）时，同帧并入本帧候选位图；非扫描期是空操作。
             DirtiedHook?.Invoke(index);
+
+            // 增量消费者（光照的每列光路湿度缓存）：一次增量、一次平移。
+            ChangedHook?.Invoke(index, delta);
         }
 
         /// <summary>扩散系数，夹在 <c>[0, 1]</c>。</summary>
@@ -378,7 +394,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = updated;
                 _total += (double)updated - previous;
-                MarkDirty(index);
+                MarkDirty(index, updated - previous);
                 _version++;
             }
 
@@ -399,7 +415,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = updated;
                 _total += (double)updated - previous;
-                MarkDirty(index);
+                MarkDirty(index, updated - previous);
                 _version++;
             }
         }
@@ -420,7 +436,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = updated;
                 _total += (double)updated - previous;
-                MarkDirty(index);
+                MarkDirty(index, updated - previous);
                 _version++;
             }
 
@@ -591,11 +607,11 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 把每列湿度总量写进 <paramref name="destination"/>（长度须 ≥ <see cref="Width"/>），
-        /// 即**每列的云层厚度**——光竖直穿过的整条路径上的云量（只有非固非液格持有湿度，
-        /// 而光路上的格恰好都是气体/空，故整列求和就是光程上的云量）。
-        /// 保留给测试 / 工具（<see cref="LightController"/> 已改为在 <c>ApplyHeat</c> 里边扫光路边累加，
-        /// 不再每逻辑帧调用本方法）。
+        /// 把每列湿度总量写进 <paramref name="destination"/>（长度须 ≥ <see cref="Width"/>）。
+        /// **整列求和**：列里有挡光格时它大于光照**光路**上的云量（光路只算最上一个挡光格之上），
+        /// 因此与 <see cref="LightController.GetCloudThickness"/> 不是同一个量，只作工具 / 诊断用。
+        /// 保留给测试 / 工具（<see cref="LightController"/> 改为**增量维护**每列的挡光顶与光路湿度缓存，
+        /// 不再每逻辑帧调用本方法，也不再对整列求和）。
         /// </summary>
         /// <exception cref="ArgumentNullException">目标缓冲为 null。</exception>
         /// <exception cref="ArgumentException">目标缓冲短于场宽。</exception>
@@ -705,6 +721,23 @@ namespace TapTap2026.Simulation
             {
                 // 本趟输送改动过湿度（或此前已有未消费的外部写入）→ 内容变了，版本递增。
                 _version++;
+            }
+
+            // 增量消费者（光照的每列光路湿度缓存）：把本趟输送的逐格增量也报出去。此刻新旧两份缓冲都在手上，
+            // 逐格比较的差值正是本趟搬运的 Δ（未变的格差值为 0，直接跳过；此前已报过的写入不计入，
+            // 因为比较的基准 current 已含那次写入）。遍历的是紧凑脏索引列表，不是整网格。
+            if (ChangedHook != null)
+            {
+                int count = _dirtyCount;
+                for (int i = 0; i < count; i++)
+                {
+                    int index = _dirtyIndices[i];
+                    float delta = next[index] - current[index];
+                    if (delta != 0f)
+                    {
+                        ChangedHook(index, delta);
+                    }
+                }
             }
 
             _humidity = next;
@@ -897,7 +930,7 @@ namespace TapTap2026.Simulation
             {
                 _humidity[index] = 0f;
                 _total -= previous;
-                MarkDirty(index);
+                MarkDirty(index, -previous);
                 _version++;
             }
         }
@@ -912,10 +945,11 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            _humidity[a] = _humidity[b];
+            float other = _humidity[b];
+            _humidity[a] = other;
             _humidity[b] = swap;
-            MarkDirty(a);
-            MarkDirty(b);
+            MarkDirty(a, other - swap);
+            MarkDirty(b, swap - other);
             _version++;
         }
     }

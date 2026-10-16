@@ -20,11 +20,12 @@
 - 滚轮调半径 1..10；**Shift+滚轮**切换树木物种（HUD 显示物种名）。
 - 选中项由公开描述符 `ParticleSelectionEntry` 表示——`Selections`/`CurrentSelection`/`Select`/`SelectByTypeId`/`SelectByName`/`SelectionChanged` 是投放面板按钮（`ParticleSelectionPanel`）的接线入口；白名单或阶段名单变化时列表整体重建、旧条目作废。
 - **清除模式**（`EraseMode`）：`E` 按下置真/抬起置假（边沿事件，按住查询会每帧抹回假）；投放面板「清除」按钮 `ToggleEraseMode()` 翻转；为真时左键改走 `Erase()` 同半径清成空气。
-- 空格暂停/恢复；`L` 开关光照面板（输入框拿键盘时让位；高速模式期间锁死——进入即强制隐藏，退出后按原状态放回）。
+- 空格暂停/恢复；`L` 开关光照面板（面板已无文本输入，键盘热键不必让位；高速模式期间锁死——进入即强制隐藏，退出后按原状态放回）。
+- **光照面板**（`HUD Canvas/LightPanel`）：**强度 = `Slider`（0..30 整数档）**，`onValueChanged` 写 `ParticleLightDriver.Intensity`；**白天 / 夜晚 = 秒读数**（普通 `TMP_Text`，如 `30秒`，按 1 秒 = 逻辑帧速率（`ParticleSimulationSettings._logicRate`，默认 20）刻实时换算）；两行各 4 颗 `-5秒`/`-1秒`/`+1秒`/`+5秒` **秒步进按钮**（`onClick` = 场景里的整型持久监听 → `SandboxHud.AddLitSeconds`/`AddDarkSeconds`，结果钳在 `[0, int.MaxValue]`）。`SandboxHud` 每帧把滑块与读数回填成驱动器真值，写的是同一份字段（详见 `ParticleTypeInterface.md` §10「光照面板」）。
 - 按住 ←/→/A/D 把相机在沙箱内左右平移（视口夹在网格边界内，暂停与高速模式都能用）。
 - `H` 进入高速模式。
 - 光标处常驻一圈白色像素圆标出笔刷足迹（圈上的格恰好是左键会写到的格，见 Rendering 文档）；光标出网格/高速锁编辑/对话激活时撤下。
-- 不画 IMGUI：每帧把字符串推给 `SandboxHud`（`PushHud`）；键盘让位/放置屏蔽查 `SandboxHud.LightFieldFocused`/`IsPointerOverPanel`。
+- 不画 IMGUI：每帧把字符串推给 `SandboxHud`（`PushHud`）；面板使用期间的放置屏蔽查 `SandboxHud.IsPointerOverPanel`。光照面板已无文本输入，键盘热键不必让位。
 - **输入换算**：相机画进纹理后 `ScreenPointToRay` 吃纹理像素，`TryGetCell` 先用 `CameraScreenFeed.ToCameraPixel` 换算（见 Rendering 文档）。
 - 投放白名单见 `docs/modules/Particles.md` 末节。
 
@@ -45,7 +46,9 @@
 
 ## 游戏流程层
 
-`GameController`（阶段 JSON 驱动薄壳：读档 → `StartPhase`（按解锁集合选 `dialogueId`/`repeatDialogueId` 播对话 → `Resize` 重建沙箱 → 投放白名单 → 自动存档）→ 高速模式结算 → 过关推进 `nextPhaseId`/失败重来，`JumpToPhase` 按解锁门槛跳关）+ `GamePhaseData`/`GamePhaseParser`（纯 C# 阶段解析，哨兵值表「不约束」）+ `VictoryEvaluator`（纯 C# 胜利判定：吃 `HighSpeedSnapshot`、输出布尔 + 第一条未满足项理由）。示例阶段 `Assets/Data/Phases/`；唯一权威文档 **`docs/GameFlow.md`**。
+`GameController`（阶段 JSON 驱动薄壳：读档 → `StartPhase`（按解锁集合选 `dialogueId`/`repeatDialogueId` 播对话 → `Resize` 重建沙箱 → 投放白名单 → 自动存档）→ 高速模式结算 → 过关推进 `nextPhaseId`/失败重来，`JumpToPhase` 按解锁门槛跳关；阶段**没有 `victory`**（沙盒 `phase_05`）时高速模式跑完不判定、不推进）+ `GamePhaseData`/`GamePhaseParser`（纯 C# 阶段解析，哨兵值表「不约束」，全哨兵的 `victory` 归一为 `null`）+ `VictoryEvaluator`（纯 C# 胜利判定：吃 `HighSpeedSnapshot`、输出布尔 + 第一条未满足项理由）。存档格式唯一权威也在 `GameController`（`SaveData` + 静态 `SavePathFor`/`LoadSave`/`CollectUnlockedPhaseIds`/`WriteSave`），供选关界面复用。阶段 `Assets/Data/Phases/phase_01..05.json`；唯一权威文档 **`docs/GameFlow.md`**。
+
+`LevelSelectController`（**关卡选择界面**，`Assets/Scenes/LevelSelect.unity` 的根对象 `Level Select Controller`）：按存档解锁集合逐颗 `SetActive` 五颗按钮（Day0..Day3 + 沙盒 = `phase_01..phase_05`，未解锁整颗隐藏；解锁集合为空时只显示第一关当入口），点选经 `CommitSelection` 写档后 `SceneManager.LoadScene("MainScene")`；**悬停**在关卡按钮上时把该关阶段 JSON 的 `description` 写到 `Canvas/ProbeText`（`EventTrigger` 在 `Awake` 运行期绑定，非悬停时隐藏）。**LevelSelect 与 MainScene 都在 Build Settings**（`MainScene` 下标 0）。场景接线由 `LevelSelectSceneWiringTests` 钉住。
 
 ## 对话系统
 

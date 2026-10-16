@@ -25,10 +25,11 @@ namespace TapTap2026.Game
     /// 结算面板末尾追加一行**胜负结论**——过关「过关！」绿、未过关「未过关：<c>理由</c>」红，取自 <see cref="GameController"/>）；
     /// **Enter 或 H** 确认退出——退出后倍速回 1×、仍保持暂停，由玩家自己按空格继续）；
     /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
-    /// **右上角光照面板**：三个输入框直接写 <see cref="ParticleLightDriver"/> 的**强度 / 亮相位刻数 / 暗相位刻数**
+    /// **右上角光照面板**：一个 0..30 的**强度滑块** + 两行**秒读数**（白天 / 夜晚）+ 两行按秒步进按钮，
+    /// 都直接写 <see cref="ParticleLightDriver"/> 的**强度 / 亮相位刻数 / 暗相位刻数**
     /// （驱动器是这三个值的唯一配置面、每帧写回 <c>world.Light</c>，写世界会被下一帧覆盖），改完即时生效；
-    /// 输入框拿着键盘时暂停 / 高速 / 平移热键让位给输入框，且**使用 HUD 面板期间（输入框持有键盘焦点或指针落在
-    /// 光照面板 / 按钮面板矩形内）屏蔽左键投放/擦除**——点进输入框、点按钮都不会顺手在底下画一笔；
+    /// 面板里没有文本输入，键盘热键不必再为它让位，但**使用 HUD 面板期间（指针落在
+    /// 光照面板 / 按钮面板矩形内）屏蔽左键投放/擦除**——点按钮、拖滑块都不会顺手在底下画一笔；
     /// 对话激活时面板变灰不可编辑，**高速模式则整块锁死**——进入会话即强制隐藏（会话结果依赖光照输入），
     /// 模式期间按钮与热键都打不开它，退出后按原显隐状态放回来；
     /// **清除模式**（按住 <c>E</c> 即进、松开即退；投放面板的「清除」按钮翻转它，见 <see cref="EraseMode"/> / <see cref="ToggleEraseMode"/>）下按左键改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放项）；
@@ -542,21 +543,14 @@ namespace TapTap2026.Game
                 return;
             }
 
-            // 光照输入框正拿着键盘时，按键属于输入框（数字之外空格 / H / L / A / D / 回车也都是能敲进去的字符）——
-            // 暂停、高速模式、光照面板、相机平移四条键盘热键整段让位；否则敲个空格就暂停、敲个 H 就跑一整场高速。
-            bool typingInLightPanel = _hud != null && _hud.LightFieldFocused;
-
             // 高速模式热键：不在模式中时按 H 进入；结算完成后按 Enter（或 H）确认退出。
-            if (!typingInLightPanel)
-            {
-                HandleHighSpeedKeys();
-            }
+            HandleHighSpeedKeys();
 
             RefreshHighSpeed();
 
             // 暂停热键：这里只负责「按下了就切一下」，
             // 具体冻结/恢复由驱动暴露的 Pause()/Resume() 执行（驱动不认识输入）。高速模式中也保留。
-            if (!typingInLightPanel && _pauseKey != KeyCode.None && Input.GetKeyDown(_pauseKey))
+            if (_pauseKey != KeyCode.None && Input.GetKeyDown(_pauseKey))
             {
                 if (_driver.Paused)
                 {
@@ -571,17 +565,14 @@ namespace TapTap2026.Game
             // 光照面板热键：与场景里的「光照」按钮同一个入口（ToggleLightPanel）——因此按钮改语义时热键跟着改，
             // 不在这里自己翻转 _lightPanelVisible。高速模式期间这个入口自己会拒绝（见 SetLightPanelVisible 的锁），
             // 所以放在锁编辑的拦截之前不影响语义，只与「按钮在模式中照旧可点」保持同一个位置。
-            if (!typingInLightPanel && _lightPanelKey != KeyCode.None && Input.GetKeyDown(_lightPanelKey))
+            if (_lightPanelKey != KeyCode.None && Input.GetKeyDown(_lightPanelKey))
             {
                 ToggleLightPanel();
             }
 
             // 相机平移：只动相机、不碰世界，所以放在高速模式的锁编辑拦截**之前**——
             // 高速模式锁的是编辑，观看视角（平移 + 光标读数）跟着解锁一起禁用没有意义。
-            if (!typingInLightPanel)
-            {
-                UpdateCameraPan(world);
-            }
+            UpdateCameraPan(world);
 
             // 高速模式锁编辑：在这里**统一拦截**——右键切换、滚轮调半径、左键投放/擦除一概跳过，
             // 只保留上面的空格暂停、光照面板热键（模式期间被锁死，按了也不会打开面板）与下面只读的光标读数。
@@ -630,12 +621,9 @@ namespace TapTap2026.Game
                 }
             }
 
-            // HUD 面板（光照输入框 / 三个按钮）正在被使用时**屏蔽放置**：左键点进输入框或按钮时指针同时也在网格上，
-            // 不挡就会既改 UI 又在底下画一笔。判据两条：
-            // ① 某个光照输入框仍持有键盘焦点——点进去后把指针拖到面板外也继续挡（按住左键拖动同理）；
-            // ② 指针当前就在会吃点击的面板矩形内——点进来的那一帧 uGUI 还没把焦点交给输入框，靠这条兜底。
-            bool pointerOverPanel = typingInLightPanel
-                || (_hud != null && _hud.IsPointerOverPanel(Input.mousePosition));
+            // HUD 面板（光照面板 / 三个按钮）正在被使用时**屏蔽放置**：左键点进按钮或拖滑块时指针同时也在网格上，
+            // 不挡就会既改 UI 又在底下画一笔。判据只有一条：指针当前就在会吃点击的面板矩形内。
+            bool pointerOverPanel = _hud != null && _hud.IsPointerOverPanel(Input.mousePosition);
 
             if (!pointerOverPanel
                 && Input.GetMouseButton(0)
@@ -931,8 +919,8 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// **光照选择按钮**：翻转右上角光照面板（光照选择界面）的显隐。隐藏不丢值——面板的三个输入框保留在
-        /// <see cref="ParticleLightDriver"/> 上，重新显示即原样回来。供场景里的按钮 <c>onClick</c> 接线。
+        /// **光照选择按钮**：翻转右上角光照面板（光照选择界面）的显隐。隐藏不丢值——面板改的是
+        /// <see cref="ParticleLightDriver"/> 上的字段，重新显示即原样回来。供场景里的按钮 <c>onClick</c> 接线。
         /// <para>高速模式期间整个请求被锁吞掉（见 <see cref="SetLightPanelVisible"/>），因此按钮与 L 热键
         /// 都无法把面板切回来。</para>
         /// </summary>

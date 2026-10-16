@@ -219,6 +219,10 @@ namespace TapTap2026.Simulation
             // 必须复现这一点，否则晚一帧、逐位发散。委托实例缓存一次，运行期零分配。
             _heat.DirtiedHook = OnThermalCellDirtied;
             _humidity.DirtiedHook = OnThermalCellDirtied;
+
+            // 湿度场的**增量**通道（与上面那条脏格通道是两个独立消费者位）：光照的每列光路湿度缓存按
+            // 逐格 Δ 平移。**不覆盖** DirtiedHook——两者各占一个字段、各绑一个委托，任何一条都能再加消费者。
+            _humidity.ChangedHook = _light.OnHumidityChanged;
             _tick = 0;
             _rng = seed == 0u ? DefaultSeed : seed;
             _stamp = OutsideStamp;
@@ -685,6 +689,8 @@ namespace TapTap2026.Simulation
             }
 
             Cell swap = _cells[a];
+            ushort type0 = swap.typeId;
+            ushort type1 = _cells[b].typeId;
             _cells[a] = _cells[b];
             _cells[b] = swap;
             _heat.SwapHeat(a, b);
@@ -700,6 +706,10 @@ namespace TapTap2026.Simulation
             // 湿度跟着物质走：云因此随风平移。固/液永远持有 0 湿度（不变量），
             // 所以水与气体换位时搬过去的是气体那侧的湿度，水不会把水汽带走。
             _humidity.Swap(a, b);
+
+            // 光照的每列缓存：两格（类型 / 湿度）都已换完之后才通知。挡光格参与换位会改变光路本身，
+            // 由控制器重扫那两列；同行换位只涉及一列。湿度搬迁那条路已由湿度场的增量通知平移过。
+            _light.OnColumnsSwapped(type0, type1, x0, y0, x1, y1);
 
             // 绝热直减：气体竖直换位时按位移调整自身热量——上升（Δy > 0）冷却、下沉（Δy < 0）增温。
             // 两格各自按「新 y − 旧 y」独立结算，因此上升侧与下沉侧的 ΔQ 符号相反；水平换位 Δy = 0 直接跳过。
@@ -940,6 +950,9 @@ namespace TapTap2026.Simulation
             // 语义，residual <= 0 的快路径由 EvacuateHumidity 内部保留。
             EvacuateHumidity(x, y, index);
 
+            // 光照的每列缓存：格子（类型 / 湿度）都已提交之后才通知，缓存绝不会读到半写状态。
+            _light.OnTypesReplaced(previousId, typeId, x, y);
+
             if (typeId == ParticleRegistry.AirTypeId)
             {
                 cell.shade = 0;
@@ -1140,6 +1153,9 @@ namespace TapTap2026.Simulation
 
             // Q 跟着物质走，不重置（这正是与 Set 的区别）。
             _heat.SetHeat(x, y, heat);
+
+            // 光照的每列缓存：类型、湿度与热量都已提交之后才通知（见 SetCore 的同名调用）。
+            _light.OnTypesReplaced(previousId, typeId, x, y);
 
             if (typeId == ParticleRegistry.AirTypeId)
             {

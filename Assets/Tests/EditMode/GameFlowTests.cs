@@ -12,6 +12,10 @@ namespace TapTap2026.Tests
     /// <remarks>
     /// 粒子名解析依赖**全局注册表**，故 <see cref="SetUp"/> 里先 <see cref="ParticleRegistration.RegisterAll"/>
     /// 并统一用 <see cref="ParticleIds"/> 取 typeId。
+    /// <para>胜利条件省略 / 全哨兵 / <c>particles</c> 为空的写法一律归一为 <c>null</c> = 本阶段没有胜利条件
+    /// （沙盒阶段）；只要有一条非 NaN 界限或非空 <c>particles</c> 就保留原实例。</para>
+    /// <para><c>description</c> 是纯 UI 元数据（关卡选择界面悬停显示），可空且不参与任何校验：
+    /// 省略 → <c>null</c>、显式空串 → <c>""</c>，都由调用方一视同仁地当作「本阶段没有描述」。</para>
     /// </remarks>
     public sealed class GameFlowTests
     {
@@ -73,7 +77,8 @@ namespace TapTap2026.Tests
             Assert.AreEqual(20, condition.maxCount);
         }
 
-        /// <summary>可空字段（对话 / 下一阶段 / 白名单 / 胜利条件）缺省时保持初始值（null）；id 由加载方回填，解析器不填。</summary>
+        /// <summary>可空字段（对话 / 下一阶段 / 白名单 / 胜利条件）缺省时保持初始值（null）；id 由加载方回填，解析器不填。
+        /// 胜利条件省略即归一为 null = 无胜利条件。</summary>
         [Test]
         public void TryParse_MissingOptionalFields_KeepsDefaults()
         {
@@ -158,6 +163,39 @@ namespace TapTap2026.Tests
             Assert.IsNull(omitted.repeatDialogueId);
         }
 
+        /// <summary>关卡简要描述是纯 UI 元数据：写出即原样解析出来，供关卡选择界面悬停显示。</summary>
+        [Test]
+        public void TryParse_Description_RoundTrips()
+        {
+            const string json = "{\"description\":\"入职日：认识沙盒。\",\"sandboxWidth\":10,\"sandboxHeight\":10}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.AreEqual("入职日：认识沙盒。", phase.description);
+        }
+
+        /// <summary>可空语义钉死：<c>description</c> 省略 → null；显式空串 → <c>""</c>。
+        /// 两者都让调用方的 <c>IsNullOrEmpty</c> 判定为「没有描述」而隐藏文本。</summary>
+        [Test]
+        public void TryParse_OmittedOrEmptyDescription_MeansNoDescription()
+        {
+            string error;
+
+            const string omittedJson = "{\"sandboxWidth\":10,\"sandboxHeight\":10}";
+            GamePhaseData omitted;
+            Assert.IsTrue(GamePhaseParser.TryParse(omittedJson, out omitted, out error), error);
+            Assert.IsNull(omitted.description);
+            Assert.IsTrue(string.IsNullOrEmpty(omitted.description));
+
+            const string blankJson = "{\"description\":\"\",\"sandboxWidth\":10,\"sandboxHeight\":10}";
+            GamePhaseData blank;
+            Assert.IsTrue(GamePhaseParser.TryParse(blankJson, out blank, out error), error);
+            Assert.AreEqual(string.Empty, blank.description);
+            Assert.IsTrue(string.IsNullOrEmpty(blank.description));
+        }
+
         /// <summary>胜利条件里的缺省约束保持哨兵值：温度 / 湿度为 NaN、计数为 -1（都表示「不约束」）。</summary>
         [Test]
         public void TryParse_OmittedConstraints_KeepSentinels()
@@ -182,6 +220,79 @@ namespace TapTap2026.Tests
             Assert.AreEqual(-1, condition.maxDeaths);
             Assert.AreEqual(-1, condition.minCount);
             Assert.AreEqual(-1, condition.maxCount);
+        }
+
+        /// <summary>省略 <c>victory</c> → 归一为 null（本阶段没有胜利条件），而非留一个空实例。</summary>
+        [Test]
+        public void TryParse_OmittedVictory_NormalizesToNull()
+        {
+            const string json = "{\"sandboxWidth\":10,\"sandboxHeight\":10}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.IsNull(phase.victory);
+        }
+
+        /// <summary><c>victory</c> 为空对象（四个界限全 NaN 且无 <c>particles</c>）→ 归一为 null。</summary>
+        [Test]
+        public void TryParse_EmptyVictoryObject_NormalizesToNull()
+        {
+            const string json = "{\"victory\":{},\"sandboxWidth\":10,\"sandboxHeight\":10}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.IsNull(phase.victory);
+        }
+
+        /// <summary><c>victory.particles</c> 为空数组（界限也全 NaN）→ 归一为 null。</summary>
+        [Test]
+        public void TryParse_EmptyVictoryParticles_NormalizesToNull()
+        {
+            const string json = "{\"victory\":{\"particles\":[]},\"sandboxWidth\":10,\"sandboxHeight\":10}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.IsNull(phase.victory);
+        }
+
+        /// <summary>只写了一条界限 → 保留实例（不得被当成全哨兵归一掉），未写的界限仍是 NaN 哨兵。</summary>
+        [Test]
+        public void TryParse_PartiallySpecifiedVictory_IsKept()
+        {
+            const string json =
+                "{\"victory\":{\"minSurfaceTemperature\":20},\"sandboxWidth\":10,\"sandboxHeight\":10}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.IsNotNull(phase.victory);
+            Assert.AreEqual(20f, phase.victory.minSurfaceTemperature);
+            Assert.IsTrue(float.IsNaN(phase.victory.maxSurfaceTemperature));
+            Assert.IsTrue(float.IsNaN(phase.victory.minAverageHumidity));
+            Assert.IsTrue(float.IsNaN(phase.victory.maxAverageHumidity));
+        }
+
+        /// <summary>只有 <c>particles</c>（界限全 NaN）→ 保留实例，不得被误判成全哨兵。</summary>
+        [Test]
+        public void TryParse_ParticlesWithoutBounds_IsKept()
+        {
+            const string json =
+                "{\"victory\":{\"particles\":[{\"type\":\"SandParticle\"}]}," +
+                "\"sandboxWidth\":10,\"sandboxHeight\":10}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.IsNotNull(phase.victory);
+            Assert.AreEqual(1, phase.victory.particles.Length);
         }
 
         /// <summary>沙箱宽或高小于 1 → 解析失败并给出错误。</summary>

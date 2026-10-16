@@ -27,6 +27,12 @@ namespace TapTap2026.Game
         /// <summary>下一阶段 id；null / 空 = 最终阶段（过关后不再启动新阶段）。</summary>
         public string nextPhaseId;
 
+        /// <summary>
+        /// 关卡简要描述（纯 UI 元数据，供关卡选择界面悬停时显示）；null / 空 = 本阶段没有可显示的描述。
+        /// 流程层（<c>GameController</c> / <c>VictoryEvaluator</c>）不读本字段。
+        /// </summary>
+        public string description;
+
         /// <summary>沙箱宽度（格）；必须 ≥ 1。</summary>
         public int sandboxWidth;
 
@@ -39,7 +45,10 @@ namespace TapTap2026.Game
         /// </summary>
         public string[] availableParticles;
 
-        /// <summary>胜利条件；null = 本阶段没有胜利条件（高速模式结算后判为失败并重来）。</summary>
+        /// <summary>
+        /// 胜利条件；null = 本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程，见 <c>GameController</c>）。
+        /// 由 <c>GamePhaseParser</c> 归一：省略的 / 全哨兵的 / <c>particles</c> 为空的 <c>victory</c> 一律为 null。
+        /// </summary>
         public VictoryCondition victory;
 
         /// <summary>
@@ -116,7 +125,12 @@ namespace TapTap2026.Game
     {
         /// <summary>
         /// 把 JSON 解析成 <see cref="GamePhaseData"/>。失败返回 false 并给 <paramref name="error"/>。
+        /// 可空字段（<c>dialogueId</c> / <c>repeatDialogueId</c> / <c>nextPhaseId</c> / <c>description</c>）一律不校验：
+        /// 省略 → 保持 C# 字段初始值 null，显式空串 → <c>""</c>；两者由调用方一视同仁地当作「无该内容」
+        /// （<c>description</c> 即本阶段没有可显示的描述）。
         /// 缺字段保留 C# 字段初始值；额外校验沙箱宽高 ≥ 1、<c>victory.particles</c> 条目 type 非空。
+        /// 省略的 / 全哨兵（界限全 <see cref="float.NaN"/> 且无 particles）的 / <c>particles</c> 为空的 <c>victory</c>
+        /// 一律归一为 null，表示本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程）。
         /// </summary>
         public static bool TryParse(string json, out GamePhaseData phase, out string error)
         {
@@ -174,8 +188,32 @@ namespace TapTap2026.Game
                 }
             }
 
+            // JsonUtility 对**省略**的嵌套可序列化类会构造一个「全哨兵」实例而不是留 null（本工程实测，2022.3.62f1）。
+            // 归一为 null，恢复「省略 victory = 本阶段没有胜利条件」的语义（沙盒阶段靠它区分）。
+            if (parsed.victory != null && IsUnconstrainedVictory(parsed.victory))
+            {
+                parsed.victory = null;
+            }
+
             phase = parsed;
             return true;
+        }
+
+        /// <summary>
+        /// 判定一个胜利条件是否「什么都没约束」（全哨兵 = 无约束）：四个温度 / 湿度界限
+        /// （<see cref="VictoryCondition.minSurfaceTemperature"/> 等）全为 <see cref="float.NaN"/>，
+        /// 且 <see cref="VictoryCondition.particles"/> 为 null 或长度为 0。
+        /// <c>JsonUtility</c> 对**省略**的嵌套可序列化类会构造出这种全哨兵实例（本工程实测，2022.3.62f1），
+        /// <see cref="TryParse"/> 靠本判定把它归一为 null = 本阶段没有胜利条件（沙盒阶段）。
+        /// </summary>
+        private static bool IsUnconstrainedVictory(VictoryCondition victory)
+        {
+            return victory != null
+                && float.IsNaN(victory.minSurfaceTemperature)
+                && float.IsNaN(victory.maxSurfaceTemperature)
+                && float.IsNaN(victory.minAverageHumidity)
+                && float.IsNaN(victory.maxAverageHumidity)
+                && (victory.particles == null || victory.particles.Length == 0);
         }
     }
 }

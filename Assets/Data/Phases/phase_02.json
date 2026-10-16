@@ -1,4 +1,6 @@
 {
+  "description": "第一日：引来水源，让草与水一同产生，并把温湿度维持在舒适区间。",
+  "nextPhaseId": "phase_03",
   "sandboxWidth": 240,
   "sandboxHeight": 135,
   "availableParticles": [
