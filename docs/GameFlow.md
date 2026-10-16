@@ -10,9 +10,9 @@
 
 | 文件 | 角色 |
 |---|---|
-| `GamePhaseData.cs` | **纯 C#**：阶段 JSON 数据类（`GamePhaseData` / `VictoryCondition` / `ParticleCountCondition`）+ `GamePhaseParser.TryParse`（`JsonUtility`，免第三方依赖） |
+| `GamePhaseData.cs` | **纯 C#**：阶段 JSON 数据类（`GamePhaseData` / `VictoryCondition` / `ParticleCountCondition`）+ `GamePhaseParser.TryParse`（`JsonUtility`，免第三方依赖）+ 两个纯解析方法 `ResolveOpeningDialogueId(isRepeat)` / `ResolveResultDialogueId(passed)` |
 | `VictoryEvaluator.cs` | **纯 C# 判定**：`HighSpeedSnapshot` + `VictoryEvaluator.Evaluate`，只用快照与配置算胜负（无 Input / UI / 协程，可 EditMode 测试） |
-| `GameController.cs` | **流程薄壳**（MonoBehaviour）：阶段映射、`StartPhase` 五步、高速模式轮询、胜负结论缓存（暴露给结算面板读取）、自动存档；同时是**存档格式的唯一权威**（`SaveData` DTO + 静态 `SavePathFor` / `LoadSave` / `CollectUnlockedPhaseIds` / `WriteSave`） |
+| `GameController.cs` | **流程薄壳**（MonoBehaviour）：阶段映射、`StartPhase` 五步、高速模式轮询、胜负结论缓存（暴露给结算面板读取）、**结算对话（过关 / 未过关各一段，见 §4.4）**、自动存档；同时是**存档格式的唯一权威**（`SaveData` DTO + 静态 `SavePathFor` / `LoadSave` / `CollectUnlockedPhaseIds` / `WriteSave`） |
 | `LevelSelectController.cs` | **关卡选择界面控制器**（MonoBehaviour）：按存档解锁集合控制按钮显隐、点选后写档并加载游戏场景（见 §10） |
 | `Assets/Data/Phases/phase_01.json` … `phase_05.json` | 阶段数据（`TextAsset`，`TextScriptImporter`）：`phase_01` 入职日 → `phase_02` 第一日 → `phase_03` 第二日 → `phase_04` 第三日 → `phase_05` 沙盒（无 `victory`、无 `nextPhaseId`） |
 | `Assets/Tests/EditMode/GameFlowTests.cs` | 解析与胜利判定的 EditMode 测试 |
@@ -33,6 +33,8 @@
   "description": "入职日：认识沙盒与投放操作，让沙地上长出第一片草地。",
   "dialogueId": "phase_01_intro",
   "repeatDialogueId": "phase_01_retry",
+  "successDialogueId": "phase_01_clear",
+  "failureDialogueId": "phase_01_fail",
   "nextPhaseId": "phase_02",
   "sandboxWidth": 160,
   "sandboxHeight": 90,
@@ -45,7 +47,7 @@
   }
 }
 ```
-（示例即 `phase_01.json` 的开发期形态：它**省略 `availableParticles`**——不限制，全粒子可投。）
+（示例是 `phase_01.json` 的开发期形态再加上四个对话字段：它**省略 `availableParticles`**——不限制，全粒子可投；实际文件目前**只配了 `dialogueId` / `repeatDialogueId`**，两个结算对话要等有对话文本后再补（见 §4.4 与 §7.5）。）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -53,6 +55,8 @@
 | `description` | string | **关卡简要描述**（纯 UI 元数据）：关卡选择界面悬停在该关卡按钮上时显示到 `Canvas/ProbeText`（见 §9）；**省略 / 空 = 无描述**（悬停时该关不显示文本）。流程层（`GameController` / `VictoryEvaluator`）**不读**本字段 |
 | `dialogueId` | string | **首次**进入本阶段时播放的对话 id（`DialogueController` **注册表**里的 id，见 §6）；**省略 / 空 = 本阶段无对话** |
 | `repeatDialogueId` | string | **重复**进入本阶段（该阶段已在解锁集合里）时播放的对话 id（同样是注册表 id）；**省略 / 空 = 重进不播对话**。二者由 `GamePhaseData.ResolveOpeningDialogueId(isRepeat)` 二选一 |
+| `successDialogueId` | string | **结算对话（过关）**：本阶段高速模式结算为**过关**后、进入下一阶段之前播的对话 id（注册表 id）；**省略 / 空 = 不播结算对话**（流程与既有行为逐字一致，见 §4.4） |
+| `failureDialogueId` | string | **结算对话（未过关）**：本阶段高速模式结算为**未过关**后、重开本阶段之前播的对话 id；**省略 / 空 = 不播结算对话**。二者由 `GamePhaseData.ResolveResultDialogueId(passed)` 二选一 |
 | `nextPhaseId` | string | 过关后进入的下一阶段 id；**省略 / 空 = 最终阶段**（过关后停在「全部阶段完成」） |
 | `sandboxWidth` | int | 沙箱宽（格）。**必须 ≥ 1**，否则解析失败 |
 | `sandboxHeight` | int | 沙箱高（格）。**必须 ≥ 1**，否则解析失败 |
@@ -191,11 +195,17 @@ flowchart TD
     N -- 否（沙盒）--> N3["跳过判定：不置 HasVerdict、不推进流程（结算面板不显示胜负行）"]
     N2 --> O["ParticleEditor 结算面板末尾加一行：绿「过关！」/ 红「未过关：reason」"]
     O --> P["玩家在 ParticleEditor 按 Enter/H 确认退出 → 会话 Active 变 false"]
-    P -- 过关且 nextPhaseId 空 --> Q["常驻「全部阶段完成」"]
-    P -- 过关且有 nextPhaseId --> G
-    P -- 失败 --> G
+    P --> R{"本阶段配了结算对话?"}
+    R -- 是 --> R2["播结算对话（successDialogueId / failureDialogueId）→ 等它播完"]
+    R -- 否 --> S
+    R2 --> S["执行切换"]
+    S -- 过关且 nextPhaseId 空 --> Q["常驻「全部阶段完成」"]
+    S -- 过关且有 nextPhaseId --> G
+    S -- 失败 --> G
     N3 --> P
 ```
+
+**结算对话播完之前不切阶段**：切换会提交 `Resize`（清空世界）并播新阶段的开场对话，提前做会让玩家在空沙箱上读结算——玩家确认退出高速模式的那一刻起，世界保持结算时的样子（暂停冻结）直到结算对话读完。见 §4.4。
 
 **`StartPhase(id)` 五步顺序（固定）**：
 
@@ -222,10 +232,26 @@ flowchart TD
 - 快照取自会话：`LatestSurfaceTemperature` / `LatestAverageHumidity` + 遍历 `ParticleRegistry.Types` 取 `GetBirths` / `GetDeaths` / `GetFinalCount`（存量取的是「跑满那一刻」的全网格盘点；评估时机固定在 `Completed` 帧、会话尚未 `Exit`，因此非 0——`Exit` 后 `GetFinalCount` 会清空返回 0）。
 - 评估结论只**缓存**在本类（`HasVerdict` / `LastResult` / `LastReason`），**不在本类上屏**：由 `ParticleEditor` 在高速模式结算面板（屏幕中央，玩家按 `Enter` / `H` 确认退出的那个面板）末尾追加一行——过关 = 绿色「过关！」，失败 = 红色「未过关：<reason>」。本类只保留「全部阶段完成」的常驻横幅（场景里的 `HUD Canvas/CompletionBanner`，本类只开关它的激活态，不画 IMGUI）。
 - **之后**观察到会话**退出**（`Active` 变 `false`，即玩家在 `ParticleEditor` 按 `Enter` / `H` 确认退出）→ 按**缓存的**结果行动：
+  - **先看结算对话**：`_currentPhase.ResolveResultDialogueId(_lastResult)` 非空且能起播（`DialogueController.StartDialogue` 返回 true）→ 只起播它并把阶段切换**挂起**（`_awaitingResultDialogue = true`），本帧到此为止；之后每帧在 `Update` 开头检查 `_dialogue.IsActive`，**对话播完（或被强制关闭）才执行切换**。见 §4.4。
+  - 没配结算对话 / 未接线 `DialogueController` / 注册表里查不到 → 与既有行为逐字一致，**立刻**执行切换（下面三条）。
   - 过关 → `nextPhaseId` 为空则激活常驻横幅「全部阶段完成」且不再启动新阶段；否则 `StartPhase(nextPhaseId)`；
   - 失败 → `StartPhase(CurrentPhaseId)`（**重来** = 走「重复进入」分支选对话（`repeatDialogueId`，未配则不播）+ 重建空沙箱）；
   - **沙盒（无 `victory`）→ 什么都不做**（不判过关、不重来、不弹横幅；沙箱里想重来就再按一次 H）。
 - **会话被世界重建丢弃**导致 `Active` 变 `false` 且**从未 `Completed`** → **不行动**（避免误判）。
+
+### 4.4 结算对话（过关 / 未过关各一段）
+
+| | 配置 | 语义 |
+|---|---|---|
+| 过关 | `successDialogueId` | 高速模式结算为过关 → 玩家确认退出后先播它，播完才进下一阶段（或开「全部阶段完成」横幅） |
+| 未过关 | `failureDialogueId` | 高速模式结算为未过关 → 玩家确认退出后先播它，播完才重开本阶段 |
+
+- **纯解析**在 `GamePhaseData.ResolveResultDialogueId(passed)`：`passed` → `successDialogueId`、否则 `failureDialogueId`；返回 null / 空 = **不播结算对话**。
+- **不替代开场对话**：结算对话是「这一次跑完的收尾」，`StartPhase` 随后照常按 `isRepeat` 播目标阶段的 `dialogueId` / `repeatDialogueId`。两段连播、语义各自独立——若让结算对话顶掉开场对话，作者写下的那个开场 id 会在「赢过 / 输过」这两条路径上静默失效。
+- **切换被挂起**（`_awaitingResultDialogue`）：挂起期间世界保持结算那一刻的样子（会话退出后模拟仍暂停，帧继续发布同一份终态），因此玩家是在**自己刚跑完的沙箱上**读结算，而不是在清空后的空网格上。`Update` 每帧问一次 `_dialogue.IsActive`，为假即执行切换并清挂起标记。`StartPhase` 也会清这个标记（阶段一启动，任何挂起的切换都被作废，覆盖外部 `JumpToPhase` 的情况）。
+- **不会被打断**：对话激活期间 `ParticleEditor.SuppressInput` 为真（`UpdateEditing` 直接 return），玩家无法再按 `H` / 点「高速」按钮进入新会话，因此挂起状态不会被新的高速会话抢走。
+- **不产生新状态**：沙盒阶段（无 `victory`）没有胜负 ⇒ 不走 `ApplyResult` ⇒ 永远不播结算对话；结算对话也**不改变**阶段链走向（依然是 §8 的线性流程：过关去 `nextPhaseId`、失败原地重来）。
+- 起播失败（未接线 `DialogueController` / 注册表查不到该 id / JSON 坏）只 `LogWarning`，**按「没有结算对话」处理**（立刻切换，不中断流程）——与开场对话同一条降级策略。
 
 ---
 
@@ -277,14 +303,14 @@ public void SetPlacementFilter(string[] allowedNames);
 2. 拖引用：`_driver`（`Particle Sandbox` 上的 `ParticleSimulationDriver`）、`_editor`（同物体上的 `ParticleEditor`）、`_dialogue`（已有 `Dialogue Controller` 上的 `DialogueController`）。留空也会在 `Awake` 用 `FindObjectOfType` 兜底，但**显式接线更明确**。
 3. 把 `Assets/Data/Phases/phase_01.json`、`phase_02.json` 拖进 `_phases`（顺序无关，映射按文件名建）。
 4. `_initialPhaseId` 填 `phase_01`；`_saveFileName` 保持默认 `game_save.json`（改它等于换一份存档）。
-5. **对话注册表**：每个阶段用的 `dialogueId` / `repeatDialogueId` 都必须在 `DialogueController` 的 `_dialogues` 注册表里登记（`DialogueRef.id` → 文件）。示例阶段 `phase_01` 首次用 `phase_01_intro`、重进用 `phase_01_retry`（`Assets/Data/Dialogues/phase_01_intro.json` / `phase_01_retry.json` 的内部 id，开发期占位、各只有一句旁白）——**注册表 id 与对话文件内部 id 是两回事**，本层按注册表 id 调用，请确保二者对齐且两个 id 都已登记。
+5. **对话注册表**：每个阶段用的 `dialogueId` / `repeatDialogueId` / `successDialogueId` / `failureDialogueId` 都必须在 `DialogueController` 的 `_dialogues` 注册表里登记（`DialogueRef.id` → 文件）。示例阶段 `phase_01` 首次用 `phase_01_intro`、重进用 `phase_01_retry`（`Assets/Data/Dialogues/phase_01_intro.json` / `phase_01_retry.json` 的内部 id，开发期占位、各只有一句旁白）——**注册表 id 与对话文件内部 id 是两回事**，本层按注册表 id 调用，请确保二者对齐且都已在注册表里。新增一段结算对话要做三件事：写 `Assets/Data/Dialogues/<name>.json`（内部 `id` 建议同名）、在场景 `_dialogues` 里登记该 id、在阶段 JSON 里填 `successDialogueId` / `failureDialogueId`。**没登记就只是每次结算 `LogWarning` 一次然后按「没有结算对话」继续**，不会卡流程。
 
 ---
 
 ## 8. 刻意不做
 
 - **不做阶段内中途存档**：只在 `StartPhase` 写一次进度，中途退出不记世界状态。
-- **不做条件分支**：阶段链是**线性**的（`nextPhaseId` 单出口），胜负不改变下一阶段的走向——失败只是原地重来。
+- **不做条件分支**：阶段链是**线性**的（`nextPhaseId` 单出口），胜负不改变下一阶段的走向——失败只是原地重来。结算对话（§4.4）只改「切换前说什么」，**不改**这一走向。
 - **不做阶段内世界状态存档**：重来 = 重建**空沙箱** + 走重进对话分支（`repeatDialogueId`），不还原玩家之前的布局。
 - 不做运行时改条件 / 热更新阶段文件（JSON 在 `StartPhase` 时解析，改动需重新进入该阶段）。
 - 选关界面**不画关卡缩略图 / 不显示进度细节**：只按解锁集合显隐 5 颗按钮（见 §10）；`JumpToPhase` 保留为控制台 / 调试入口。
@@ -338,7 +364,7 @@ flowchart LR
 
 ## 10. 测试
 
-`GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / 尺寸非法 / `particles[].type` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`repeatDialogueId` 写出即解析出 / 省略为 null、`availableParticles` 省略或空数组 = 不限制、**`description` 往返与「省略 / 空串 = 无描述」**）/ **`victory` 归一化**（省略 / `{}` / `particles` 为空 → `null`；有一条非 NaN 界限或非空 `particles` → 保留）；`GamePhaseData.ResolveOpeningDialogueId` 的首次 → `dialogueId`、重进 → `repeatDialogueId`、重进且未配 → null；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、类型名解析失败、**按序报第一条失败**。
+`GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / 尺寸非法 / `particles[].type` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`repeatDialogueId` 写出即解析出 / 省略为 null、**`successDialogueId` / `failureDialogueId` 往返与「省略 / 空串 = 不播结算对话」**、`availableParticles` 省略或空数组 = 不限制、**`description` 往返与「省略 / 空串 = 无描述」**）/ **`victory` 归一化**（省略 / `{}` / `particles` 为空 → `null`；有一条非 NaN 界限或非空 `particles` → 保留）；`GamePhaseData.ResolveOpeningDialogueId` 的首次 → `dialogueId`、重进 → `repeatDialogueId`、重进且未配 → null；**`GamePhaseData.ResolveResultDialogueId` 的过关 → `successDialogueId`、未过关 → `failureDialogueId`、只配一边时另一边为 null（= 那条路径不播结算对话）**；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、类型名解析失败、**按序报第一条失败**。
 
 `GameSaveProgressTests`（EditMode，纯静态 API）：`SavePathFor` 空名回退、`LoadSave` 缺文件 / 坏 JSON → null、`WriteSave` → `LoadSave` 往返（含解锁集合排序）、`CollectUnlockedPhaseIds` 的 null / 旧档回填 / 去重剔空、`WriteSave` 传 null 解锁表。
 

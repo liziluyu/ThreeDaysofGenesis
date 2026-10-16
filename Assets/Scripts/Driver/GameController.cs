@@ -18,7 +18,8 @@ namespace TapTap2026.Game
     /// 由 <see cref="_phases"/> 逐个登记。</para>
     /// <para>一局的流程：<see cref="StartPhase"/> 播对话 + 重建空沙箱 + 套用投放白名单，对话结束后玩家在
     /// <see cref="ParticleEditor"/> 里按 H 进高速模式；会话跑满时长自动暂停，本类在 <see cref="Update"/> 里评估一次胜利条件并缓存结论；
-    /// 玩家按 Enter / H 确认退出后，本类按缓存的结论进入下一阶段或重来（重来 = 走「重复进入」分支选对话 + 重建空沙箱）。</para>
+    /// 玩家按 Enter / H 确认退出后，本类按缓存的结论进入下一阶段或重来（重来 = 走「重复进入」分支选对话 + 重建空沙箱）；
+    /// 阶段配了结算对话（<see cref="GamePhaseData.ResolveResultDialogueId"/>）时，先播完它再执行这次切换。</para>
     /// <para>胜负**不在本类上屏**：结论经只读属性 <see cref="HasVerdict"/> / <see cref="LastResult"/> / <see cref="LastReason"/> 暴露，
     /// 由 <see cref="ParticleEditor"/> 在高速模式结算面板里显示（过关绿 / 未过关红）。
     /// 本类只管开关场景里的「全部阶段完成」横幅（<see cref="_completionBanner"/>）——不画任何 IMGUI。</para>
@@ -85,6 +86,9 @@ namespace TapTap2026.Game
 
         /// <summary>缓存的判定理由（通过摘要 / 第一条未满足项）。</summary>
         private string _lastReason;
+
+        /// <summary>结算对话正在播，阶段切换已挂起；它播完（或起播失败）再执行。</summary>
+        private bool _awaitingResultDialogue;
 
         /// <summary>是否已走完最后一个阶段（打开常驻的「全部阶段完成」横幅，不再启动新阶段）。</summary>
         private bool _allPhasesCompleted;
@@ -197,7 +201,8 @@ namespace TapTap2026.Game
         /// <summary>
         /// 高速模式的轮询（每帧一次，纯观察）：会话一进入「Active 且 Completed」就评估一次胜利条件并缓存结论
         /// （阶段没有 <c>victory</c> = 沙盒，跳过判定、不置 <see cref="HasVerdict"/>）；
-        /// 随后观察到会话退出（Active 变 false）且确实求过胜负，才按缓存结论推进流程（下一阶段 / 重来 / 全部完成）。
+        /// 随后观察到会话退出（Active 变 false）且确实求过胜负，才按缓存结论推进流程（下一阶段 / 重来 / 全部完成）——
+        /// 若本阶段配了结算对话，则先播它、播完（或起播失败）才真正执行切换，见 <see cref="_awaitingResultDialogue"/>。
         /// 会话被世界重建丢弃（从未结算）时不采取任何行动。
         /// </summary>
         private void Update()
@@ -211,6 +216,19 @@ namespace TapTap2026.Game
             HighSpeedSession session = _driver.HighSpeed;
             if (session == null)
             {
+                return;
+            }
+
+            // 挂起的阶段切换：结算对话还在播就等它，播完（或对话被强制关闭）才执行。
+            if (_awaitingResultDialogue)
+            {
+                if (_dialogue != null && _dialogue.IsActive)
+                {
+                    return;
+                }
+
+                _awaitingResultDialogue = false;
+                FinishResult();
                 return;
             }
 
@@ -323,11 +341,14 @@ namespace TapTap2026.Game
             _unlockedPhases.Add(id);
             WriteSave(_saveFileName, id, new List<string>(_unlockedPhases));
 
+            // 阶段一启动就作废任何挂起的结算收尾（本方法也覆盖外部 JumpToPhase 的跳转）：
+            // 否则上一轮的结算对话播完后，会把玩家从新阶段拽回去重来 / 前进。
             _currentPhase = phase;
             CurrentPhaseId = id;
             _sessionWasActive = false;
             _sessionCompletedSeen = false;
             _sessionHadVerdict = false;
+            _awaitingResultDialogue = false;
             _lastReason = null;
             _allPhasesCompleted = false;
             SetCompletionBannerVisible(false);
@@ -376,11 +397,54 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 按缓存的结算结论行动：过关 → 有 <see cref="GamePhaseData.nextPhaseId"/> 就进下一阶段，
-        /// 没有就把 <see cref="_allPhasesCompleted"/> 置位（常驻「全部阶段完成」）；未过关 → 重开当前阶段
-        /// （<see cref="StartPhase"/> 会按解锁集合走「重复进入」分支选对话 + 重建空沙箱）。
+        /// 结算入口：本阶段配了结算对话就先播、并挂起阶段切换（<see cref="_awaitingResultDialogue"/>，
+        /// 由 <see cref="Update"/> 等它播完后再走 <see cref="FinishResult"/>）；没配 / 未接线 / 起播失败 ⇒ 立刻 <see cref="FinishResult"/>。
         /// </summary>
         private void ApplyResult()
+        {
+            GamePhaseData phase = _currentPhase;
+
+            // 结算对话（若本阶段配了）：先播完它、再切阶段——切换会把世界清空（Resize）并播新阶段开场，
+            // 提前做会让玩家在空沙箱上读结算。没配 / 未接线 / 起播失败 ⇒ 与既有行为一致（立刻切换）。
+            if (StartResultDialogue(phase != null ? phase.ResolveResultDialogueId(_lastResult) : null))
+            {
+                _awaitingResultDialogue = true;
+                return;
+            }
+
+            FinishResult();
+        }
+
+        /// <summary>起播结算对话。空 id / 未接线 DialogueController / 注册表里查不到 → 返回 false（调用方按"没有结算对话"处理）。</summary>
+        private bool StartResultDialogue(string dialogueId)
+        {
+            if (string.IsNullOrEmpty(dialogueId))
+            {
+                return false;
+            }
+
+            if (_dialogue == null)
+            {
+                Debug.LogWarning($"[GameController] 阶段 \"{CurrentPhaseId}\" 配了结算对话 \"{dialogueId}\" 但没接线 DialogueController，跳过。");
+                return false;
+            }
+
+            if (!_dialogue.StartDialogue(dialogueId))
+            {
+                Debug.LogWarning($"[GameController] 阶段 \"{CurrentPhaseId}\" 的结算对话 \"{dialogueId}\" 启动失败，按无结算对话处理。");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 结算收尾：按缓存的结论重来 / 进下一阶段 / 开完成横幅。过关 → 有 <see cref="GamePhaseData.nextPhaseId"/> 就进下一阶段，
+        /// 没有就把 <see cref="_allPhasesCompleted"/> 置位（常驻「全部阶段完成」）；未过关 → 重开当前阶段
+        /// （<see cref="StartPhase"/> 会按解锁集合走「重复进入」分支选对话 + 重建空沙箱）。
+        /// 阶段切换逻辑**只此一处**——<see cref="ApplyResult"/> 只负责「先播结算对话、再回来执行这里」。
+        /// </summary>
+        private void FinishResult()
         {
             GamePhaseData phase = _currentPhase;
             string phaseId = CurrentPhaseId;

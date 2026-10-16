@@ -141,4 +141,4 @@ UI、打字机、热键、`SuppressInput`、暂停联动**不进 EditMode**（�
 - 无中文字体时文本豆腐块 □（字体归用户在场景里逐组件维护，见 §7.3）。
 - 触发只给 `StartDialogue` API + 调试热键；真正的 NPC 交互等有玩家/NPC 再接。
 - 打字机纯文本，不解析 TMP 富文本标签。
-- **对话是线性的**：没有分支 / 条件 / flag / 变量，一个文件就是一条台词序列。要「按状态说不同的话」得在**游戏流程层**做（`GameController` 按阶段 / 是否重进选不同的对话 id，见 `docs/GameFlow.md`），而不是在对话文件里。
+- **对话是线性的**：没有分支 / 条件 / flag / 变量，一个文件就是一条台词序列。要「按状态说不同的话」得在**游戏流程层**做（`GameController` 按阶段 / 是否重进 / 高速模式过关与否选不同的对话 id——`dialogueId` / `repeatDialogueId` / `successDialogueId` / `failureDialogueId`，见 `docs/GameFlow.md`），而不是在对话文件里。

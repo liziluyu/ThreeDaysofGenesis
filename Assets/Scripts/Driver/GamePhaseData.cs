@@ -24,6 +24,12 @@ namespace TapTap2026.Game
         /// <summary>重复进入本阶段时播放的对话 id（注册表 id）；null / 空 = 重复进入时不播对话。</summary>
         public string repeatDialogueId;
 
+        /// <summary>本阶段**过关**后播的对话 id（注册表 id）；null / 空 = 不播结算对话（沿用既有流程）。</summary>
+        public string successDialogueId;
+
+        /// <summary>本阶段**未过关**后播的对话 id（注册表 id）；null / 空 = 不播结算对话（沿用既有流程）。</summary>
+        public string failureDialogueId;
+
         /// <summary>下一阶段 id；null / 空 = 最终阶段（过关后不再启动新阶段）。</summary>
         public string nextPhaseId;
 
@@ -58,6 +64,15 @@ namespace TapTap2026.Game
         public string ResolveOpeningDialogueId(bool isRepeat)
         {
             return isRepeat ? repeatDialogueId : dialogueId;
+        }
+
+        /// <summary>
+        /// 高速模式结算后本阶段要播的「结算对话」：过关给 <see cref="successDialogueId"/>、未过关给 <see cref="failureDialogueId"/>。
+        /// 返回 null / 空 = 不播结算对话。
+        /// </summary>
+        public string ResolveResultDialogueId(bool passed)
+        {
+            return passed ? successDialogueId : failureDialogueId;
         }
     }
 

@@ -46,7 +46,7 @@
 
 ## 游戏流程层
 
-`GameController`（阶段 JSON 驱动薄壳：读档 → `StartPhase`（按解锁集合选 `dialogueId`/`repeatDialogueId` 播对话 → `Resize` 重建沙箱 → 投放白名单 → 自动存档）→ 高速模式结算 → 过关推进 `nextPhaseId`/失败重来，`JumpToPhase` 按解锁门槛跳关；阶段**没有 `victory`**（沙盒 `phase_05`）时高速模式跑完不判定、不推进）+ `GamePhaseData`/`GamePhaseParser`（纯 C# 阶段解析，哨兵值表「不约束」，全哨兵的 `victory` 归一为 `null`）+ `VictoryEvaluator`（纯 C# 胜利判定：吃 `HighSpeedSnapshot`、输出布尔 + 第一条未满足项理由）。存档格式唯一权威也在 `GameController`（`SaveData` + 静态 `SavePathFor`/`LoadSave`/`CollectUnlockedPhaseIds`/`WriteSave`），供选关界面复用。阶段 `Assets/Data/Phases/phase_01..05.json`；唯一权威文档 **`docs/GameFlow.md`**。
+`GameController`（阶段 JSON 驱动薄壳：读档 → `StartPhase`（按解锁集合选 `dialogueId`/`repeatDialogueId` 播对话 → `Resize` 重建沙箱 → 投放白名单 → 自动存档）→ 高速模式结算（`successDialogueId` / `failureDialogueId` 配了就先播结算对话、**播完才切阶段**，见 `docs/GameFlow.md` §4.4）→ 过关推进 `nextPhaseId`/失败重来，`JumpToPhase` 按解锁门槛跳关；阶段**没有 `victory`**（沙盒 `phase_05`）时高速模式跑完不判定、不推进、不播结算对话）+ `GamePhaseData`/`GamePhaseParser`（纯 C# 阶段解析，哨兵值表「不约束」，全哨兵的 `victory` 归一为 `null`）+ `VictoryEvaluator`（纯 C# 胜利判定：吃 `HighSpeedSnapshot`、输出布尔 + 第一条未满足项理由）。存档格式唯一权威也在 `GameController`（`SaveData` + 静态 `SavePathFor`/`LoadSave`/`CollectUnlockedPhaseIds`/`WriteSave`），供选关界面复用。阶段 `Assets/Data/Phases/phase_01..05.json`；唯一权威文档 **`docs/GameFlow.md`**。
 
 `LevelSelectController`（**关卡选择界面**，`Assets/Scenes/LevelSelect.unity` 的根对象 `Level Select Controller`）：按存档解锁集合逐颗 `SetActive` 五颗按钮（Day0..Day3 + 沙盒 = `phase_01..phase_05`，未解锁整颗隐藏；解锁集合为空时只显示第一关当入口），点选经 `CommitSelection` 写档后 `SceneManager.LoadScene("MainScene")`；**悬停**在关卡按钮上时把该关阶段 JSON 的 `description` 写到 `Canvas/ProbeText`（`EventTrigger` 在 `Awake` 运行期绑定，非悬停时隐藏）。**LevelSelect 与 MainScene 都在 Build Settings**（`MainScene` 下标 0）。场景接线由 `LevelSelectSceneWiringTests` 钉住。
 

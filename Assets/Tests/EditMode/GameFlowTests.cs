@@ -370,6 +370,74 @@ namespace TapTap2026.Tests
             Assert.IsNull(phase.ResolveOpeningDialogueId(true));
         }
 
+        // ============================== 结算对话选择 ==============================
+
+        /// <summary>合法 JSON 的两个结算对话 id 都能解析出来（与 <c>dialogueId</c> 同款：不校验、只透传）。</summary>
+        [Test]
+        public void TryParse_ResultDialogues_RoundTrip()
+        {
+            const string json =
+                "{\"sandboxWidth\":10,\"sandboxHeight\":10," +
+                "\"successDialogueId\":\"phase_01_success\"," +
+                "\"failureDialogueId\":\"phase_01_failure\"}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.AreEqual("phase_01_success", phase.successDialogueId);
+            Assert.AreEqual("phase_01_failure", phase.failureDialogueId);
+        }
+
+        /// <summary>可空语义钉死：两个结算对话 id 省略 → null；显式空串 → <c>""</c>。
+        /// 两者都让 <c>StartResultDialogue</c> 的 <c>IsNullOrEmpty</c> 判定为「没有结算对话」而立刻切阶段。</summary>
+        [Test]
+        public void TryParse_OmittedOrEmptyResultDialogues_MeanNoResultDialogue()
+        {
+            string error;
+
+            GamePhaseData omitted;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse("{\"sandboxWidth\":10,\"sandboxHeight\":10}", out omitted, out error),
+                error);
+            Assert.IsNull(omitted.successDialogueId);
+            Assert.IsNull(omitted.failureDialogueId);
+            Assert.IsTrue(string.IsNullOrEmpty(omitted.successDialogueId));
+            Assert.IsTrue(string.IsNullOrEmpty(omitted.failureDialogueId));
+
+            GamePhaseData blank;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse(
+                    "{\"successDialogueId\":\"\",\"failureDialogueId\":\"\",\"sandboxWidth\":10,\"sandboxHeight\":10}",
+                    out blank,
+                    out error),
+                error);
+            Assert.AreEqual(string.Empty, blank.successDialogueId);
+            Assert.AreEqual(string.Empty, blank.failureDialogueId);
+            Assert.IsTrue(string.IsNullOrEmpty(blank.successDialogueId));
+            Assert.IsTrue(string.IsNullOrEmpty(blank.failureDialogueId));
+        }
+
+        /// <summary>过关给 <c>successDialogueId</c>、未过关给 <c>failureDialogueId</c>；
+        /// 只配未过关的那种 → 过关时返回 null（= 不播结算对话），不会两边串味。</summary>
+        [Test]
+        public void ResolveResultDialogueId_ReturnsConfiguredIdPerOutcome()
+        {
+            var phase = new GamePhaseData
+            {
+                successDialogueId = "phase_01_success",
+                failureDialogueId = "phase_01_failure",
+            };
+
+            Assert.AreEqual("phase_01_success", phase.ResolveResultDialogueId(true));
+            Assert.AreEqual("phase_01_failure", phase.ResolveResultDialogueId(false));
+
+            var failureOnly = new GamePhaseData { failureDialogueId = "phase_01_failure" };
+
+            Assert.IsNull(failureOnly.ResolveResultDialogueId(true));
+            Assert.AreEqual("phase_01_failure", failureOnly.ResolveResultDialogueId(false));
+        }
+
         // ============================== 判定 ==============================
 
         /// <summary>全部约束都满足 → true，reason 为通过摘要。</summary>
