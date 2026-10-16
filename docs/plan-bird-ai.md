@@ -245,3 +245,47 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 5. **物种配置守卫**:`new RabbitCreature().HuntDeathDenominator > 1` 且 `new FishCreature().HuntDeathDenominator > 1`(否则功能静默失效)。**不钉具体数值**(调参不该红测试)。
 6. **既有必死用例收尾**:`Hunt_Contact_KillsPreyOnceAsHunted_AndMaterializes`、`Hunt_DivesIntoWater_KillsShallowFish_AndSurvives`、`Hunt_FromBandTop_ReachesGroundPrey_WithinTimeout` 显式置 `prey.HuntDeathDenominator = 1`(语义不变)。
 7. **确定性**:同 seed 逐位重放保持绿(锁存结果由思考帧摇骰决定,同样确定性)。
+
+## 15. v6 鱼的上下游:深度带随机游层(2026-10-16 用户指定,振幅 5 格)
+
+**动机:** 鱼的竖直行为只有三条硬规则(触面锁潜 / 捷近池底上抬 / 否则中性浮动 `IntentVy = 0`),于是**深池里鱼下潜到「体顶之上还剩 3 格水」就冻住**,之后深度永不改变。用户要求:**给鱼也加上下游,范围比鸟小一档(指定振幅 5 格)**。
+
+### 15.1 参考量与判据
+
+- **参考量 = `depth`(体顶之上的连续水格数)**,即水面到体顶的距离:
+  `bodyTopRow = floor(Y) + BodyTopOffsetCells`;`surfaceRow` = 体顶之上第一个非水行(越界算非水);`depth = surfaceRow − 1 − bodyTopRow`。
+- **几何上限** `geoMax`(鱼贴底时能有的 depth):`bottomRow` = 脚底之下第一个非水行(越界算非水),
+  `geoMax = surfaceRow − bottomRow − 2 − BodyTopOffsetCells`(深 `d` 的池里正好 = `d − 4`)。
+  目标带 = `[MinDepthCells, min(MaxDepthCells, geoMax)]`。
+- 常量:`MinDepthCells = DiveUnlockMarginCells`(**3**:上层永远留出解锁所需余量 ⇒ 不可能浮出水面)、
+  `MaxDepthCells = 8` ⇒ 带 **3~8 格 / 振幅 5 格**(屏高 5%、约 1.25× 鱼图案高 4 行)。对比鸟的 6~24(振幅 18)就是小一档。
+- 新黑板槽位 `Creature.TargetDepthCells`(int,Brain 写 / 读,基类只存;默认 0 视为无效并在首个思考帧重摇)。
+
+### 15.2 每思考帧的竖直判定(前三条=现有硬规则,不变)
+
+1. `IsWater(体顶+1)` 为假 ⇒ `VerticalDiveLatched = true`(触面锁潜,原样);
+2. `HasWaterAbove`(连续 `DiveUnlockMarginCells` 格全水)⇒ 解锁(原样);
+3. `geoMax < MinDepthCells`(池浅到摆不下带)⇒ **整段游层跳过**,行为与今天完全一致(浅池永久伏底、零额外摇骰);
+4. 否则:目标无效(`target < MinDepthCells` 或 `target > min(MaxDepthCells, geoMax)`)或**已达成**(`depth == target`)⇒ 重摇 `target = MinDepthCells + NextInt(min(MaxDepthCells, geoMax) − MinDepthCells + 1)`;
+5. 朝目标走:`depth > target`(比目标深)⇒ 上浮 `+VerticalSpeed`;`depth < target` ⇒ 下潜 `−VerticalSpeed`;相等 ⇒ `IntentVy = 0` 悬停一帧后重摇。
+
+锁潜(第 1-2 条)仍**优先于**游层:贴合水面的鱼先下潜,解锁后才进入带内上下游。近底上抬(`nearBottom`,按盒中心判)
+保留在其后的分支里,只影响贴底附近。
+
+### 15.3 观感与纪律
+
+- 竖直稳态 0.04 格/帧(0.8 格/秒)⇒ 一段 2~5 格约 **3~6 秒**,是缓漂而不是抽撞。
+- RNG:只在思考帧摇;浅池(`geoMax < 3`)**零摇骰**;粒子世界流零消耗。
+- 「到达即重摇」而非逐帧摇:否则退化成逐帧抖动(FishShallowWaterTests 记录过旧实现 600 帧换号 52 次的坑)。
+
+### 15.4 验收(测试)
+
+1. **深池(如 d = 20)600 帧**:`depth` 恒在 `[MinDepthCells − 1, min(MaxDepthCells, geoMax) + 1]`(±1 物理容差)、
+   **上浮与下潜两个方向都出现过**、**每帧整条身体没入水下**(`BodyTopRow ≤ 最后一格水`)、从不贴底。
+2. **到达即重摇**:强制 `TargetDepthCells` = 当前 `depth` ⇒ 随后若干帧内 depth 离开该值(不粘死)。
+3. **池太浅(d ≤ 6)**:行为与今天完全一致(锁潜恒真 / 竖直意图恒 0 / 贴底),且随机流**零额外消耗**。
+4. **目标越界**(置 0 / 置 99,或池变浅)⇒ 重摇后落在合法带内。
+5. **既有深池用例收尾**:`OpenDeeperPool_RestsWithoutVerticalIntent` / `OpenPool_Depth10_HoldsDepthAndHeading`
+   钉的是旧契约(「深池里竖直意图恒 0、深度不变」),按新契约改写为「深度留在带内 + 双向都出现」;
+   浅池三条(`OpenShallowPool_*` / `NarrowShallowTank_*`)与确定性 / 世界流隔离用例保持绿。
+6. **确定性**:同 seed 逐位重放。
