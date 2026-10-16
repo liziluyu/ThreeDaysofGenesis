@@ -38,7 +38,7 @@
 - `FireSoundDriver`：`world.Counts.Count(ParticleIds.Fire)` 火格数（不是比例）→ `MapLoudness(0..40)` → EMA 0.25s。
 - `LightningSoundDriver`：每帧**无条件** `ConsumeCreated(ParticleIds.Lightning)` 先清账再判开关，`> 0` 就 `PlayOneShot` 一声（created 是格数——一次起爆几十格，故一帧最多一声）。
 - `FallingSandSoundDriver`：`world.SolidMotion.MovingCount` 绝对运动格数 → `MapLoudness(0..40)`。**无 EMA/滞回**——固体落地即静止、无噪声底；口径 = Solid 且非 Organic（落叶/种子不触发）。
-- `AnimalSoundDriver`（动物声音，§16）：**按物种存在与否**间歇放一次性音——每帧 `for` 遍历 `CreatureWorld.Creatures` 只判「该物种在不在场」，每物种一个倒计时，到点 `PlayOneShot(idleClip, 音量)` 并**重摇** `[min, max]` 间隔（间歇而非节拍器）；物种消失即解除武装（重现要等完整间隔）。另接 `CreatureSpawned`/`CreatureDied` 各一声（**每物种每路每帧最多一声**，同帧死 5 只折叠成一声；死声/生声文件名留空回落用闲聊声）。`Pump(creatures, dt)` 公开（返回本次出声数）供测试脱离帧循环驱动；**自带一条 xorshift32**（不碰粒子/动物两条流）；`HighSpeedSilenced` 期间整段跳过（不倒计时、不摇骰、事件留到退出后补）。默认 兔 6~14s / 鸟 5~12s / 鱼 8~18s。
+- `AnimalSoundDriver`（动物声音，§16）：**按物种存在与否**间歇放一次性音——每帧 `for` 遍历 `CreatureWorld.Creatures` 只判「该物种在不在场」，每物种一个倒计时，到点 `PlayOneShot(idleClip, 音量)` 并**重摇** `[min, max]` 间隔（间歇而非节拍器）；物种消失即解除武装（重现要等完整间隔）。另接 `CreatureSpawned`/`CreatureDied` 各一声（**每物种每路每帧最多一声**，同帧死 5 只折叠成一声；死声/生声文件名留空回落用闲聊声）。`Pump(creatures, dt)` 公开（返回本次出声数）供测试脱离帧循环驱动；**自带一条 xorshift32**（不碰粒子/动物两条流）；`HighSpeedSilenced` 期间整段跳过（不倒计时、不摇骰、事件留到退出后补）。默认 兔 6~14s / 鸟 6~12s / 鱼 8~18s(下限均 ≥ 素材时长 4.15/4.99/4.99 s ⇒ 不叠音)。
 
 ## 沙箱演示
 

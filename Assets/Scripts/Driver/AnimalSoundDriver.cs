@@ -56,7 +56,7 @@ namespace TapTap2026.Game
         [SerializeField] private SoundController _sound;
 
         [SerializeField] private CreatureVoice _rabbit = new CreatureVoice { idleClip = "rabbit", idleIntervalMin = 6f, idleIntervalMax = 14f, idleVolume = 0.5f };
-        [SerializeField] private CreatureVoice _bird = new CreatureVoice { idleClip = "bird", idleIntervalMin = 5f, idleIntervalMax = 12f, idleVolume = 0.5f };
+        [SerializeField] private CreatureVoice _bird = new CreatureVoice { idleClip = "bird", idleIntervalMin = 6f, idleIntervalMax = 12f, idleVolume = 0.5f };
         [SerializeField] private CreatureVoice _fish = new CreatureVoice { idleClip = "fish", idleIntervalMin = 8f, idleIntervalMax = 18f, idleVolume = 0.45f };
 
         [Tooltip("本驱动自己的随机流种子（xorshift32）：不碰粒子/动物那两条流；同 seed 出声时刻可复现")]
