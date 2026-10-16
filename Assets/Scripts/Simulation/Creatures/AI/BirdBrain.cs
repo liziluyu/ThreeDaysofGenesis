@@ -28,11 +28,13 @@ namespace TapTap2026.Simulation
     /// <para><b>Perched（栖息）：</b><c>IntentVx = IntentVy = 0</c>；计时（<see cref="PerchTicksMin"/> +
     /// [0, <see cref="PerchTicksRange"/>]）归零即起飞（随机水平方向 + <c>IntentVy = FlyVSpeed</c>）。</para>
     /// <para><b>v1 非目标：</b>不进食、不繁殖、不筑巢、不做全局寻路。</para>
-    /// <para><b>Hunt（捕食，v2）：</b>只在 Fly 态思考帧触发——视野 <see cref="HuntDetectCells"/> 格内
+    /// <para><b>Hunt（捕食，v2；死亡骰 v5）：</b>只在 Fly 态思考帧触发——视野 <see cref="HuntDetectCells"/> 格内
     /// （盒中心欧氏距离，与放弃判据同一口径）存在猎物（兔 / 鱼）才摇 <c>1 / <see cref="HuntDenominator"/></c>
     /// 的骰，命中即转 <see cref="StateHunt"/> 并锁定 <see cref="Creature.HuntTarget"/>；**视野内无猎物不摇骰**
-    /// （随机流不漂移）。追击每思考帧重瞄目标；击杀由运动层 ⑥b 段（AABB 重叠）完成，此后 Brain 看到
-    /// 「仍在本态但目标已空」即撤离回 Fly。放弃条件：目标死亡 / 移出世界、逃出 <see cref="HuntAbortCells"/>、
+    /// （随机流不漂移）。**锁定目标的那一刻**再摇一次死亡骰（<c>1 / HuntDeathDenominator</c>）并锁存到
+    /// <see cref="Creature.HuntKillLatched"/>（见 <c>docs/plan-bird-ai.md</c> §14）——追击动作不变，接触时由
+    /// 运动层 ⑥b 段（AABB 重叠）**只读锁存**结算死活，运动层因此零随机数依赖，动物随机流仍只在思考帧消耗。
+    /// 此后 Brain 看到「仍在本态但目标已空」即撤离回 Fly。放弃条件：目标死亡 / 移出世界、逃出 <see cref="HuntAbortCells"/>、
     /// 超时 <see cref="HuntTimeoutTicks"/>。优先级 <b>落水自救 &gt; 火焰逃命（可打断 Hunt）&gt; Hunt &gt; Fly / Perched</b>——
     /// 唯一的例外是「Hunt 态且目标是鱼」时豁免落水自救反射（鸟可以扎进水里叼鱼）。</para>
     /// </remarks>
@@ -248,7 +250,7 @@ namespace TapTap2026.Simulation
             if (TryDetectPrey(creature, creatures, out Creature prey)
                 && creatures.NextInt(HuntDenominator) == 0)
             {
-                EnterHunt(creature, prey);
+                EnterHunt(creature, prey, creatures);
                 ThinkHunt(creature, creatures);
                 return;
             }
@@ -367,12 +369,19 @@ namespace TapTap2026.Simulation
             return found;
         }
 
-        /// <summary>进入 Hunt：锁定目标、写超时计时（<see cref="StateTicksLeft"/> 复用为追击超时）。</summary>
-        private static void EnterHunt(Creature creature, Creature prey)
+        /// <summary>进入 Hunt：锁定目标、写超时计时（<see cref="Creature.StateTicksLeft"/> 复用为追击超时），
+        /// 并在**锁定这一刻**摇一次死亡骰锁存到 <see cref="Creature.HuntKillLatched"/>
+        /// （v5，见 <c>docs/plan-bird-ai.md</c> §14）——之后追击动作不变、接触时由运动层只读锁存结算。</summary>
+        private static void EnterHunt(Creature creature, Creature prey, CreatureWorld creatures)
         {
             creature.AiState = StateHunt;
             creature.HuntTarget = prey;
             creature.StateTicksLeft = HuntTimeoutTicks;
+            // 死亡骰：锁定目标时摇一次并锁存，之后追击动作不变、接触时按锁存结果结算。
+            // 分母 <= 1 ⇒ 必杀且不摇骰（保持「必死」物种的随机流不变）；骰子放在思考帧，守住
+            // 「动物随机流只在思考帧消耗」的纪律，运动层因此零随机数依赖。
+            creature.HuntKillLatched = prey.HuntDeathDenominator <= 1
+                || creatures.NextInt(prey.HuntDeathDenominator) == 0;
         }
 
         /// <summary>Hunt 态思考帧：先判撤离 / 放弃，否则重瞄目标转向。
@@ -423,6 +432,7 @@ namespace TapTap2026.Simulation
         private static void ExitHunt(Creature creature, CreatureWorld creatures, bool retreat)
         {
             creature.HuntTarget = null;
+            creature.HuntKillLatched = false; // 复位命中锁存，防残留影响下一次追击
             creature.AiState = StateFly;
             creature.StateTicksLeft = CruiseTicksMin + creatures.NextInt(CruiseTicksRange);
             creature.IntentVy = retreat ? FlyVSpeed : 0f;

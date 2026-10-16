@@ -26,6 +26,13 @@ namespace TapTap2026.Tests
         private const int H = 64;
         private const uint SeedValue = 20261011u;
 
+        /// <summary>v5 死亡骰「扑空」用例的固定 seed：进入 Hunt 那一帧的两抽依次为
+        /// <c>NextInt(HuntDenominator=40)</c>（= 641605160 % 40 == 0 ⇒ 命中检测）与
+        /// <c>NextInt(prey.HuntDeathDenominator=2)</c>（= 1519842933 % 2 == 1 ⇒ **扑空**）。
+        /// 对照 <see cref="SeedValue"/>：第一抽 549735040 % 40 == 0（同样进入 Hunt），第二抽
+        /// 2602030858 % 2 == 0（**命中**）。两个 seed 都按既有钉法现场试出并写死（见 docs/plan-bird-ai.md §14.4）。</summary>
+        private const uint DeathRollMissSeed = 20261152u;
+
         private static ushort Stone
         {
             get { return ParticleIds.Stone; }
@@ -896,6 +903,7 @@ namespace TapTap2026.Tests
             CreatureWorld creatures = new CreatureWorld(SeedValue);
             BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 1f);
             RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 1f);
+            prey.HuntDeathDenominator = 1; // 本用例钉必死路径（分母 ≤ 1 不摇骰，见 §14）
 
             int deaths = 0;
             Creature seen = null;
@@ -909,9 +917,10 @@ namespace TapTap2026.Tests
 
             bird.AiState = BirdBrain.StateHunt;
             bird.HuntTarget = prey;
+            bird.HuntKillLatched = true; // 显式锁存「咬杀」：本用例手工预置 Hunt 态、绕过 EnterHunt 的死亡骰
             bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
 
-            creatures.Step(world); // 相位 0：思考 → 运动层 ⑥b 重叠击杀 → 清扫物质化
+            creatures.Step(world); // 相位 0：思考 → 运动层 ⑥b 重叠结算（锁存命中即死） → 清扫物质化
 
             Assert.IsFalse(prey.Alive, "接触即应被猎杀");
             Assert.AreEqual(1, deaths, "死亡事件应恰好一次");
@@ -957,6 +966,7 @@ namespace TapTap2026.Tests
 
             bird.AiState = BirdBrain.StateHunt;
             bird.HuntTarget = prey;
+            bird.HuntKillLatched = true; // 手工预置 Hunt 态、绕过 EnterHunt ⇒ 显式锁存「咬杀」
             bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
 
             bool sawRetreat = false;
@@ -1030,9 +1040,11 @@ namespace TapTap2026.Tests
             CreatureWorld creatures = new CreatureWorld(SeedValue);
             BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 8f);
             FishCreature prey = creatures.Spawn(new FishCreature(), world, 24f, 2f);
+            prey.HuntDeathDenominator = 1; // 本用例钉必死路径（分母 ≤ 1 ⇒ EnterHunt 锁存必杀且不摇骰，见 §14）
 
             bird.AiState = BirdBrain.StateHunt;
             bird.HuntTarget = prey;
+            bird.HuntKillLatched = true; // 手工预置 Hunt 态、绕过 EnterHunt ⇒ 显式锁存「咬杀」
             bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
 
             bool killed = false;
@@ -1152,11 +1164,13 @@ namespace TapTap2026.Tests
             BirdCreature bird = creatures.Spawn(
                 new BirdCreature(), world, 24f, BirdBrain.MaxAltitudeCells + 1f);
             RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 1f);
+            prey.HuntDeathDenominator = 1; // 本用例钉必死路径（分母 ≤ 1 ⇒ EnterHunt 锁存必杀且不摇骰，见 §14）
             prey.AiState = RabbitBrain.StateIdle;
             prey.StateTicksLeft = 100000;
 
             bird.AiState = BirdBrain.StateHunt;
             bird.HuntTarget = prey;
+            bird.HuntKillLatched = true; // 手工预置 Hunt 态、绕过 EnterHunt ⇒ 显式锁存「咬杀」
             bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
 
             bool killed = false;
@@ -1168,6 +1182,245 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(killed, "带顶发起的俯冲应能在 HuntTimeoutTicks 内够到地面猎物");
             Assert.IsTrue(bird.Alive, "俯冲杀猎物不该让鸟死");
+        }
+
+        // ================== §14 v5 捕食死亡骰（锁定目标时摇、接触时只读锁存） ==================
+
+        /// <summary>§14.4-1 分母 = 1 ⇒ 锁定目标即锁存「必杀」（不摇骰），接触当帧即判死。</summary>
+        [Test]
+        public void Hunt_DeathRoll_DenominatorOne_AlwaysKills()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue); // 第一抽 %40==0 ⇒ 首帧在视野内锁定猎物
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 8f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 8f); // 与鸟同格 ⇒ 进入即接触
+            prey.HuntDeathDenominator = 1; // 分母 ≤ 1 ⇒ 必杀且不摇骰
+
+            CreatureDeathCause seenCause = CreatureDeathCause.Unknown;
+            creatures.CreatureDied += (c, cause) => seenCause = cause;
+
+            bird.AiState = BirdBrain.StateFly; // 空中巡航：思考帧在视野内发现猎物 → 锁定（分母 1 ⇒ 直接锁存必杀）
+            bird.StateTicksLeft = 100000;
+
+            creatures.Step(world); // 相位 0：思考锁定 → 运动层 ⑥b 接触 → 判死 → 清扫
+
+            Assert.IsTrue(bird.HuntKillLatched, "分母 = 1 时锁定即锁存必杀");
+            Assert.IsFalse(prey.Alive, "分母 = 1 时接触当帧即死");
+            Assert.AreEqual(CreatureDeathCause.Hunted, seenCause, "死因应为 Hunted");
+            Assert.IsTrue(bird.HuntTarget == null, "接触后目标槽位应被清空");
+        }
+
+        /// <summary>§14.4-1 分母 = 2 命中路径：seed <see cref="SeedValue"/> 在进入 Hunt 那一帧的两抽为
+        /// <c>NextInt(40)==0</c>（检测）与 <c>NextInt(2)==0</c>（死亡骰命中）⇒ 锁存「咬杀」，
+        /// 接触当帧即死、死因 <see cref="CreatureDeathCause.Hunted"/>、尸体走既有物质化管线。</summary>
+        [Test]
+        public void Hunt_DeathRoll_Hit_DiesAndMaterializes()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue); // 两抽：40→命中检测、2→命中
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 8f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 8f); // 默认分母 = HuntDeathRoll
+
+            Assert.AreEqual(RabbitCreature.HuntDeathRoll, prey.HuntDeathDenominator, "兔子默认分母应为 HuntDeathRoll");
+
+            CreatureDeathCause seenCause = CreatureDeathCause.Unknown;
+            creatures.CreatureDied += (c, cause) => seenCause = cause;
+
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            creatures.Step(world); // 锁定（死亡骰命中）+ 同帧接触
+
+            Assert.IsTrue(bird.HuntKillLatched, "该 seed 的死亡骰应命中并锁存必杀");
+            Assert.IsFalse(prey.Alive, "锁存命中 ⇒ 接触当帧即死");
+            Assert.AreEqual(CreatureDeathCause.Hunted, seenCause, "死因应为 Hunted");
+            Assert.Greater(CountType(world, Biomass), 0, "命中后尸体应物质化出生物质");
+            Assert.IsTrue(bird.HuntTarget == null, "接触后目标槽位应被清空");
+        }
+
+        /// <summary>§14.4-1 / §14.4-2 分母 = 2 扑空路径：seed <see cref="DeathRollMissSeed"/> 在进入 Hunt
+        /// 那一帧的两抽为 <c>NextInt(40)==0</c> 与 <c>NextInt(2)==1</c> ⇒ 锁存「扑空」⇒ 猎物存活、
+        /// 零生物质增量、目标清空，鸟走既有撤离出口（<c>ExitHunt(retreat: true)</c>）回 Fly 并向上冲；
+        /// 撤离时命中锁存被复位。</summary>
+        [Test]
+        public void Hunt_DeathRoll_Miss_PreySurvivesAndBirdRetreats()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(DeathRollMissSeed); // 两抽：40→命中检测、2→扑空
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 8f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 8f);
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+
+            int biomassBefore = CountType(world, Biomass);
+
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            bool sawRetreat = false;
+            float intentVyAtRetreat = 0f;
+            for (int i = 0; i < 40 && !sawRetreat; i++)
+            {
+                byte before = bird.AiState;
+                creatures.Step(world);
+                if (before == BirdBrain.StateHunt && bird.AiState == BirdBrain.StateFly)
+                {
+                    sawRetreat = true;
+                    intentVyAtRetreat = bird.IntentVy;
+                }
+            }
+
+            Assert.IsTrue(prey.Alive, "扑空 ⇒ 猎物存活");
+            Assert.AreEqual(biomassBefore, CountType(world, Biomass), "扑空不写生物质");
+            Assert.IsTrue(sawRetreat, "扑空后应走撤离出口回 Fly");
+            Assert.AreEqual(BirdBrain.StateFly, bird.AiState, "撤离后应回 Fly");
+            Assert.IsTrue(bird.HuntTarget == null, "撤离后目标槽位应为空");
+            Assert.IsFalse(bird.HuntKillLatched, "撤离时命中锁存应被复位");
+            Assert.Greater(intentVyAtRetreat, 0f, "撤离应带向上冲的竖直意图（不停留）");
+        }
+
+        /// <summary>§14.4-3 死亡骰在行为层（锁定那一刻）摇、运动层只读锁存。
+        /// <para><b>A. 锁定即消耗：</b>鸟在 Fly 思考帧进入 Hunt（猎物在视野内但**不相交**，故此刻无接触）。
+        /// 该帧两抽 = <c>NextInt(40)</c>（检测）+ <c>NextInt(2)</c>（死亡骰）；用「从未消耗随机流的空世界」
+        /// 的抽取序列对齐，场景世界的下一次抽取应恰为空世界的**第三抽**（证明恰好消耗两抽、且发生在接触之前）。</para>
+        /// <para><b>B. 运动层零消耗：</b>用无 Brain 的 <see cref="ProbeCreature"/>，预置 <c>HuntKillLatched</c>
+        /// 与 <c>HuntTarget</c> 后强制两盒持续重叠 30 帧，与从未消耗流的空世界比对应逐位一致（⑥b 不摇骰）。</para></summary>
+        [Test]
+        public void Hunt_DeathRoll_RolledAtLockTime_NotOnContact()
+        {
+            // A. 锁定即消耗两抽（检测骰 + 死亡骰），且此刻尚无接触（鸟在 8 格、猎物在 1 格，两盒不相交）。
+            ParticleWorld worldA = NewWorld();
+            FillRows(worldA, 0, 0, Stone);
+            CreatureWorld scenario = new CreatureWorld(SeedValue); // 第一抽 %40==0 ⇒ 首帧进入 Hunt
+            BirdCreature bird = scenario.Spawn(new BirdCreature(), worldA, 24f, 8f);
+            RabbitCreature prey = scenario.Spawn(new RabbitCreature(), worldA, 24f, 1f); // 视野内（距离 7）、不相交
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            scenario.Step(worldA); // 相位 0：Fly 思考帧 → 检测 + 锁定（摇死亡骰）
+
+            Assert.AreEqual(BirdBrain.StateHunt, bird.AiState, "首帧应进入 Hunt");
+            Assert.IsTrue(bird.HuntTarget != null, "锁定后目标槽位应非空（尚未接触）");
+            Assert.IsTrue(prey.Alive, "尚未接触 ⇒ 猎物仍活");
+
+            CreatureWorld untouched = new CreatureWorld(SeedValue); // 从未消耗随机流的空世界（序列基准）
+            uint detectDraw = untouched.NextUInt(); // 场景世界的第一抽 = 检测骰
+            untouched.NextUInt();                   // 场景世界的第二抽 = 锁定时的死亡骰
+            uint thirdDraw = untouched.NextUInt();  // 恰好消耗两抽之后的下一抽
+
+            uint scenarioNext = scenario.NextUInt();
+            Assert.AreNotEqual(detectDraw, scenarioNext, "进入 Hunt 应已消耗随机流（否则本用例没测到摇骰）");
+            Assert.AreEqual(thirdDraw, scenarioNext, "锁定那一刻恰好消耗「检测骰 + 死亡骰」两抽（不在接触帧摇）");
+
+            // B. 运动层只读锁存：预置锁存 + 目标，强制两盒持续重叠 30 帧，随机流不得被消耗。
+            ParticleWorld worldB = NewWorld();
+            FillRows(worldB, 0, 0, Stone);
+            CreatureWorld motion = new CreatureWorld(SeedValue);
+            ProbeCreature attacker = motion.Spawn(new ProbeCreature(), worldB, 24f, 30f);
+            ProbeCreature victim = motion.Spawn(new ProbeCreature(), worldB, 24f, 30f);
+            victim.HuntDeathDenominator = 2;
+            attacker.HuntKillLatched = false; // 模拟 EnterHunt 已摇好「扑空」
+            attacker.HuntTarget = victim;
+
+            for (int i = 0; i < 30; i++)
+            {
+                attacker.X = 24f;
+                attacker.Y = 30f;
+                victim.X = 24f;
+                victim.Y = 30f;
+                motion.Step(worldB);
+            }
+
+            CreatureWorld untouchedB = new CreatureWorld(SeedValue); // 从未消耗随机流的空世界
+            Assert.AreEqual(untouchedB.NextUInt(), motion.NextUInt(), "运动层 ⑥b 全程不得消耗动物随机流");
+        }
+
+        /// <summary>§14.4-4 世界随机流隔离：发生捕食接触（本用例为扑空）时，粒子世界的随机流仍零消耗——
+        /// 扩展自 <see cref="Hunt_RngIsolation_BirdAndPreyDoNotConsumeWorldStream"/>（扑空不写世界；
+        /// 死亡物质化走 <c>SetWithShade</c> 不抽样颜色）。</summary>
+        [Test]
+        public void Hunt_DeathRoll_Contact_DoesNotConsumeWorldStream()
+        {
+            ParticleWorld solo = NewWorld();
+            ParticleWorld withLife = NewWorld();
+            FillRows(solo, 0, 0, Stone);
+            FillRows(withLife, 0, 0, Stone);
+
+            CreatureWorld creatures = new CreatureWorld(DeathRollMissSeed);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), withLife, 24f, 8f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), withLife, 24f, 8f); // 与鸟同格 ⇒ 进入 Hunt 即接触（扑空）
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            for (int i = 0; i < 300; i++)
+            {
+                solo.StepLogic();
+                withLife.StepLogic();
+                creatures.Step(withLife);
+            }
+
+            for (int i = 0; i < 64; i++)
+            {
+                Assert.AreEqual(solo.NextUInt(), withLife.NextUInt(), "捕食接触不该消耗粒子世界的随机流");
+            }
+        }
+
+        /// <summary>§14.4-5 物种配置守卫：只钉「功能没被静默禁用」（分母 &gt; 1），不钉具体数值（调参不改测试）。</summary>
+        [Test]
+        public void Hunt_DeathRoll_SpeciesConfigured()
+        {
+            Assert.Greater(new RabbitCreature().HuntDeathDenominator, 1, "兔子应配成可存活的概率（否则功能静默失效）");
+            Assert.Greater(new FishCreature().HuntDeathDenominator, 1, "鱼应配成可存活的概率（否则功能静默失效）");
+        }
+
+        /// <summary>§14.4-7 确定性：同 seed 两个世界重放逐位一致，含「锁定目标时摇死亡骰 + 接触时按锁存结算」
+        /// 这条 v5 新增路径（两世界都走自然进入 Hunt 的完整链路）。既有的
+        /// <see cref="Hunt_Determinism_SameSeed_ReplayBitExact"/> 覆盖捕食逻辑但不含死亡骰的落点，故本用例补钉。</summary>
+        [Test]
+        public void Hunt_DeathRoll_Determinism_SameSeedReplayBitExact()
+        {
+            ParticleWorld wa = NewWorld();
+            ParticleWorld wb = NewWorld();
+            FillRows(wa, 0, 0, Stone);
+            FillRows(wb, 0, 0, Stone);
+
+            CreatureWorld ca = new CreatureWorld(DeathRollMissSeed);
+            CreatureWorld cb = new CreatureWorld(DeathRollMissSeed);
+            BirdCreature a = ca.Spawn(new BirdCreature(), wa, 24f, 8f);
+            BirdCreature b = cb.Spawn(new BirdCreature(), wb, 24f, 8f);
+            RabbitCreature pa = ca.Spawn(new RabbitCreature(), wa, 24f, 8f);
+            RabbitCreature pb = cb.Spawn(new RabbitCreature(), wb, 24f, 8f);
+            pa.AiState = RabbitBrain.StateIdle;
+            pb.AiState = RabbitBrain.StateIdle;
+            pa.StateTicksLeft = 100000;
+            pb.StateTicksLeft = 100000;
+
+            a.AiState = BirdBrain.StateFly;
+            b.AiState = BirdBrain.StateFly;
+            a.StateTicksLeft = 100000;
+            b.StateTicksLeft = 100000;
+
+            for (int i = 0; i < 120; i++)
+            {
+                wa.StepLogic();
+                ca.Step(wa);
+                wb.StepLogic();
+                cb.Step(wb);
+            }
+
+            Assert.AreEqual(ca.Count, cb.Count, "同 seed 同操作下存活数应一致");
+            AssertCreatureEqual(a, b, "鸟");
+            AssertCreatureEqual(pa, pb, "猎物");
+            Assert.AreEqual(ca.NextUInt(), cb.NextUInt(), "同 seed 下动物随机流应逐位一致（含锁定时的死亡骰）");
         }
 
         // ============================== §12 v3 高度带随机上下巡航（验收 1-8） ==============================

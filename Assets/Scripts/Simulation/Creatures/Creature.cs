@@ -139,10 +139,22 @@ namespace TapTap2026.Simulation
 
         /// <summary>捕猎目标引用槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
         /// 鸟（<see cref="BirdBrain"/>）用它把当前追击的猎物（兔 / 鱼）记在这里；非空且两碰撞盒重叠时，
-        /// <see cref="ApplyLocomotion"/> 第 ⑥b 段把目标判死（<see cref="CreatureDeathCause.Hunted"/>）并把本槽位清空。
+        /// <see cref="ApplyLocomotion"/> 第 ⑥b 段按锁存的 <see cref="HuntKillLatched"/> 结算（命中判死
+        /// <see cref="CreatureDeathCause.Hunted"/>、未命中则该次攻击落空），两种情况都把本槽位清空。
         /// 失去目标 / 放弃追击 / 击杀之后**必须**由 Brain 置回 null（防悬挂引用）。
-        /// 不写它的物种恒为 null ⇒ 零行为差异、零开销。</summary>
+        /// 不写它的物种恒 null ⇒ 零行为差异、零开销。</summary>
         public Creature HuntTarget;
+
+        /// <summary>本次追击的**命中结果锁存**：EnterHunt 摇一次死亡骰后写入，运动层 ⑥b 只读它决定接触时是否判死
+        /// （真 = 咬杀，假 = 扑空）。**Brain 写 / 运动层读**，基类只存不解释（语义同 <see cref="VerticalDiveLatched"/>）。
+        /// 死亡骰放在思考帧而不是接触帧，是为了守住「动物随机流只在思考帧消耗」的纪律，并且让运动层保持零随机数依赖。
+        /// 离开 Hunt 态时应由 Brain 复位为 false（防残留影响下一次追击）。</summary>
+        public bool HuntKillLatched;
+
+        /// <summary>被捕食接触时的死亡骰分母：锁定目标时摇 <c>NextInt(本值) == 0</c> 才判死，否则该次攻击落空。
+        /// **&lt;= 1 ⇒ 必杀且不摇骰**（默认 1，保持「必死」物种零行为差异、零随机流消耗）。物种在自己的构造函数里
+        /// 按各自分母写入（兔子 2 = 50%、鱼 3 ≈ 33%）；测试可改写以分别钉住命中 / 扑空两条路径。</summary>
+        public int HuntDeathDenominator = 1;
 
         /// <summary>起跳请求：运动层在 <see cref="IsGrounded"/> 时消费成 <see cref="VelocityY"/> 脉冲并清零。</summary>
         public bool WantHop;
@@ -463,16 +475,25 @@ namespace TapTap2026.Simulation
                 Kill(CreatureDeathCause.Burned);
             }
 
-            // ⑥b 捕猎接触击杀（通用机制，与 ⑥「接触火即死」同层）：HuntTarget 非 null 且两碰撞盒 AABB 重叠
-            //     ⇒ 猎物被猎杀。这是**反射**而不是「决策」——Brain 只负责把追击目标写进黑板，真正判定
-            //     「咬到没咬到」放在运动层，和接触火并列（因此不做寻路、不做概率、每帧零分配）。
-            //     击杀后立刻清空 HuntTarget：Brain 下次思考看到「身在 Hunt 态但目标已空」即进入撤离。
+            // ⑥b 捕猎接触结算（通用机制，与 ⑥「接触火即死」同层）：HuntTarget 非 null 且两碰撞盒 AABB 重叠
+            //     ⇒ 猎物被咬中一次，按**锁存**的命中结果决定死活（v5，见 docs/plan-bird-ai.md §14）。
+            //     命中与否已在 Brain 的 EnterHunt 思考帧摇好并锁存在 HuntKillLatched：这里只结算、不摇骰、
+            //     不依赖动物随机流（运动层保持零随机数依赖）。这是**反射**而不是「决策」——Brain 只负责把
+            //     追击目标与命中结果写进黑板，真正判定「咬到没咬到」放在运动层，和接触火并列（每帧零分配）。
+            //     一次接触 = 一次结算：命中即死、未命中该次攻击落空；两种情况都立刻清空 HuntTarget，
+            //     Brain 下次思考看到「身在 Hunt 态但目标已空」即走既有 ExitHunt(retreat: true) 拉升飞走。
             //     只有鸟会写 HuntTarget ⇒ 其它物种恒 null，本条目对它们零行为差异、零开销。
             Creature huntTarget = HuntTarget;
             if (huntTarget != null && Overlaps(huntTarget))
             {
-                huntTarget.Kill(CreatureDeathCause.Hunted);
-                HuntTarget = null;
+                // 命中与否已在 EnterHunt 摇好并锁存在 HuntKillLatched：这里只结算，不摇骰、不依赖动物随机流。
+                // 未命中同样清空目标 ⇒ Brain 的撤离出口让鸟飞走。
+                if (HuntKillLatched)
+                {
+                    huntTarget.Kill(CreatureDeathCause.Hunted);
+                }
+
+                HuntTarget = null; // 命中 / 扑空都算这一次攻击结束
             }
 
             // ⑦ 掩埋致死（压死）：身体覆盖的**每一格**都是**静止**的固体（沙 / 石 / 土家族）时开始计时，

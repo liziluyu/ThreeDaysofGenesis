@@ -196,3 +196,52 @@ AI：⑨ 2 Hz 门控与相位错峰；⑩ 栖息计时归零起飞；⑪ 火进 
 **已知取舍:** 落点探测 24 格 ⇒ 巡航计时一到就总能找到落点(带内任何高度都可起降),落树/落地频率比 v3 略高,符合"要有机会落到树上"的目标。带顶 24 格在高地形(地表 > 世界高 − 12 − 24)上会被天花板夹取 ⇒ 目标收敛到下限 6(§12.2 第 3 步),行为自洽。
 
 **验收:** 全部作用于既有判据,无新逻辑;新增一条契约用例钉住"从带顶发起追击能在 `HuntTimeoutTicks` 内够到地面猎物";测试里凡涉及这些数字的摆放/帧数一律改常量派生(`BirdBrain.*`),以后调参不再大面积红。
+
+## 14. v5 捕食死亡骰:受击摇概率决定死活(2026-10-16 用户指定)
+
+**动机:** 现状一次接触 = 必死(运动层 ⑥b 的即时反射),兔子/鱼在鸟面前毫无生还机会。用户要求:**在兔子和鱼上写一个概率,受到鸟攻击时摇骰决定死亡**。
+
+### 14.1 数值与语义
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `Creature.HuntDeathDenominator`(public int 字段,黑板槽位风格) | 默认 **1** | 接触当帧摇 `creatures.NextInt(本值) == 0` 才判死;**≤ 1 ⇒ 必死且不摇骰**(保持既有物种零随机流消耗) |
+| `RabbitCreature.HuntDeathRoll`(public const) | **2** | 50% 死亡--开阔地被扑中,有一半机会挣脱 |
+| `FishCreature.HuntDeathRoll`(public const) | **3** | ≈33% 死亡--鱼在水里更难抓 |
+
+两者在各自**构造函数**里写进字段(物种常量是唯一数值来源,一行可调)。
+
+### 14.2 摇骰时机:**锁定目标时锁存**,不在运动层(用户指定)
+
+- 鸟在 `BirdBrain.EnterHunt`(**思考帧**)摇一次骰,结果写进新槽位 `Creature.HuntKillLatched`(真 = 咬杀 / 假 = 扑空);
+- 之后**追击动作完全不变**;接触那一刻由运动层 ⑥b 只读锁存结果结算;
+- 运动层因此**不摇骰、不依赖动物随机流、签名不动**。
+
+**为什么不在运动层摇**(第一版方案,已被用户否决):(a) 运动层原本拿不到动物随机流(`ApplyLocomotion` 只收 `ParticleWorld`),要扩签名;(b) 会把随机流消耗点从「仅思考帧」扩散到任意接触帧。放在行为层这两点都不存在--**RNG 纪律原样不变**。
+
+**为什么不是每次接触摇:** 接触会持续多帧,若每帧摇一次,1/2 在 3 帧内就逼近必死(1 − 2⁻³ = 87.5%),概率形同虚设。锁存把粒度钉死在**一次追击 = 一次摇骰**。
+
+**扑空语义:** 接触照样发生(动作不变),但猎物**不死、世界零写入**;同样清空 `HuntTarget` ⇒ Brain 走既有 `ExitHunt(retreat: true)` ⇒ 鸟拉升飞走(观感 = 「扑空后撤退」)。平均 2 次扑击 1 次击杀(鱼 3 次)。
+
+**不变的契约:** 猎物仍**无天敌感知**(v1);死因只用 `Hunted`(扑空不是死亡);扑空不写生物质;撤离复用既有出口。
+
+### 14.3 代码落点
+
+1. `Creature`:`public bool HuntKillLatched;`(Brain 写 / 运动层读,基类只存不解释,语义同 `VerticalDiveLatched`)。
+2. `BirdBrain.EnterHunt` 签名 `(creature, prey)` → **`(creature, prey, creatures)`**(由 `ThinkFly` 既有调用点传入);内部摇骰并锁存(`prey.HuntDeathDenominator <= 1` ⇒ 必杀且不摇骰);`ExitHunt` 补 `HuntKillLatched = false`(复位防残留)。
+3. 运动层 ⑥b 改为只读:`if (HuntKillLatched) huntTarget.Kill(Hunted); HuntTarget = null;`——零随机流、零签名改动。
+4. 兔子 / 鱼:物种 const + 构造函数写入字段。
+
+### 14.4 RNG 纪律:**不变**
+
+动物随机流的消耗点仍**只有思考帧**(摇骰发生在 `EnterHunt`,本身就在思考帧路径内);粒子世界随机流依旧**零消耗**。既有的 `Rng_IsConsumedOnlyOnThinkFrames` 用例原样通过、注释不动。
+
+### 14.5 验收(测试)
+
+1. **机制**:分母 = 1 ⇒ 接触必死(既有行为不变、零摇骰);分母 = 2 ⇒ 两个 seed 分别钉住「命中即死」与「扑空存活 + 撤离」两条路径(seed 由实现者现场试出并写进用例,与既有 seed 钉法一致)。
+2. **扑空路径**:猎物 `Alive`、生物质格数零增量、`HuntTarget == null`、`HuntKillLatched == false`、鸟回 `StateFly` 且 `IntentVy > 0`(撤离上冲)。
+3. **摇骰发生在锁定时刻、而非接触帧**:`EnterHunt` 之后的思考帧随机流应已前进;而随后强制两盒持续重叠 30 帧,随机流**不再前进**(沿用「与从未消耗流的空世界比对」的手法)。这一条同时钉住「摇骰在行为层」与「运动层零消耗」。
+4. **世界随机流隔离**:发生接触(含扑空)时粒子世界流仍零消耗。
+5. **物种配置守卫**:`new RabbitCreature().HuntDeathDenominator > 1` 且 `new FishCreature().HuntDeathDenominator > 1`(否则功能静默失效)。**不钉具体数值**(调参不该红测试)。
+6. **既有必死用例收尾**:`Hunt_Contact_KillsPreyOnceAsHunted_AndMaterializes`、`Hunt_DivesIntoWater_KillsShallowFish_AndSurvives`、`Hunt_FromBandTop_ReachesGroundPrey_WithinTimeout` 显式置 `prey.HuntDeathDenominator = 1`(语义不变)。
+7. **确定性**:同 seed 逐位重放保持绿(锁存结果由思考帧摇骰决定,同样确定性)。

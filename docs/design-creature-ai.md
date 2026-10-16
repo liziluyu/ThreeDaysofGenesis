@@ -135,7 +135,7 @@ Y += 1; rowMin++; rowMax++; 重测同一列（每帧至多抬一格）
 - **Idle**：站立（`IntentVx = 0`）。持续 `20 + NextInt(61)` 帧（1~4 秒）。到期 → Wander。小概率（思考帧 1/4）不进 Wander 而是续一个 Idle（原地发呆更久）。
 - **Wander**：`NextInt(2)==0 → -1 else +1` 选向，`IntentVx = 向 × 0.06`。持续 `20 + NextInt(41)` 帧（1~3 秒）。到期 → Idle。运动层的悬崖守卫 / 撞墙翻越自动生效。
 - **Flee**：思考帧用 `FindNearestFire` 扫火——**进入**用半径 `ThreatRadius`、**已在 Flee** 用 `ThreatRadius + FleeExitMargin`（= 19，滞回）；找到即 `IntentVx = ∓FleeSpeed`（背离**最近**那团火），**不做悬崖守卫**，并只在**刚进入**时写 `StateTicksLeft = FleeMinTicks`（40 帧 ≈ 2 秒）作为最短逃命时长。**火恰与扫描中心同列（`fireX == cx`）时只在刚进入逃命（或当前 `IntentVx == 0`）时摇一次骰选一侧**，此后保持既有逃跑方向——否则每个思考帧都重摇会让兔子在火下方每 0.5 秒翻一次身；`IntentVx = 0` 则会让它站在火正下方不动。火出（放大后的）半径后：最短逃命时长未走完 → 按当前方向继续跑（不改意图）；走完 → 回 Wander（重新摇时长与方向）。**进入半径不因滞回放大**：未处于 Flee 时圈外一格的 `ThreatRadius + 1` 处的火不触发逃命。
-- **死法**：接触火 → Burned；连续淹没 > 160 帧 → Drowned。
+- **死法**：接触火 → Burned；连续淹没 > 160 帧 → Drowned；被鸟扑中时 **1/2** 概率死亡（`RabbitCreature.HuntDeathRoll = 2`，死亡骰见 `plan-bird-ai.md` §14）——仍是**无天敌感知**（v1 契约未变）。
 
 ### 7.2 鱼（`AiState`：0=Swim，1=Stranded）
 
@@ -145,11 +145,11 @@ Y += 1; rowMin++; rowMax++; 重测同一列（每帧至多抬一格）
 
 深度修正的力度：每逻辑帧的竖直更新是 `V ← (1 − WaterDrag) · MoveTowards(V, IntentVy, SwimAccel)`（`ApplyLocomotion` 的意图逼近**先于** `StepPhysics` 的阻尼）⇒ **稳态竖直位移/帧 = `(1 − WaterDrag) · min(VerticalSpeed, SwimAccel / WaterDrag)`** = 0.4 × min(0.1, 0.1/0.6) = **0.04 格/帧（≈ 0.8 格/秒 @20 逻辑帧/秒）**，与水平游速（0.05 格/帧 ≈ 1 格/秒）同量级。**两个常数谁小谁封顶**：`SwimAccel` 太小时（< `VerticalSpeed × WaterDrag` = 0.06）水阻每帧吃掉 60% 的逼近量，稳态被压到 0.0133 格/帧（0.27 格/秒 ⇒ 下潜 8 格要 30 秒）——2026-10-12 实测踩过这个坑，因此把 `SwimAccel` 提到 0.1 让它不再封顶。下潜 8 格约需 10 秒。
 - **Stranded**（离水，`!IsSubmerged`）：`IntentVx = 0`；思考帧摇 `NextInt(15, 36)`（15~35）作为下次蹦跳间隔，间隔到 → `WantHop = true`（扑腾）。`BeachedTicks > 200` → `Kill(Beached)`。重新入水自动回 Swim。
-- **死法**：搁浅超时 → Beached；接触火 → Burned（通用机制）。
+- **死法**：搁浅超时 → Beached；接触火 → Burned（通用机制）；被鸟扑中时 **1/3** 概率死亡（`FishCreature.HuntDeathRoll = 3`，§14）。
 
 ### 7.3 鸟（Perched / Fly / Flee / Hunt）
 
-2026-10-14 批准并实施，唯一权威文档是 **`docs/plan-bird-ai.md`**（决策记录：接受 1 源像素 = 1 格惯例、栖息面含树叶 / 树干、v1 不进食、帧序实现时自判）。要点：新虚门 `FliesInAir`（空中挂起重力、可悬停；`FlyAccel` 驱动空中竖直意图，落地 / 入水恢复常规则）与 `PerchesOnFoliage`（**向下**支撑改走 `CreatureTerrain.IsPerchable` = IsSolid ∪ 树叶 / 树干；向上顶头 / 水平 / 掩埋 / 尸体覆盖口径不变）；落水正浮力自救；水平墙感知换向与鱼同款；尸体走 `CreatureArtData.Bird`（生成器已备产，pivot 0 直接对齐）。**v2 捕食（2026-10-15，§11）**：第四态 `Hunt`——Fly 思考帧视野 24 格内有兔 / 鱼才摇 1/40 骰触发，追击 = 降落同款重瞄（下压 `HuntDiveSpeed = 0.2`，从带顶也能在超时内够到），运动层 ⑥b 碰撞盒接触即杀（新死因 `Hunted`），杀完即起飞离开；追丢 > 32 格 / 超时 200 帧放弃；抓鱼可短暂入水（豁免落水自救）；猎物无天敌感知。**v3/v4 高度带（2026-10-16，§12 / §13）**：竖直不再「带内悬停」，改为**随机目标高度的上下巡航**——以正下方第一个可栖面 / 水为基准，目标 ∈ `[MinAltitudeCells, MaxAltitudeCells]` = **[6, 24] 格**、到达即重摇（黑板槽位 `Creature.TargetAltitudeCells`）；天花板硬边界（目标收敛到下限、不摇骰）；探不到基准则悬停 ⇒ 越过高地形后主动回落，旧版单向棘轮消失；捕食 / 降落探测半径同步放大到 24。测试在 `BirdCreatureTests`（39 条）。
+2026-10-14 批准并实施，唯一权威文档是 **`docs/plan-bird-ai.md`**（决策记录：接受 1 源像素 = 1 格惯例、栖息面含树叶 / 树干、v1 不进食、帧序实现时自判）。要点：新虚门 `FliesInAir`（空中挂起重力、可悬停；`FlyAccel` 驱动空中竖直意图，落地 / 入水恢复常规则）与 `PerchesOnFoliage`（**向下**支撑改走 `CreatureTerrain.IsPerchable` = IsSolid ∪ 树叶 / 树干；向上顶头 / 水平 / 掩埋 / 尸体覆盖口径不变）；落水正浮力自救；水平墙感知换向与鱼同款；尸体走 `CreatureArtData.Bird`（生成器已备产，pivot 0 直接对齐）。**v2 捕食（2026-10-15，§11）**：第四态 `Hunt`——Fly 思考帧视野 24 格内有兔 / 鱼才摇 1/40 骰触发，追击 = 降落同款重瞄（下压 `HuntDiveSpeed = 0.2`，从带顶也能在超时内够到），运动层 ⑥b 碰撞盒接触即杀（新死因 `Hunted`），杀完即起飞离开；追丢 > 32 格 / 超时 200 帧放弃；抓鱼可短暂入水（豁免落水自救）；猎物无天敌感知。**v3/v4 高度带（2026-10-16，§12 / §13）**：竖直不再「带内悬停」，改为**随机目标高度的上下巡航**——以正下方第一个可栖面 / 水为基准，目标 ∈ `[MinAltitudeCells, MaxAltitudeCells]` = **[6, 24] 格**、到达即重摇（黑板槽位 `Creature.TargetAltitudeCells`）；天花板硬边界（目标收敛到下限、不摇骰）；探不到基准则悬停 ⇒ 越过高地形后主动回落，旧版单向棘轮消失；捕食 / 降落探测半径同步放大到 24。**v5 死亡骰（2026-10-16，§14）**：捕食不再是「一次接触必死」——鸟在 `EnterHunt`（**思考帧**）摇一次死亡骰（`1 / 猎物.HuntDeathDenominator`）并锁存到 `Creature.HuntKillLatched`，追击动作不变，接触时由运动层 ⑥b **只读锁存**结算（命中判死 `Hunted` / 扑空猎物无伤），运动层因此**零随机数依赖**、动物随机流仍**只在思考帧**消耗；扑空同样清空目标 ⇒ 走既有 `ExitHunt(retreat: true)` 拉升飞走。兔子 `HuntDeathRoll = 2`（50%）、鱼 `= 3`（≈33%）、其它物种默认 1（必杀且不摇骰）。测试在 `BirdCreatureTests`（46 条）。
 
 ## 8. 渲染（`CreatureRenderer` 小改）
 
