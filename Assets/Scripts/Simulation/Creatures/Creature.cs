@@ -131,6 +131,12 @@ namespace TapTap2026.Simulation
         /// 不写它的物种恒为 false ⇒ 零行为差异、零开销。</summary>
         public bool VerticalDiveLatched;
 
+        /// <summary>巡航高度目标（格）：相对「正下方第一个可栖面 / 水」的目标高度，**Brain 写、Brain 读**，基类只存
+        /// 不解释（语义同 <see cref="AiState"/>）。飞行物种（<see cref="BirdCreature"/>）的高度带上下巡航用
+        /// （<see cref="BirdBrain.MinAltitudeCells"/>~<see cref="BirdBrain.MaxAltitudeCells"/> 格，见
+        /// <c>docs/plan-bird-ai.md</c> §12）；其余物种恒不读、恒不写 ⇒ 零行为差异。</summary>
+        public int TargetAltitudeCells;
+
         /// <summary>捕猎目标引用槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
         /// 鸟（<see cref="BirdBrain"/>）用它把当前追击的猎物（兔 / 鱼）记在这里；非空且两碰撞盒重叠时，
         /// <see cref="ApplyLocomotion"/> 第 ⑥b 段把目标判死（<see cref="CreatureDeathCause.Hunted"/>）并把本槽位清空。

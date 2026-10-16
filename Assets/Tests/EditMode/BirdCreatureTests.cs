@@ -109,6 +109,35 @@ namespace TapTap2026.Tests
             return Mathf.FloorToInt(creature.Y + creature.Height * 0.5f);
         }
 
+        /// <summary>相对正下方第一个可栖面 / 水的当前高度（格），与 <see cref="BirdBrain.ThinkFly"/> 同一口径：
+        /// <c>altitude = (floor(Y) − 1) − surfaceRow</c>，其中 <c>surfaceRow</c> 由
+        /// <see cref="CreatureSensors.ProbeSurfaceBelow"/> 自脚底下一行向下扫得。</summary>
+        private static int AltitudeAboveSurface(ParticleWorld world, Creature creature)
+        {
+            int footRow = Mathf.FloorToInt(creature.Y);
+            int cx = Mathf.FloorToInt(creature.X);
+            if (!CreatureSensors.ProbeSurfaceBelow(
+                    world, cx, footRow - 1, world.Height, out int surfaceRow, out _))
+            {
+                return int.MaxValue; // 无基准：不参与带内断言
+            }
+
+            return (footRow - 1) - surfaceRow;
+        }
+
+        /// <summary>§12.5-③ 带内长跑帧数：单段上下行程 ≈ <c>(MaxAltitudeCells − MinAltitudeCells) / FlyVSpeed</c>
+        /// 逻辑帧，取 8 段（留足余量）以保证「上 / 下两个方向都出现过」在任何随机目标序列下都成立。
+        /// 随高度带常量自动伸缩，不钉字面量。</summary>
+        private static int CruiseLongRunTicks
+        {
+            get
+            {
+                int legTicks = Mathf.CeilToInt(
+                    (BirdBrain.MaxAltitudeCells - BirdBrain.MinAltitudeCells) / BirdBrain.FlyVSpeed);
+                return legTicks * 8;
+            }
+        }
+
         /// <summary>统计全世界里某 typeId 的格数。</summary>
         private static int CountType(ParticleWorld world, ushort typeId)
         {
@@ -150,6 +179,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(a.VelocityY, b.VelocityY, $"{context} VelocityY 应逐位一致");
             Assert.AreEqual(a.AiState, b.AiState, $"{context} AiState 应逐位一致");
             Assert.AreEqual(a.StateTicksLeft, b.StateTicksLeft, $"{context} StateTicksLeft 应逐位一致");
+            Assert.AreEqual(a.TargetAltitudeCells, b.TargetAltitudeCells, $"{context} TargetAltitudeCells 应逐位一致");
             Assert.AreEqual(a.Facing, b.Facing, $"{context} Facing 应逐位一致");
             Assert.AreEqual(a.SubmergedTicks, b.SubmergedTicks, $"{context} SubmergedTicks 应逐位一致");
             Assert.AreEqual(a.IsGrounded, b.IsGrounded, $"{context} IsGrounded 应逐位一致");
@@ -278,17 +308,24 @@ namespace TapTap2026.Tests
         [Test]
         public void FlyingIntoCanopy_PassesThroughHorizontally()
         {
+            const int canopyRow = 14; // 树叶墙占的行；鸟钉在此行内穿墙
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 0, Stone);
-            FillRect(world, 20, 30, 14, 15, TreeLeaf); // 面前的一堵树叶墙
+            FillRect(world, 20, 30, canopyRow, canopyRow + 1, TreeLeaf); // 面前的一堵树叶墙
 
             CreatureWorld creatures = new CreatureWorld(SeedValue);
-            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 5f, 14f);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 5f, canopyRow);
             bird.AiState = BirdBrain.StateFly;
             bird.StateTicksLeft = 100000;
             bird.IntentVx = BirdBrain.FlySpeed;
 
-            RunSteps(world, creatures, 500);
+            // v4 高度带放大（MaxAltitudeCells = 24）后，带内鸟会主动升降、可能顺势落在树冠顶并转栖息（那是既有
+            // 且有专测覆盖的 §8-④ 行为）；本用例只钉「树叶不挡水平」，故每逻辑帧把 Y 钉回墙内行以隔离竖直自由度。
+            for (int i = 0; i < 500; i++)
+            {
+                bird.Y = canopyRow;
+                creatures.Step(world);
+            }
 
             Assert.Greater(bird.X, 30f, "应水平飞穿树冠");
             Assert.AreEqual(1, bird.Facing, "方向应保持向右");
@@ -799,14 +836,15 @@ namespace TapTap2026.Tests
             BirdCreature birdB = cb.Spawn(new BirdCreature(), worldB, 4f, 7f);
             birdB.AiState = BirdBrain.StateFly;
             birdB.StateTicksLeft = 100000;
-            RabbitCreature farPrey = cb.Spawn(new RabbitCreature(), worldB, 44f, 1f);
+            RabbitCreature farPrey = cb.Spawn(
+                new RabbitCreature(), worldB, 4f + BirdBrain.HuntDetectCells + 1f, 1f); // 视野外（> HuntDetectCells）
             farPrey.AiState = RabbitBrain.StateIdle; // Idle + 计时不走完 ⇒ 思考帧不消耗随机流
             farPrey.StateTicksLeft = 100000;
 
             bool enteredHunt = false;
             for (int i = 0; i < 300; i++)
             {
-                birdA.X = 4f; // 钉住水平位置，保证猎物始终在视野外（盒中心距离 ≈ 40 > 12）
+                birdA.X = 4f; // 钉住水平位置，保证猎物始终在视野外（盒中心距离 > HuntDetectCells）
                 birdB.X = 4f;
                 ca.Step(worldA);
                 cb.Step(worldB);
@@ -831,7 +869,7 @@ namespace TapTap2026.Tests
             prey.StateTicksLeft = 100000;
 
             bool entered = false;
-            for (int i = 0; i < 2000 && !entered; i++)
+            for (int i = 0; i < BirdBrain.HuntTimeoutTicks * 10 && !entered; i++)
             {
                 bird.X = 20f;
                 prey.X = 20f;
@@ -943,12 +981,13 @@ namespace TapTap2026.Tests
         [Test]
         public void Hunt_Timeout_And_LostTarget_BothAbandonToFly()
         {
-            // A. 超时：目标在视野内但远处（>16 才会被距离放弃，这里取 ≈11.7）；StateTicksLeft 归零即放弃。
+            // A. 超时：目标在放弃半径内（不远于 HuntAbortCells，故不会被距离放弃）；StateTicksLeft 归零即放弃。
             ParticleWorld worldA = NewWorld();
             FillRows(worldA, 0, 0, Stone);
             CreatureWorld ca = new CreatureWorld(SeedValue);
             BirdCreature birdA = ca.Spawn(new BirdCreature(), worldA, 10f, 7f);
-            RabbitCreature preyA = ca.Spawn(new RabbitCreature(), worldA, 20f, 1f);
+            RabbitCreature preyA = ca.Spawn(
+                new RabbitCreature(), worldA, 10f + (BirdBrain.HuntAbortCells / 2f), 1f);
             birdA.AiState = BirdBrain.StateHunt;
             birdA.HuntTarget = preyA;
             birdA.StateTicksLeft = 3;
@@ -964,14 +1003,15 @@ namespace TapTap2026.Tests
             Assert.IsTrue(birdA.HuntTarget == null, "放弃后目标槽位应清空");
             Assert.IsTrue(preyA.Alive, "超时放弃时猎物仍活");
 
-            // B. 追丢：目标逃出 HuntAbortCells（16）⇒ 立即放弃。
+            // B. 追丢：目标逃出 HuntAbortCells ⇒ 立即放弃。
             ParticleWorld worldB = NewWorld();
             FillRows(worldB, 0, 0, Stone);
             CreatureWorld cb = new CreatureWorld(SeedValue);
             BirdCreature birdB = cb.Spawn(new BirdCreature(), worldB, 2f, 20f);
-            RabbitCreature preyB = cb.Spawn(new RabbitCreature(), worldB, 45f, 1f);
+            RabbitCreature preyB = cb.Spawn(
+                new RabbitCreature(), worldB, 2f + BirdBrain.HuntAbortCells + 8f, 1f);
             birdB.AiState = BirdBrain.StateHunt;
-            birdB.HuntTarget = preyB; // 盒中心距离 ≈ 47 > 16
+            birdB.HuntTarget = preyB; // 盒中心距离 > HuntAbortCells
             birdB.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
 
             cb.Step(worldB); // 相位 0 ⇒ 首帧即思考
@@ -996,7 +1036,7 @@ namespace TapTap2026.Tests
             bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
 
             bool killed = false;
-            for (int i = 0; i < 400 && !killed; i++)
+            for (int i = 0; i < BirdBrain.HuntTimeoutTicks && !killed; i++)
             {
                 creatures.Step(world);
                 killed = !prey.Alive;
@@ -1076,7 +1116,7 @@ namespace TapTap2026.Tests
 
             bool everFled = false;
             bool predatorAttacked = false;
-            for (int i = 0; i < 2000 && !predatorAttacked; i++)
+            for (int i = 0; i < BirdBrain.HuntTimeoutTicks * 10 && !predatorAttacked; i++)
             {
                 bird.X = 24f;   // 钉住鸟，保证始终与兔子同列（视野内）
                 rabbit.X = 24f;
@@ -1093,6 +1133,270 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(predatorAttacked, "鸟应确实发起过捕食（证明兔子面对的是真实威胁）");
             Assert.IsFalse(everFled, "兔子没有天敌感知（v1）：面对捕食的鸟也不该进入 Flee");
+        }
+
+        // ============================== v4 观感调参：带顶也能捕食（常量耦合契约） ==============================
+
+        /// <summary>v4 契约：从带顶（相对高度 == <see cref="BirdBrain.MaxAltitudeCells"/>，即与视野半径
+        /// <see cref="BirdBrain.HuntDetectCells"/> 同一量级）发起追击，能在 <see cref="BirdBrain.HuntTimeoutTicks"/> 内
+        /// 够到地面猎物——钉住「带顶高度 / 视野半径 / 俯冲速度 <see cref="BirdBrain.HuntDiveSpeed"/> / 追击超时」
+        /// 四者的耦合：若俯冲仍用 <see cref="BirdBrain.FlyVSpeed"/>，从带顶下压必然超过 <see cref="BirdBrain.HuntTimeoutTicks"/> 而超时。</summary>
+        [Test]
+        public void Hunt_FromBandTop_ReachesGroundPrey_WithinTimeout()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            // 相对高度 = MaxAltitudeCells ⇒ 恰好带顶。
+            BirdCreature bird = creatures.Spawn(
+                new BirdCreature(), world, 24f, BirdBrain.MaxAltitudeCells + 1f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 24f, 1f);
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+
+            bird.AiState = BirdBrain.StateHunt;
+            bird.HuntTarget = prey;
+            bird.StateTicksLeft = BirdBrain.HuntTimeoutTicks;
+
+            bool killed = false;
+            for (int i = 0; i < BirdBrain.HuntTimeoutTicks && !killed; i++)
+            {
+                creatures.Step(world);
+                killed = !prey.Alive;
+            }
+
+            Assert.IsTrue(killed, "带顶发起的俯冲应能在 HuntTimeoutTicks 内够到地面猎物");
+            Assert.IsTrue(bird.Alive, "俯冲杀猎物不该让鸟死");
+        }
+
+        // ============================== §12 v3 高度带随机上下巡航（验收 1-8） ==============================
+
+        /// <summary>§12.5-① 低放（相对高度 &lt; <see cref="BirdBrain.MinAltitudeCells"/>）⇒ 上抬；爬升后相对高度落在
+        /// <c>[MinAltitudeCells, MaxAltitudeCells]</c>（±1 格物理容差）。</summary>
+        [Test]
+        public void LowPlacement_ClimbsIntoAltitudeBand()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 2f); // 相对高度 = 1 < MinAltitudeCells
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000; // 不进入降落分支
+
+            creatures.Step(world); // 相位 0 ⇒ 首帧即思考
+            Assert.Greater(bird.IntentVy, 0f, "低于下限应先上抬");
+
+            int maxAltitude = 0;
+            for (int i = 0; i < 200; i++)
+            {
+                bird.X = 24f; // 钉住列，基准面恒为世界底
+                creatures.Step(world);
+                maxAltitude = Mathf.Max(maxAltitude, AltitudeAboveSurface(world, bird));
+            }
+
+            Assert.GreaterOrEqual(maxAltitude, BirdBrain.MinAltitudeCells, "应爬进 [Min, Max] 带内");
+            Assert.LessOrEqual(maxAltitude, BirdBrain.MaxAltitudeCells + 1, "不该冲出带上限（±1 物理容差）");
+            int altitude = AltitudeAboveSurface(world, bird);
+            Assert.GreaterOrEqual(altitude, BirdBrain.MinAltitudeCells - 1, "终态相对高度应在带内（±1）");
+            Assert.LessOrEqual(altitude, BirdBrain.MaxAltitudeCells + 1, "终态相对高度应在带内（±1）");
+        }
+
+        /// <summary>§12.5-② 高放（相对高度 &gt; <see cref="BirdBrain.MaxAltitudeCells"/>）⇒ 主动下压回带内——旧「单向棘轮」的修复回归。</summary>
+        [Test]
+        public void HighPlacement_DescendsBackIntoAltitudeBand()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            // 相对高度 = MaxAltitudeCells + 9 > MaxAltitudeCells，且 Y 远低于天花板门槛。
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, BirdBrain.MaxAltitudeCells + 10f);
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            float y0 = bird.Y;
+            for (int i = 0; i < 400; i++)
+            {
+                bird.X = 24f;
+                creatures.Step(world);
+            }
+
+            Assert.Less(bird.Y, y0, "高于上限应主动下压（不再只升不降）");
+            int altitude = AltitudeAboveSurface(world, bird);
+            Assert.GreaterOrEqual(altitude, BirdBrain.MinAltitudeCells - 1, "应下压进带内（±1）");
+            Assert.LessOrEqual(altitude, BirdBrain.MaxAltitudeCells + 1, "应下压进带内（±1）");
+        }
+
+        /// <summary>§12.5-③ 带内长跑：相对高度始终留在 <c>[MinAltitudeCells, MaxAltitudeCells]</c>（±1 格），且上下两个方向
+        /// 都出现过（不粘死、不长期悬停）。跑 <see cref="CruiseLongRunTicks"/> 帧——新振幅（Max − Min 格）下单段行程
+        /// 约 (Max − Min) / FlyVSpeed 逻辑帧，取足 4 段以上以确保「上 / 下都出现过」在任何随机目标序列下都成立。</summary>
+        [Test]
+        public void LongCruise_StaysInBand_AndAlternatesDirections()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 9f); // 相对高度 = 8 ∈ 带内
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            int minAltitude = int.MaxValue;
+            int maxAltitude = int.MinValue;
+            int climbs = 0;
+            int descents = 0;
+            int prevSign = 0;
+
+            for (int i = 0; i < CruiseLongRunTicks; i++)
+            {
+                bird.X = 24f;
+                creatures.Step(world);
+
+                int altitude = AltitudeAboveSurface(world, bird);
+                minAltitude = Mathf.Min(minAltitude, altitude);
+                maxAltitude = Mathf.Max(maxAltitude, altitude);
+
+                int sign = bird.IntentVy > 0f ? 1 : (bird.IntentVy < 0f ? -1 : 0);
+                if (sign != 0)
+                {
+                    if (prevSign != 0 && sign != prevSign)
+                    {
+                        if (sign > 0)
+                        {
+                            climbs++;
+                        }
+                        else
+                        {
+                            descents++;
+                        }
+                    }
+
+                    prevSign = sign;
+                }
+            }
+
+            Assert.GreaterOrEqual(minAltitude, BirdBrain.MinAltitudeCells - 1, "不应跌出带下限（±1）");
+            Assert.LessOrEqual(maxAltitude, BirdBrain.MaxAltitudeCells + 1, "不应冲出带上限（±1）");
+            Assert.Greater(climbs, 0, "应出现过向上巡航（目标抬高）");
+            Assert.Greater(descents, 0, "应出现过向下巡航（目标降低）");
+        }
+
+        /// <summary>§12.5-④ 抽走脚下支柱（先造高柱让鸟进带，再清空该列）⇒ 高度主动回落——棘轮回归。</summary>
+        [Test]
+        public void SurfaceRemoved_BirdActivelyDescends()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone); // 世界底地板行恒在（保证抽柱后仍有基准）
+            FillRect(world, 24, 24, 1, 20, Stone); // 高柱（顶面在行 20）
+
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 30f); // 相对高度 = 9 ∈ 带内
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            for (int i = 0; i < 20; i++) // 先在柱顶上方带内稳定
+            {
+                bird.X = 24f;
+                creatures.Step(world);
+            }
+
+            float yBefore = bird.Y;
+
+            for (int y = 1; y <= 20; y++) // 抽掉支柱（保留地板行 0，基准面变低）
+            {
+                world.Clear(24, y);
+            }
+
+            for (int i = 0; i < 500; i++)
+            {
+                bird.X = 24f;
+                creatures.Step(world);
+            }
+
+            Assert.Less(bird.Y, yBefore, "基准面变低后应主动回落（不再只升不降）");
+            int altitude = AltitudeAboveSurface(world, bird);
+            Assert.LessOrEqual(altitude, BirdBrain.MaxAltitudeCells + 1, "应回落到带内（±1）");
+        }
+
+        /// <summary>§12.5-⑤ <c>Y &gt; 世界高 − CeilingMarginCells</c> ⇒ 下压且 <c>TargetAltitudeCells</c> 收敛到下限
+        /// （硬边界，不摇骰）。</summary>
+        [Test]
+        public void AboveCeiling_PressesDown_AndResetsTargetToMin()
+        {
+            ParticleWorld world = NewWorld();
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 60f); // Y > 世界高 − CeilingMarginCells
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            creatures.Step(world); // 相位 0 ⇒ 首帧即思考
+
+            Assert.Less(bird.IntentVy, 0f, "天花板是硬边界：应无条件下压");
+            Assert.AreEqual(
+                BirdBrain.MinAltitudeCells, bird.TargetAltitudeCells, "触发天花板时应把目标收敛到下限（不摇骰）");
+        }
+
+        /// <summary>§12.5-⑥ 正下方无基准（整列扫到世界底仍空）⇒ 悬停 <c>IntentVy == 0</c>（与 v2 一致、不摇骰）。</summary>
+        [Test]
+        public void NoSurfaceBelow_Hovers()
+        {
+            ParticleWorld world = NewWorld(); // 空世界：正下方无任何可栖面 / 水
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 30f);
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            creatures.Step(world); // 相位 0 ⇒ 首帧即思考
+
+            Assert.AreEqual(0f, bird.IntentVy, "探不到基准应悬停");
+            Assert.AreEqual(0, bird.TargetAltitudeCells, "无基准时不该摇骰写目标（保持默认 0）");
+        }
+
+        /// <summary>§12.5-⑦ 目标无效（0 / <c>MaxAltitudeCells + 1</c>）⇒ 下一个思考帧重摇到
+        /// <c>[MinAltitudeCells, MaxAltitudeCells]</c>（兼顾新实体默认 0 与越界值）。</summary>
+        [Test]
+        public void InvalidTarget_IsRerolledIntoBand()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 10f);
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            bird.TargetAltitudeCells = 0;
+            RunSteps(world, creatures, Creature.ThinkEvery); // 至少命中一个思考帧
+            Assert.GreaterOrEqual(bird.TargetAltitudeCells, BirdBrain.MinAltitudeCells, "默认 0 应被重摇到带内");
+            Assert.LessOrEqual(bird.TargetAltitudeCells, BirdBrain.MaxAltitudeCells, "默认 0 应被重摇到带内");
+
+            bird.TargetAltitudeCells = BirdBrain.MaxAltitudeCells + 1;
+            RunSteps(world, creatures, Creature.ThinkEvery);
+            Assert.GreaterOrEqual(bird.TargetAltitudeCells, BirdBrain.MinAltitudeCells, "越界值应被重摇到带内");
+            Assert.LessOrEqual(bird.TargetAltitudeCells, BirdBrain.MaxAltitudeCells, "越界值应被重摇到带内");
+        }
+
+        /// <summary>§12.5-⑧ 到达目标即重摇：把目标强制等于当前相对高度，随后 100 帧内相对高度应离开该值（不卡死）。</summary>
+        [Test]
+        public void ReachingTarget_RerollsInsteadOfSticking()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 9f); // 相对高度 = 8
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            int stuckAt = AltitudeAboveSurface(world, bird);
+            bird.TargetAltitudeCells = stuckAt;
+
+            bool left = false;
+            for (int i = 0; i < 100 && !left; i++)
+            {
+                bird.X = 24f;
+                creatures.Step(world);
+                left = AltitudeAboveSurface(world, bird) != stuckAt;
+            }
+
+            Assert.IsTrue(left, "达成目标后应重摇新目标、相对高度离开原值（不粘死）");
         }
     }
 }
