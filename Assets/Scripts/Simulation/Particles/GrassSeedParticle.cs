@@ -57,8 +57,8 @@ namespace TapTap2026.Simulation
         public const int MaxGrowthHeight = 3;
 
         /// <summary>
-        /// 判定「沉水」需要正上方连续多少格水（= 2）。两格是水生植物「头顶是水 + 上方还有一格保命水」
-        /// 的最低要求：只有这样才能保证发芽后植株不会立刻露出水面。越界由 <see cref="ParticleWorld.GetCell"/>
+        /// 判定「沉水」需要正上方连续多少格水（= 2）。两格是最低要求：发芽后株顶恰低于水面 2 格，
+        /// 正好是水生植物的停止生长距离，不会立刻露出水面。越界由 <see cref="ParticleWorld.GetCell"/>
         /// 返回空气，天然不满足。
         /// </summary>
         public const int SubmergedWaterCells = 2;

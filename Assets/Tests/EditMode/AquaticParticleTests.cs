@@ -5,7 +5,7 @@ using UnityEngine;
 namespace TapTap2026.Tests
 {
     /// <summary>
-    /// 水生植物 / 草种子（沉水发芽）：吸水发芽（1:1 消耗水）、随机刻逐格生长（留保命水）、寿命（逻辑帧衰老、寿终还水）、
+    /// 水生植物 / 草种子（沉水发芽）：吸水发芽（1:1 消耗水）、随机刻逐格生长（长到低于水面 2 格）、寿命（逻辑帧衰老、寿终还水）、
     /// 四种死法还水、被覆盖走水汽、撒种顶水不啃基质。
     /// 跨类型相变依赖 <see cref="ParticleIds"/> 回填，因此走生产注册路径（<see cref="ParticleRegistration.RegisterAll"/>）。
     /// 随机刻用 <see cref="ParticleType.OnRandomTick"/> 直接调用，保证确定、不依赖世界随机抽格。
@@ -258,9 +258,9 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void Plant_GrowthKeepsOneWaterCellAbove()
+        public void Plant_GrowthStopsWhenLessThanTwoWaterCellsAbove()
         {
-            // 头顶只剩一格水：不能长——长了这格就被吸掉，植株露出水面会自我脱水。
+            // 头顶只剩一格水（水面 y=2）：株顶已不足低于水面 2 格，不能长——长了这格就被吸掉，会冒出水面。
             ParticleWorld world = new ParticleWorld(3, 6, SeedValue);
             world.Set(1, 0, SandId);
             world.Set(1, 1, PlantId);
@@ -268,26 +268,56 @@ namespace TapTap2026.Tests
 
             RandomTick(world, PlantId, 1, 1);
 
-            Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId, "只剩一格保命水时不生长");
-            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId, "保命水不动");
+            Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId, "株顶距水面不足 2 格时不生长");
+            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId, "水面那格水不动");
             Assert.AreEqual(1, CountType(world, PlantId));
         }
 
         [Test]
-        public void Plant_GrowthStopsAtMaxHeight()
+        public void Plant_GrowthStopsTwoWaterCellsBelowSurface()
         {
-            ParticleWorld world = new ParticleWorld(3, 8, SeedValue);
+            // 头顶有两格水（水面 y=3）：长一格会吸掉其中一格，株顶离水面只剩 1 格 → 停住。
+            ParticleWorld world = new ParticleWorld(3, 6, SeedValue);
             world.Set(1, 0, SandId);
             world.Set(1, 1, PlantId);
-            world.Set(1, 2, PlantId);
-            world.Set(1, 3, PlantId);
-            world.Set(1, 4, WaterId);
-            world.Set(1, 5, WaterId);
+            world.Set(1, 2, WaterId);
+            world.Set(1, 3, WaterId);
 
-            RandomTick(world, PlantId, 1, 3); // 命中顶格：高度已达上限
+            RandomTick(world, PlantId, 1, 1);
 
-            Assert.AreEqual(3, CountType(world, PlantId), "株高到顶不再长");
-            Assert.AreEqual(WaterId, world.GetCell(1, 4).typeId);
+            Assert.AreEqual(1, CountType(world, PlantId), "株顶已低于水面 2 格：不生长");
+            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId);
+            Assert.AreEqual(WaterId, world.GetCell(1, 3).typeId);
+        }
+
+        [Test]
+        public void Plant_GrowsPastOldHeightCap_UntilTwoCellsBelowSurface()
+        {
+            // 深水柱（水面 y=12）：株顶一路长到 y=10（低于水面 2 格）才停，远超旧版 3 格株高上限。
+            ParticleWorld world = new ParticleWorld(3, 20, SeedValue);
+            world.Set(1, 0, SandId);
+            world.Set(1, 1, PlantId);
+            for (int y = 2; y <= 12; y++)
+            {
+                world.Set(1, y, WaterId);
+            }
+
+            int top = 1;
+            for (int i = 0; i < 20; i++)
+            {
+                RandomTick(world, PlantId, 1, top);
+                if (world.GetCell(1, top + 1).typeId != PlantId)
+                {
+                    break;
+                }
+
+                top++;
+            }
+
+            Assert.AreEqual(10, top, "株顶应长到低于水面 2 格（水面 y=12）");
+            Assert.AreEqual(10, CountType(world, PlantId), "整株 10 格：株高不再受 3 格上限限制");
+            Assert.AreEqual(WaterId, world.GetCell(1, 11).typeId, "株顶之上保留 2 格水");
+            Assert.AreEqual(WaterId, world.GetCell(1, 12).typeId);
         }
 
         // ============================== 植物：死法（还水） ==============================
@@ -330,7 +360,7 @@ namespace TapTap2026.Tests
             RandomTick(world, PlantId, 1, 1);
 
             Assert.AreEqual(PlantId, world.GetCell(1, 1).typeId, "上方是液体不应算压");
-            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId, "保命水不被动");
+            Assert.AreEqual(WaterId, world.GetCell(1, 2).typeId, "上方水格不动（株顶距水面不足 2 格，不生长）");
         }
 
         [Test]

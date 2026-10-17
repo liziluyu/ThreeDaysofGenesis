@@ -10,7 +10,7 @@ namespace TapTap2026.Simulation
     //              （它同时就是**颜色档**，越老越接近黄绿），余数存低位。能共用的依据与
     //              CellFlags.SeedStrikeMask 相同：同一时刻一格只属于一个类型，Set / SetPhase 换类型时
     //              **整字节覆写** flags，旧类型残留读不到。
-    // 邻居查询范围：随机刻时以自身为中心、半径 2 格（SeedSpawnRadius）的圆盘；生长读正上方 2 格；
+    // 邻居查询范围：随机刻时以自身为中心、半径 2 格（SeedSpawnRadius）的圆盘；生长数正上方的连续水柱（数到水面）；
     //               死亡判定用正上方一格（①被压）、正下方一格（②扎根）、八邻（③脱水）
     // 交互的 ParticleIds：Water —— 生长消耗 / 死亡归还（1:1 对称，水守恒由构造保证）；
     //                     GrassSeed —— 撒种的产物；Atmosphere —— 被覆盖时水经湿度场归还（水汽）；
@@ -35,8 +35,9 @@ namespace TapTap2026.Simulation
     //       **还水**（①~④）：SetPhase 成 Water——每格植物在诞生时消耗了一格水，死亡原样归还，1:1 对称；
     //          SetPhase 保留本格热量。植物**不带 Organic 标签**：物质归水，不再走 20% 腐殖质衰变
     //          （这也避免了发芽时 SetPhase 种子→植物被 20% 衰变截胡）。
-    //       ⑤ **生长**：头顶是水、头顶上方**还有水**（始终给植株留一格保命水，防止自我脱水）、
-    //          株高 < MaxPlantHeight → 头顶水格 SetPhase 成植物（消耗一格水、长高一格）。
+    //       ⑤ **生长**：头顶是水、且正上方的连续水柱**至少 3 格**（长高消耗一格后，株顶距水面仍 ≥ 2 格）→
+    //          头顶水格 SetPhase 成植物（消耗一格水、长高一格）。生长只看株顶到水面的距离、**没有株高上限**：
+    //          水越深长得越高，株顶低于水面 WaterCellsBelowSurface（2）格时停止。
     //          只有最顶上的茎格满足「头顶是水」，所以只有顶格会生长。
     //       ⑥ **撒种（10% 概率）**：每次都摇骰（消耗 1 个随机数，保证确定性）；命中才在半径 2 格圆盘内
     //          找第一个「**软底 + 正上方是水 + 水柱顶端之上有界内气体/空格**」的列：把顶端气体格 Set 成水
@@ -54,8 +55,9 @@ namespace TapTap2026.Simulation
         /// <summary>撒种概率的分母：每次随机刻命中时 <c>NextUInt() % 本值 == 0</c> 才尝试撒种，即 1/10 = 10%。</summary>
         public const uint SeedSpawnChanceDenominator = 10u;
 
-        /// <summary>整株最大高度（格）：逐格生长到此为止（沿用旧版一次性抽茎的上限，保持观感）。</summary>
-        public const int MaxPlantHeight = 3;
+        /// <summary>停止生长时株顶低于水面的格数（= 2）：头顶的连续水柱少于「本值 + 1」格就停——长高要消耗一格水，
+        /// 消耗后株顶与水面（水柱顶端）之间仍必须留这么多格。水越深植株越高，**没有独立株高上限**。</summary>
+        public const int WaterCellsBelowSurface = 2;
 
         /// <summary>致死高温（温度严格**高于**它即死）。温度是导出量 <c>T = Q / 热容</c>；与草同值。</summary>
         public const float LethalHeatTemperature = 50f;
@@ -189,10 +191,8 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // ⑤ 生长：头顶是水、头顶上方还有水（留一格保命水）、株高未到上限 → 头顶水格变成新茎。
-            if (world.GetCell(x, y + 1).typeId == ParticleIds.Water
-                && world.GetCell(x, y + 2).typeId == ParticleIds.Water
-                && ColumnHeightBelow(world, x, y) < MaxPlantHeight)
+            // ⑤ 生长：头顶是水、且正上方的连续水柱至少 WaterCellsBelowSurface + 1 格 → 头顶水格变成新茎。
+            if (ContiguousWaterAbove(world, x, y) > WaterCellsBelowSurface)
             {
                 world.SetPhase(x, y + 1, ParticleIds.AquaticPlant);
                 return;
@@ -259,18 +259,20 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>从本格向下数连续的同株茎段数（含本格）：株高 = 本格高度，用于生长上限。</summary>
-        private static int ColumnHeightBelow(ParticleWorld world, int x, int y)
+        /// <summary>从 (x,y) 正上方数起的**连续水格数**（水面 = 这段水柱的顶端；越界由
+        /// <see cref="ParticleWorld.GetCell"/> 返回空气，天然终止）。用于生长：长高要消耗一格水，
+        /// 消耗后仍需留 <see cref="WaterCellsBelowSurface"/> 格水在株顶之上。</summary>
+        private static int ContiguousWaterAbove(ParticleWorld world, int x, int y)
         {
-            int height = 0;
-            int columnY = y;
-            while (world.GetCell(x, columnY).typeId == ParticleIds.AquaticPlant)
+            int count = 0;
+            int columnY = y + 1;
+            while (world.GetCell(x, columnY).typeId == ParticleIds.Water)
             {
-                height++;
-                columnY--;
+                count++;
+                columnY++;
             }
 
-            return height;
+            return count;
         }
 
         /// <summary>
