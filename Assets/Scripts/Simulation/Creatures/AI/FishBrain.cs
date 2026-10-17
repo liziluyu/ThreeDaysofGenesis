@@ -28,7 +28,16 @@ namespace TapTap2026.Simulation
     /// 后，浅水贴底的鱼不再沿坑洼池底爬行撞坎掉头（实测狭池带坎 600 帧 21 次 → 0 次）。</para>
     /// <para><b>搁浅：</b>离水后只能每隔 15~35 帧扑腾一跳；连续离水超过 <see cref="Creature.BeachedTicksLimit"/>
     /// 帧由运动层判搁浅而死。</para>
-    /// <para><b>v1 非目标：</b>不吃草、不繁殖、不寻路。</para>
+    /// <para><b>饥饿觅食（2026-10-17）：</b>仍属 <see cref="StateSwim"/>——饥饿是巡游的**子行为**，不新增状态编号。
+    /// 饥饿过 <see cref="HungryThreshold"/> 且进食冷却结束时，先扫半径 <see cref="FoodSearchRadius"/> 内最近的
+    /// <see cref="ParticleIds.AquaticPlant"/>（固定扫描序、零随机数），水平朝目标列、竖直朝目标格游过去；
+    /// 进入相邻一格即以 <see cref="EatRangeCells"/> 判定进食。**被移除的永远是整株最顶那一格**：自被咬中的茎格
+    /// 沿本列向上找到连续水草的顶端，再 <see cref="ParticleWorld.Clear"/> 顶端（底段 / 根系保留，见
+    /// <see cref="EatPlantFromCell"/>）。吃一格恢复 <see cref="FoodRestoreTicks"/> 饥饿帧并进入
+    /// <see cref="FeedingCooldown"/> 帧冷却；目标连续 <see cref="FoodTargetFailLimit"/> 个思考帧够不到即放弃，
+    /// 半径内没有水草时**照常巡游**（不冻结）。鱼**会**因饥饿而死（`StarvesWithoutFood` = true）：`HungerTicks`
+    /// 饱和 <see cref="Creature.MaxHungerTicks"/>（1200 帧 ≈ 60 秒）即 `Kill(Starved)`——与水草的距离直接决定存活，
+    /// 因此「找不到吃的」是真实死因而不是摆设。</para>
     /// </remarks>
     public static class FishBrain
     {
@@ -99,6 +108,28 @@ namespace TapTap2026.Simulation
         /// <summary>墙感知换向的前探格数：当前方向前方这么多格的**体高行内**全是水才认为畅通、保持原方向不摇骰。</summary>
         public const int AheadProbeCells = 3;
 
+        // ===================== 饥饿觅食（水草）参数：与兔子同档，理由见各条 =====================
+
+        /// <summary>开始觅食的饥饿阈值（逻辑帧，30 秒 @20 Hz）：与 <see cref="RabbitBrain.HungryThreshold"/> 同值，
+        /// 让两种动物的「饿到开始找吃的」节奏一致。</summary>
+        public const int HungryThreshold = 600;
+
+        /// <summary>吃一格水草恢复的饥饿帧数：与兔子吃草 / 花同值（一次进食 = 21 秒不饿）。</summary>
+        public const int FoodRestoreTicks = 420;
+
+        /// <summary>两次进食之间的最小间隔（逻辑帧，1 秒）：防止同一株水草的相邻格被连续瞬吃。</summary>
+        public const int FeedingCooldown = 20;
+
+        /// <summary>目标连续够不到的思考帧上限：超过即放弃目标（与兔子同值），避免对着墙后水草无限抖。</summary>
+        public const int FoodTargetFailLimit = 40;
+
+        /// <summary>水草搜索半径（格，圆盘判据）：与兔子食草同一量级——局部目标选择，不做全局寻路。</summary>
+        public const int FoodSearchRadius = 6;
+
+        /// <summary>进食格差（格）：水平与竖直都 ≤ 本值即算「咬到」。鱼身体只有 0.5 格高，
+        /// 因此以**身体中心行**为基准（脚底行与中心行通常相同）。</summary>
+        public const int EatRangeCells = 1;
+
         /// <summary>一次思考：在水里就巡游，离水就搁浅扑腾。</summary>
         /// <param name="creature">思考的鱼。</param>
         /// <param name="creatures">所属动物世界（RNG 来源）。</param>
@@ -115,8 +146,9 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>水中巡游：前方畅通就保持当前方向、受阻才 1/3 摇骰换向；竖直按体顶单格探测 + 下潜锁存决定
-        /// 锁潜（一路下潜）/ **深度带随机上下游**（比目标深就上浮、比目标浅就下潜、到达即悬停并重摇；
+        /// <summary>水中巡游：饥饿时先尝试觅食（见 <see cref="TryThinkFood"/>）；否则前方畅通就保持当前方向、
+        /// 受阻才 1/3 摇骰换向；竖直按体顶单格探测 + 下潜锁存决定锁潜（一路下潜）/
+        /// **深度带随机上下游**（比目标深就上浮、比目标浅就下潜、到达即悬停并重摇；
         /// 池浅到摆不下带时整段跳过，落到近底上抬 / 自由漂）。</summary>
         private static void ThinkSwim(Creature creature, CreatureWorld creatures, ParticleWorld world)
         {
@@ -125,6 +157,13 @@ namespace TapTap2026.Simulation
             int cx = FloorToInt(creature.X);
             int footRow = FloorToInt(creature.Y);
             int bodyTopRow = footRow + BodyTopOffsetCells;
+
+            // 饥饿觅食优先于常规巡游（但不新增状态：见类 remarks 的「饥饿觅食」）。找不到水草时返回 false，
+            // 本帧照常巡游——饿着但附近没吃的，鱼不该停在原地。
+            if (TryThinkFood(creature, world, cx, bodyTopRow))
+            {
+                return;
+            }
 
             // 水平：墙感知换向——先探当前方向前方 AheadProbeCells 格（体高行内）是不是全水。
             // 畅通 ⇒ 保持原方向（顺带把刚出生 / 刚停住的 IntentVx = 0 起步成 SwimSpeed，方向取 Facing）；
@@ -207,6 +246,139 @@ namespace TapTap2026.Simulation
             {
                 creature.IntentVy = 0f; // 自由漂：中性浮力保持当前深度
             }
+        }
+
+        /// <summary>
+        /// 饥饿觅食：仅在水里、饥饿过 <see cref="HungryThreshold"/> 且冷却结束时接管本帧意图。
+        /// 返回 true 表示本帧已由觅食分支处理（调用方不再跑常规巡游）；**半径内没有水草 / 目标放弃时返回 false**，
+        /// 让鱼照常巡游（饿了但附近没吃的，不该原地冻住）。
+        /// </summary>
+        /// <remarks>
+        /// <para><b>目标选择：</b><see cref="CreatureSensors.FindNearestAquaticPlant"/>（固定扫描序、取最近、零随机数）。
+        /// 只吃 <see cref="ParticleIds.AquaticPlant"/>，且候选格八邻必须有水（干死 / 露出水面的水草不追）。</para>
+        /// <para><b>移动：</b>水平用 <see cref="SwimSpeed"/> 追目标列，竖直朝目标行逼近（上浮受「体顶之上仍是水」门控，
+        /// 不会追出水面搁浅）。觅食期间清掉 <see cref="Creature.VerticalDiveLatched"/>——否则浅水里贴底的鱼会被
+        /// 运动层 ⓪b 段把水平意图清零，永远游不到目标。</para>
+        /// <para><b>随机流：</b>本路径不消耗任何随机数（纯扫格 + 比较），同 seed 回放不受影响。</para>
+        /// </remarks>
+        /// <param name="creature">思考的鱼。</param>
+        /// <param name="world">粒子世界（只读感知 + 进食时写一格）。</param>
+        /// <param name="cx">身体中心所在格 x（<c>floor(X)</c>）。</param>
+        /// <param name="bodyTopRow">体顶行（脚底行 + <see cref="BodyTopOffsetCells"/>）。</param>
+        /// <returns>本帧是否由觅食分支接管。</returns>
+        private static bool TryThinkFood(Creature creature, ParticleWorld world, int cx, int bodyTopRow)
+        {
+            if (creature.HungerTicks < HungryThreshold || creature.FeedingCooldownTicks != 0)
+            {
+                return false;
+            }
+
+            int centerRow = FloorToInt(creature.Y + creature.Height * 0.5f);
+            int tx = creature.FoodTargetX;
+            int ty = creature.FoodTargetY;
+            bool targetValid = tx != Creature.NoFoodTarget
+                && world.IsInBounds(tx, ty)
+                && world.GetCell(tx, ty).typeId == ParticleIds.AquaticPlant;
+
+            if (!targetValid)
+            {
+                if (!CreatureSensors.FindNearestAquaticPlant(world, cx, centerRow, FoodSearchRadius, out tx, out ty))
+                {
+                    // 半径内没有水草：清目标并交回常规巡游。不算「目标失败」（那是针对够不到的目标）。
+                    creature.FoodTargetX = Creature.NoFoodTarget;
+                    creature.FoodTargetY = Creature.NoFoodTarget;
+                    creature.FoodTargetFailTicks = 0;
+                    return false;
+                }
+
+                creature.FoodTargetX = tx;
+                creature.FoodTargetY = ty;
+                creature.FoodTargetFailTicks = 0;
+            }
+
+            // 已在进食格差内：咬一口——移除的是**整株最顶一格**（不是被咬中的这一格）。
+            if (Abs(tx - cx) <= EatRangeCells && Abs(ty - centerRow) <= EatRangeCells)
+            {
+                EatPlantFromCell(world, tx, ty);
+                creature.HungerTicks -= FoodRestoreTicks;
+                if (creature.HungerTicks < 0)
+                {
+                    creature.HungerTicks = 0;
+                }
+
+                creature.FeedingCooldownTicks = FeedingCooldown;
+                creature.FoodTargetX = Creature.NoFoodTarget;
+                creature.FoodTargetY = Creature.NoFoodTarget;
+                creature.FoodTargetFailTicks = 0;
+                creature.IntentVx = 0f;
+                creature.IntentVy = 0f;
+                return true;
+            }
+
+            creature.FoodTargetFailTicks++;
+            if (creature.FoodTargetFailTicks > FoodTargetFailLimit)
+            {
+                // 目标长期够不到（墙后 / 岸上）：放弃并回常规巡游。
+                creature.FoodTargetX = Creature.NoFoodTarget;
+                creature.FoodTargetY = Creature.NoFoodTarget;
+                creature.FoodTargetFailTicks = 0;
+                return false;
+            }
+
+            // 觅食期间解除「锁潜 + 贴地 ⇒ 伏底不动」的门控（见 remarks）。
+            creature.VerticalDiveLatched = false;
+
+            if (tx > cx)
+            {
+                creature.IntentVx = SwimSpeed;
+            }
+            else if (tx < cx)
+            {
+                creature.IntentVx = -SwimSpeed;
+            }
+            else
+            {
+                creature.IntentVx = 0f;
+            }
+
+            if (ty > centerRow + EatRangeCells)
+            {
+                // 目标在上方：只在体顶之上仍是水时上浮（否则会把鱼顶出水面搁浅）。
+                creature.IntentVy = CreatureTerrain.IsWater(world, cx, bodyTopRow + 1) ? VerticalSpeed : 0f;
+            }
+            else if (ty < centerRow - EatRangeCells)
+            {
+                creature.IntentVy = -VerticalSpeed;
+            }
+            else
+            {
+                creature.IntentVy = 0f;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 吃掉 <c>(x, y)</c> 这一格水草所代表的整株的**最顶一格**：自该格沿本列向上找连续水草的顶端，
+        /// 再 <see cref="ParticleWorld.Clear"/> 顶端（用户口径：鱼咬到哪一格都行，被删除的永远是整株最顶那一格；
+        /// 底段 / 根系因此保留，水草还能继续长回来）。
+        /// </summary>
+        /// <remarks>
+        /// 走 <see cref="ParticleWorld.Clear"/> 而不是直接改格：水生植物不带 Organic，<c>OnKill</c> 会把这一格
+        /// 对应的那份水注入邻格湿度场（水账守恒），并正常唤醒运动 / 逻辑位图。
+        /// </remarks>
+        /// <param name="world">粒子世界（可写）。</param>
+        /// <param name="x">被咬中的水草格 x（调用方已确认为水草）。</param>
+        /// <param name="y">被咬中的水草格 y。</param>
+        private static void EatPlantFromCell(ParticleWorld world, int x, int y)
+        {
+            int topY = y;
+            while (world.IsInBounds(x, topY + 1) && world.GetCell(x, topY + 1).typeId == ParticleIds.AquaticPlant)
+            {
+                topY++;
+            }
+
+            world.Clear(x, topY);
         }
 
         /// <summary>当前方向前方 <see cref="AheadProbeCells"/> 格是否一路畅通：体高行（脚底行 .. 体顶行）内
@@ -303,6 +475,12 @@ namespace TapTap2026.Simulation
         {
             int truncated = (int)value;
             return value < truncated ? truncated - 1 : truncated;
+        }
+
+        /// <summary>整数绝对值（不走 Math，保持决策路径零 UnityEngine 依赖）。</summary>
+        private static int Abs(int value)
+        {
+            return value < 0 ? -value : value;
         }
     }
 }

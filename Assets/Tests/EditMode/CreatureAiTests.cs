@@ -390,14 +390,14 @@ namespace TapTap2026.Tests
         /// <remarks>
         /// <para><b>场景必须在窗口内无死亡、无进食</b>：动物死亡会物质化出生物质，生物质落稳后每逻辑帧摇一次
         /// 腐败骰（消耗世界随机流，见 <c>DeathMaterialization_DoesConsumeWorldStream_Deterministically</c>）；
-        /// 兔子进食（<c>world.Clear</c> 一格草）也会触发既有世界规则的骰。两者都是动物层**合法**写世界引起的
+        /// 兔子进食（<c>world.Clear</c> 一格草或花）也会触发既有世界规则的骰。两者都是动物层**合法**写世界引起的
         /// 副作用，却会让本测试的「逐位一致」变成假失败。为此把场景改成隔离的：</para>
         /// <list type="bullet">
         /// <item>鱼关进**四周石砌、水灌满水的封闭水舱**（底 / 盖 / 两堵侧墙把水封死在舱内）：水不会流走，
         /// 鱼既游不出去、也永远淹没（<c>BeachedTicks</c> 归零），搁浅致死的门永远打不开；</item>
         /// <item>兔子放在水舱**外面**的实心沙地上；侧墙从舱底一直砌到舱盖，兔子既走不进去、
         /// 也（起跳远低于墙高）跳不过去，因此永远不可能淹没，溺死门打不开；</item>
-        /// <item>全场**一格草都没有**，兔子的 <c>Eat</c>（动物层唯一的写格路径）无从触发；</item>
+        /// <item>全场**没有任何可食植物（草 / 花）**，兔子的 <c>Eat</c>（动物层唯一的写格路径）无从触发；</item>
         /// <item>300 帧远小于饿死阈值 1200 帧，兔子不可能饿死。</item>
         /// </list>
         /// <para>于是窗口内两种动物都不写世界、不死亡（实测：鱼全程淹没、兔子 <c>SubmergedTicks</c> 恒 0、
@@ -1266,6 +1266,160 @@ namespace TapTap2026.Tests
                 "落水后终态 depth 应落在深度带 ±1 内（实测 " + depth + "）");
         }
 
+        // ============================== 11b. 鱼的饥饿觅食（水草，2026-10-17） ==============================
+
+        /// <summary>统计某一列里水草的格数（从 <paramref name="y0"/> 到 <paramref name="y1"/> 闭区间）。</summary>
+        private static int CountAquaticPlants(ParticleWorld world, int x, int y0, int y1)
+        {
+            int count = 0;
+            for (int y = y0; y <= y1; y++)
+            {
+                if (world.GetCell(x, y).typeId == ParticleIds.AquaticPlant)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// 饥饿的鱼咬到**中层**那一格水草时，被删除的是整株**最顶**那一格（用户口径）——中间与根部原样保留。
+        /// 同时验证进食恢复饥饿、进入冷却。
+        /// </summary>
+        [Test]
+        public void Fish_EatsAquaticPlant_RemovesOnlyTopmostCell()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            FillRect(world, 16, 16, 1, 5, ParticleIds.AquaticPlant);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 15f, 3f);
+            fish.HungerTicks = FishBrain.HungryThreshold;
+
+            bool eaten = false;
+            for (int i = 0; i < 100 && !eaten; i++)
+            {
+                creatures.Step(world);
+                eaten = world.GetCell(16, 5).typeId != ParticleIds.AquaticPlant;
+            }
+
+            Assert.IsTrue(eaten, "相邻的中层水草应在饥饿思考帧被吃掉");
+            Assert.AreEqual(
+                ParticleIds.Air,
+                world.GetCell(16, 5).typeId,
+                "被删除的必须是整株最顶那一格（16,5）");
+            Assert.AreEqual(4, CountAquaticPlants(world, 16, 1, 5), "只该少一格水草（中间与根部保留）");
+            for (int y = 1; y <= 4; y++)
+            {
+                Assert.AreEqual(
+                    ParticleIds.AquaticPlant,
+                    world.GetCell(16, y).typeId,
+                    "非顶端的水草格不该被连带删除（y = " + y + "）");
+            }
+
+            Assert.Less(
+                fish.HungerTicks,
+                FishBrain.HungryThreshold,
+                "进食应把饥饿值降回阈值以下");
+            Assert.Greater(fish.FeedingCooldownTicks, 0, "进食后应进入冷却");
+        }
+
+        /// <summary>饥饿的鱼会朝附近的水草游过去，追到相邻一格后吃掉整株顶端；全程不离开水面。</summary>
+        [Test]
+        public void Fish_Hungry_SeeksNearbyAquaticPlant_AndEatsTopCell()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            FillRect(world, 20, 20, 1, 5, ParticleIds.AquaticPlant);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 4f, 3f);
+            fish.HungerTicks = FishBrain.HungryThreshold;
+
+            bool eaten = false;
+            for (int i = 0; i < 400 && !eaten; i++)
+            {
+                creatures.Step(world);
+                Assert.IsTrue(fish.IsSubmerged, "觅食中的鱼不该离开水面（第 " + i + " 帧）");
+                eaten = world.GetCell(20, 5).typeId != ParticleIds.AquaticPlant;
+            }
+
+            Assert.IsTrue(eaten, "鱼应在 400 逻辑帧内游到 16 格外的水草并吃掉顶端");
+            Assert.AreEqual(4, CountAquaticPlants(world, 20, 1, 5), "只该少一整株的最顶那一格");
+            Assert.Less(
+                fish.HungerTicks,
+                FishBrain.HungryThreshold,
+                "进食应把饥饿值降回阈值以下");
+        }
+
+        /// <summary>不饿的鱼（饥饿值低于阈值）即使贴着水草也不会吃——饥饿门槛真的在起作用。</summary>
+        [Test]
+        public void Fish_NotHungry_DoesNotEatAquaticPlant()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            FillRect(world, 16, 16, 1, 5, ParticleIds.AquaticPlant);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 15f, 3f);
+
+            RunSteps(world, creatures, 200);
+
+            Assert.Less(fish.HungerTicks, FishBrain.HungryThreshold, "200 帧时饥饿值仍应在阈值之下");
+            Assert.AreEqual(5, CountAquaticPlants(world, 16, 1, 5), "不饿的鱼不该吃水草");
+        }
+
+        // ============================== 11c. 鱼的饿死（2026-10-17） ==============================
+
+        /// <summary>饥饿饱和（<see cref="Creature.MaxHungerTicks"/>）的鱼会饿死：死亡事件恰好一次、死因 Starved、
+        /// 实体被清扫——与兔子共用同一条饱和判定（`StarvesWithoutFood` = true）。</summary>
+        [Test]
+        public void Fish_Starvation_KillsWithStarvedCause()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 16f, 8f);
+            fish.HungerTicks = Creature.MaxHungerTicks - 3;
+
+            int deaths = 0;
+            CreatureDeathCause cause = CreatureDeathCause.Unknown;
+            creatures.CreatureDied += (creature, deathCause) =>
+            {
+                deaths++;
+                cause = deathCause;
+            };
+
+            RunSteps(world, creatures, 10);
+
+            Assert.IsFalse(fish.Alive, "饥饿饱和的鱼应饿死");
+            Assert.AreEqual(1, deaths, "死亡事件应恰好一次");
+            Assert.AreEqual(CreatureDeathCause.Starved, cause, "死因应为 Starved");
+            Assert.AreEqual(0, creatures.Count, "死亡实体应已被清扫");
+        }
+
+        /// <summary>吃水草能把鱼从饥饿线上拉回来：饥饿值逼近饱和时旁边有水草 ⇒ 越过 1200 帧仍存活。
+        /// 这条与 <see cref="Fish_Starvation_KillsWithStarvedCause"/> 构成判别对——同一个世界形态，
+        /// 只差一株水草。</summary>
+        [Test]
+        public void Fish_FeedingPreventsStarvation()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 15, Water);
+            FillRect(world, 16, 16, 1, 12, ParticleIds.AquaticPlant);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            FishCreature fish = creatures.Spawn(new FishCreature(), world, 15f, 3f);
+            fish.HungerTicks = Creature.MaxHungerTicks - 100;
+
+            RunSteps(world, creatures, 400);
+
+            Assert.IsTrue(fish.Alive, "吃到水草的鱼不该在 400 帧内饿死");
+            Assert.AreEqual(1, creatures.Count, "存活实体不应被清扫");
+            Assert.Less(
+                fish.HungerTicks,
+                Creature.MaxHungerTicks,
+                "进食应把饥饿值拉回饱和线以下");
+        }
+
         // ============================== 12. Flee 退出 ==============================
 
         /// <summary>
@@ -1328,11 +1482,11 @@ namespace TapTap2026.Tests
             Assert.AreEqual(RabbitBrain.StateSeekFood, rabbit.AiState, "过饥饿阈值且冷度为 0 时应进入 SeekFood");
         }
 
-        // ============================== 15. 最近草格与固定扫描序 ==============================
+        // ============================== 15. 最近可食植物（草 / 花）与固定扫描序 ==============================
 
-        /// <summary>取距离平方最小者；等距保留先扫描者（y 升序、同行 x 升序）；半径 6 外不计。</summary>
+        /// <summary>取距离平方最小者（草或花）；等距保留先扫描者（y 升序、同行 x 升序）；半径 6 外不计。</summary>
         [Test]
-        public void FindNearestGrass_PicksNearest_ThenFixedOrder()
+        public void FindNearestGrassOrFlower_PicksNearest_ThenFixedOrder()
         {
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 0, Stone);
@@ -1341,7 +1495,7 @@ namespace TapTap2026.Tests
 
             int gx;
             int gy;
-            bool found = CreatureSensors.FindNearestGrass(world, 10, 1, out gx, out gy);
+            bool found = CreatureSensors.FindNearestGrassOrFlower(world, 10, 1, out gx, out gy);
             Assert.IsTrue(found, "半径 6 内两格草应被找到");
             Assert.AreEqual(11, gx, "应取更近的草格 x");
             Assert.AreEqual(1, gy, "应取更近的草格 y");
@@ -1350,18 +1504,27 @@ namespace TapTap2026.Tests
             FillRows(tieWorld, 0, 0, Stone);
             tieWorld.Set(9, 1, Grass);  // dist² = 1
             tieWorld.Set(11, 1, Grass); // dist² = 1（平手）
-            bool tieFound = CreatureSensors.FindNearestGrass(tieWorld, 10, 1, out gx, out gy);
+            bool tieFound = CreatureSensors.FindNearestGrassOrFlower(tieWorld, 10, 1, out gx, out gy);
             Assert.IsTrue(tieFound, "等距两格草应被找到");
             Assert.AreEqual(9, gx, "等距时应保留固定扫描序（同行 x 升序）先到者");
 
             ParticleWorld farWorld = NewWorld();
             FillRows(farWorld, 0, 0, Stone);
             farWorld.Set(17, 1, Grass); // dx = 7 > 6
-            Assert.IsFalse(CreatureSensors.FindNearestGrass(farWorld, 10, 1, out gx, out gy),
+            Assert.IsFalse(CreatureSensors.FindNearestGrassOrFlower(farWorld, 10, 1, out gx, out gy),
                 "半径 6 之外的草不应被看到");
+
+            ParticleWorld flowerWorld = NewWorld();
+            FillRows(flowerWorld, 0, 0, Stone);
+            flowerWorld.Set(11, 1, Flower); // dist² = 1
+            flowerWorld.Set(13, 1, Grass);  // dist² = 9
+            bool flowerFound = CreatureSensors.FindNearestGrassOrFlower(flowerWorld, 10, 1, out gx, out gy);
+            Assert.IsTrue(flowerFound, "花应参与食物感知");
+            Assert.AreEqual(11, gx, "花更近时应取花格 x");
+            Assert.AreEqual(1, gy, "花更近时应取花格 y");
         }
 
-        // ============================== 16. 进食清除一格草并恢复饥饿 ==============================
+        // ============================== 16. 进食：草 / 花各清一格并恢复饥饿 ==============================
 
         /// <summary>兔子在草旁进入 Eat：恰好清除一格草、饥饿下降、冷却 &gt; 0，并回到 Wander。</summary>
         [Test]
@@ -1394,15 +1557,55 @@ namespace TapTap2026.Tests
             Assert.AreEqual(RabbitBrain.StateWander, rabbit.AiState, "进食后应回到 Wander");
         }
 
-        // ============================== 17. 不吃花 / 草种子 ==============================
-
-        /// <summary>周围只有花与草种子时，进食态不写格、不消耗动物 / 世界随机流。</summary>
+        /// <summary>
+        /// 端到端：不预置 AiState / 目标，饥饿的兔子闻到 (11,1) 的花 → 扫描选花 → 进入进食范围转 Eat →
+        /// 清除花格；饥饿降到阈值以下、进入冷却并回到 Wander。
+        /// </summary>
+        /// <remarks>
+        /// <para>花与草共用同一条食谱（<see cref="RabbitBrain.IsEdibleType"/>），因此断言只覆盖可观察结果：
+        /// 花格消失、场上花数归零、饥饿下降、冷却 &gt; 0、状态回 Wander。</para>
+        /// <para><b>SeekFood 是思考帧内的瞬态：</b>兔子生成时就与花相邻，第一次思考在 <c>ThinkFood</c> 里
+        /// 写入 <c>StateSeekFood</c> 后同帧转入 <c>StateEat</c>，帧边界上看到的是 Eat——记录时把 Eat 一并
+        /// 视为「走过觅食链」，否则这条断言永远采样不到。</para>
+        /// </remarks>
         [Test]
-        public void Eat_DoesNotEatFlowerOrSeed()
+        public void Eat_EatsFlowerTile_AndRestoresHunger()
         {
             ParticleWorld world = NewWorld();
             FillRows(world, 0, 0, Stone);
-            world.Set(11, 1, Flower);
+            world.Set(11, 1, Flower); // 兔子 (10,1) 正前方一格
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            RabbitCreature rabbit = creatures.Spawn(new RabbitCreature(), world, 10f, 1f);
+            rabbit.HungerTicks = RabbitBrain.HungryThreshold;
+
+            bool enteredSeekFood = false;
+            for (int i = 0; i < 200 && rabbit.Alive && world.GetCell(11, 1).typeId == Flower; i++)
+            {
+                creatures.Step(world);
+                if (rabbit.AiState == RabbitBrain.StateSeekFood || rabbit.AiState == RabbitBrain.StateEat)
+                {
+                    enteredSeekFood = true;
+                }
+            }
+
+            // 花带 Organic ⇒ world.Clear 有 20% 概率就地留腐殖质，故断言「不再是花」而非强断言空气。
+            Assert.AreNotEqual(Flower, world.GetCell(11, 1).typeId, "目标花格应被清除");
+            Assert.AreEqual(0, CountType(world, Flower), "只应清除一格花，且场上不留花");
+            Assert.IsTrue(enteredSeekFood, "应经由 SeekFood → Eat 的觅食链吃到花");
+            Assert.Less(rabbit.HungerTicks, RabbitBrain.HungryThreshold, "进食应把饥饿降到觅食阈值以下");
+            Assert.Greater(rabbit.HungerTicks, 0, "600 的饥饿减 420 后应仍为正（未触底）");
+            Assert.Greater(rabbit.FeedingCooldownTicks, 0, "进食后应进入冷却");
+            Assert.AreEqual(RabbitBrain.StateWander, rabbit.AiState, "进食后应回到 Wander");
+        }
+
+        // ============================== 17. 不吃草种子 ==============================
+
+        /// <summary>周围只有草种子时，进食态不写格、不消耗动物 / 世界随机流。</summary>
+        [Test]
+        public void Eat_DoesNotEatSeed()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
             world.Set(9, 1, GrassSeed);
             CreatureWorld creatures = new CreatureWorld(SeedValue);
             RabbitCreature rabbit = creatures.Spawn(new RabbitCreature(), world, 10f, 1f);
@@ -1412,7 +1615,6 @@ namespace TapTap2026.Tests
             // 同 seed 的参考世界：构造路径逐位一致 ⇒ 未写入时两条随机流应停在同一位点。
             ParticleWorld refWorld = NewWorld();
             FillRows(refWorld, 0, 0, Stone);
-            refWorld.Set(11, 1, Flower);
             refWorld.Set(9, 1, GrassSeed);
             CreatureWorld refCreatures = new CreatureWorld(SeedValue);
 
@@ -1421,7 +1623,6 @@ namespace TapTap2026.Tests
                 creatures.Step(world);
             }
 
-            Assert.AreEqual(Flower, world.GetCell(11, 1).typeId, "花不应被吃");
             Assert.AreEqual(GrassSeed, world.GetCell(9, 1).typeId, "草种子不应被吃");
             Assert.AreEqual(refWorld.NextUInt(), world.NextUInt(), "未进食不应消耗世界随机流");
             Assert.AreEqual(refCreatures.NextUInt(), creatures.NextUInt(), "未进食不应消耗动物随机流");

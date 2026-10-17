@@ -10,7 +10,8 @@ namespace TapTap2026.Simulation
     /// 结果与调用次数无关；配合「RNG 只在思考帧消耗」保证同 seed 逐位复现。</para>
     /// <para><b>成本：</b>威胁扫描的格读随**调用方传入的**半径增长（逃命进入 = <see cref="Creature.ThreatRadius"/>：
     /// 设计值 6 = 113 格；调试期临时放大到 16 = 797 格；脱离再加 <see cref="RabbitBrain.FleeExitMargin"/>），
-    /// 食物扫描 113 格读——两者仅 2 Hz 的思考帧发生；
+    /// 食物扫描 113 格读（兔子找草 / 花、鱼找水草）、生物质扫描随调用方半径（鸟为
+    /// <see cref="BirdBrain.FoodDetectCells"/> = 24，圆盘 1809 格）——都仅 2 Hz 的思考帧发生；
     /// 地面探针 2 格读（每帧，仅贴地时）；墙探针 ≤3 格读（仅**上一步物理的横向积分被挡住**且有前向意图时——
     /// 触发条件来自物理事实而不是速度代理量，见 <see cref="Creature.ApplyLocomotion"/> 第 ④ 段）。</para>
     /// </remarks>
@@ -75,23 +76,25 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 以 (<paramref name="cx"/>, <paramref name="cy"/>) 为中心扫半径 6 的圆盘找最近的 <see cref="ParticleIds.Grass"/>，
-        /// 找到则输出其格坐标。
+        /// 以 (<paramref name="cx"/>, <paramref name="cy"/>) 为中心扫半径 6 的圆盘找最近的**可食植物**
+        /// （<see cref="RabbitBrain.IsEdibleType"/>：草 / 花），找到则输出其格坐标。
         /// </summary>
         /// <remarks>
-        /// 扫描顺序固定为 y 升序、同行 x 升序；比较**距离平方**取最小，平手时保留先扫描者。
-        /// 越界格跳过。本函数对世界只读、零分配、不消耗随机流——「先判后摇」由调用方（Brain）负责。
+        /// <para>扫描顺序固定为 y 升序、同行 x 升序；比较**距离平方**取最小，平手时保留先扫描者。
+        /// 越界格跳过。本函数对世界只读、零分配、不消耗随机流——「先判后摇」由调用方（Brain）负责。</para>
+        /// <para><b>食谱单一来源：</b>成员判定一律走 <see cref="RabbitBrain.IsEdibleType"/>，本函数不另写
+        /// 粒子类型比较——感知与进食因此永远看到同一份可食集合。</para>
         /// </remarks>
         /// <param name="world">被查询的世界（只读）。</param>
         /// <param name="cx">扫描中心格 x。</param>
         /// <param name="cy">扫描中心格 y。</param>
-        /// <param name="grassX">最近的草格 x（未找到时为 0）。</param>
-        /// <param name="grassY">最近的草格 y（未找到时为 0）。</param>
-        /// <returns>是否在半径 6 圆盘内找到草。</returns>
-        public static bool FindNearestGrass(ParticleWorld world, int cx, int cy, out int grassX, out int grassY)
+        /// <param name="foodX">最近的可食格 x（未找到时为 0）。</param>
+        /// <param name="foodY">最近的可食格 y（未找到时为 0）。</param>
+        /// <returns>是否在半径 6 圆盘内找到可食植物（草 / 花）。</returns>
+        public static bool FindNearestGrassOrFlower(ParticleWorld world, int cx, int cy, out int foodX, out int foodY)
         {
-            grassX = 0;
-            grassY = 0;
+            foodX = 0;
+            foodY = 0;
             bool found = false;
             int bestDistSq = int.MaxValue;
             const int radius = 6;
@@ -108,7 +111,7 @@ namespace TapTap2026.Simulation
                     }
 
                     int x = cx + dx;
-                    if (!world.IsInBounds(x, y) || world.GetCell(x, y).typeId != ParticleIds.Grass)
+                    if (!world.IsInBounds(x, y) || !RabbitBrain.IsEdibleType(world.GetCell(x, y).typeId))
                     {
                         continue;
                     }
@@ -117,14 +120,153 @@ namespace TapTap2026.Simulation
                     if (distSq < bestDistSq)
                     {
                         bestDistSq = distSq;
-                        grassX = x;
-                        grassY = y;
+                        foodX = x;
+                        foodY = y;
                         found = true;
                     }
                 }
             }
 
             return found;
+        }
+
+        /// <summary>
+        /// 以 (<paramref name="cx"/>, <paramref name="cy"/>) 为中心扫半径 <paramref name="radius"/> 的圆盘找**最近**的
+        /// <see cref="ParticleIds.Biomass"/>，找到则输出其格坐标。
+        /// </summary>
+        /// <remarks>
+        /// 与 <see cref="FindNearestGrassOrFlower"/> **完全同口径**（只有半径来源不同）：扫描顺序固定为 y 升序、同行 x 升序；
+        /// 比较**距离平方**取最小，平手时保留先扫描者。越界格跳过。本函数对世界只读、零分配、不消耗随机流——
+        /// 「先判后摇」由调用方（Brain）负责。
+        /// </remarks>
+        /// <param name="world">被查询的世界（只读）。</param>
+        /// <param name="cx">扫描中心格 x。</param>
+        /// <param name="cy">扫描中心格 y。</param>
+        /// <param name="radius">扫描半径（格，圆盘判据 <c>dx² + dy² ≤ radius²</c>）。</param>
+        /// <param name="biomassX">最近的生物质格 x（未找到时为 0）。</param>
+        /// <param name="biomassY">最近的生物质格 y（未找到时为 0）。</param>
+        /// <returns>是否在圆盘内找到生物质。</returns>
+        public static bool FindNearestBiomass(
+            ParticleWorld world, int cx, int cy, int radius, out int biomassX, out int biomassY)
+        {
+            biomassX = 0;
+            biomassY = 0;
+            bool found = false;
+            int bestDistSq = int.MaxValue;
+            int radiusSq = radius * radius;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                int y = cy + dy;
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    int distSq = dx * dx + dy * dy;
+                    if (distSq > radiusSq)
+                    {
+                        continue;
+                    }
+
+                    int x = cx + dx;
+                    if (!world.IsInBounds(x, y) || world.GetCell(x, y).typeId != ParticleIds.Biomass)
+                    {
+                        continue;
+                    }
+
+                    // 严格小于 ⇒ 平手保留先扫描者（固定扫描序因此决定结果）。
+                    if (distSq < bestDistSq)
+                    {
+                        bestDistSq = distSq;
+                        biomassX = x;
+                        biomassY = y;
+                        found = true;
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        /// <summary>
+        /// 以 (<paramref name="cx"/>, <paramref name="cy"/>) 为中心扫半径 <paramref name="radius"/> 的圆盘，
+        /// 找**最近的、仍泡在水里的** <see cref="ParticleIds.AquaticPlant"/>，找到则输出其格坐标。
+        /// </summary>
+        /// <remarks>
+        /// <para><b>为什么要求「八邻有水」：</b>水草是固体格（本格不是水），「还在水下」只能从邻居判断——
+        /// 八邻至少一格是水即视为可吃。这一条把被排干后仍立着的枯草挡在目标之外，避免鱼为了追一株
+        /// 露出水面的草而顶向水面搁浅。</para>
+        /// <para><b>取最近而不是取先见者：</b>与 <see cref="FindNearestFire"/> 同一口径——固定扫描序
+        /// （y 升序、同行 x 升序）决定平手结果，严格小于才替换。水草是一整列连续格，取最近会让鱼选到
+        /// 与其身体同高的那一格（而不是整列的顶端或底部），追击距离因此最短。</para>
+        /// <para>越界格跳过。本函数对世界只读、零分配、不消耗随机流。</para>
+        /// </remarks>
+        /// <param name="world">被查询的世界（只读）。</param>
+        /// <param name="cx">扫描中心格 x。</param>
+        /// <param name="cy">扫描中心格 y。</param>
+        /// <param name="radius">扫描半径（格，圆盘判据 <c>dx² + dy² ≤ radius²</c>）。</param>
+        /// <param name="plantX">最近的水草格 x（未找到时为 0）。</param>
+        /// <param name="plantY">最近的水草格 y（未找到时为 0）。</param>
+        /// <returns>是否在圆盘内找到水下的水草。</returns>
+        public static bool FindNearestAquaticPlant(
+            ParticleWorld world, int cx, int cy, int radius, out int plantX, out int plantY)
+        {
+            plantX = 0;
+            plantY = 0;
+            bool found = false;
+            int bestDistSq = int.MaxValue;
+            int radiusSq = radius * radius;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                int y = cy + dy;
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    int distSq = dx * dx + dy * dy;
+                    if (distSq > radiusSq)
+                    {
+                        continue;
+                    }
+
+                    int x = cx + dx;
+                    if (!world.IsInBounds(x, y)
+                        || world.GetCell(x, y).typeId != ParticleIds.AquaticPlant
+                        || !HasWaterNeighbour(world, x, y))
+                    {
+                        continue;
+                    }
+
+                    // 严格小于 ⇒ 平手保留先扫描者（固定扫描序因此决定结果）。
+                    if (distSq < bestDistSq)
+                    {
+                        bestDistSq = distSq;
+                        plantX = x;
+                        plantY = y;
+                        found = true;
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        /// <summary>(x,y) 的八邻里是否有水（水草是否仍泡在水里的判据）。越界由
+        /// <see cref="CreatureTerrain.IsWater"/> 天然回答 false。</summary>
+        private static bool HasWaterNeighbour(ParticleWorld world, int x, int y)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    if (CreatureTerrain.IsWater(world, x + dx, y + dy))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

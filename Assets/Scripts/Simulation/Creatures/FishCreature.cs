@@ -12,7 +12,8 @@ namespace TapTap2026.Simulation
     /// 于是入水后竖直速度被 <see cref="WaterDrag"/> 逐步衰减到 0、**停在入水深度**（不浮不沉），
     /// 升降只由意图驱动；一出水面浮力不再叠加，只剩重力把它拉回。兔子相反（浮力 0.15 < 重力 0.24），
     /// 入水后缓慢下沉。两者都不是特判，是同一条物理公式配不同常数。</para>
-    /// <para><b>行为：</b>决策全在静态 <see cref="FishBrain"/>（Swim / Stranded），本类只负责用
+    /// <para><b>行为：</b>决策全在静态 <see cref="FishBrain"/>（Swim / Stranded；**饥饿觅食是 Swim 的子行为**——饥饿过阈值时
+    /// 追附近水草并咬掉整株最顶一格，饥饿饱和则饿死），本类只负责用
     /// <see cref="ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 游动 / 起跳 / 致死门控）接到虚门上；
     /// 逐帧的意图逼近、接触火 / 搁浅致死由基类 <see cref="Creature.ApplyLocomotion"/> 统一执行。</para>
     /// </remarks>
@@ -68,6 +69,14 @@ namespace TapTap2026.Simulation
 
         /// <summary>连续离水超过 <see cref="Creature.BeachedTicksLimit"/> 帧即搁浅而死。</summary>
         protected override bool DiesWhenBeached
+        {
+            get { return true; }
+        }
+
+        /// <summary>鱼食水草：饥饿饱和（<see cref="Creature.MaxHungerTicks"/>）即饿死（2026-10-17 用户要求）。
+        /// 与兔子共用同一条饱和判定：`HungerTicks` 每逻辑帧 +1、吃一格水草 −<see cref="FishBrain.FoodRestoreTicks"/>，
+        /// 因此「附近有水草」是鱼能否越过 60 秒饥饿线的唯一变量。</summary>
+        protected override bool StarvesWithoutFood
         {
             get { return true; }
         }

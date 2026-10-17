@@ -12,7 +12,8 @@ namespace TapTap2026.Simulation
     /// <para><b>运动：</b>真正把意图变成速度、做悬崖守卫 / 撞墙翻越的是每帧的
     /// <see cref="Creature.ApplyLocomotion"/>——本类不做任何逐帧工作（饥饿计数也由它推进）。</para>
     /// <para><b>优先级：</b>火焰威胁 &gt; 饥饿觅食 &gt; 既有 Idle / Wander。</para>
-    /// <para><b>食物：</b>只吃 <see cref="ParticleIds.Grass"/>（花 / 草种子 / 腐殖质 / 土壤不吃），一次一格；
+    /// <para><b>食物：</b>吃 <see cref="ParticleIds.Grass"/> 与 <see cref="ParticleIds.Flower"/>（可食集合由
+    /// <see cref="IsEdibleType"/> 单点定义；草种子 / 腐殖质 / 土壤不吃），一次一格；
     /// 局部半径 6 目标选择，不做全局寻路。</para>
     /// </remarks>
     public static class RabbitBrain
@@ -26,10 +27,10 @@ namespace TapTap2026.Simulation
         /// <summary>状态：逃命（背向火跑，豁免悬崖守卫）。</summary>
         public const byte StateFlee = 2;
 
-        /// <summary>状态：觅食（朝局部草格目标移动）。</summary>
+        /// <summary>状态：觅食（朝局部可食植物目标移动）。</summary>
         public const byte StateSeekFood = 3;
 
-        /// <summary>状态：进食（停住并清除邻格一格草）。</summary>
+        /// <summary>状态：进食（停住并清除邻格一格可食植物）。</summary>
         public const byte StateEat = 4;
 
         /// <summary>开始寻找食物的饥饿阈值（逻辑帧，30 秒）。</summary>
@@ -38,7 +39,7 @@ namespace TapTap2026.Simulation
         /// <summary>食物优先级高于漫步的饥饿阀值（逻辑帧，50 秒）。</summary>
         public const int CriticalHungerThreshold = 1000;
 
-        /// <summary>吃一格草恢复的饥饿帧数。</summary>
+        /// <summary>吃一格可食植物（草 / 花）恢复的饥饿帧数。</summary>
         public const int FoodRestoreTicks = 420;
 
         /// <summary>两次进食之间的最小间隔（逻辑帧）。</summary>
@@ -52,6 +53,22 @@ namespace TapTap2026.Simulation
 
         /// <summary>进食时的邻格搜索半径（格）。</summary>
         public const int EatSearchRadius = 1;
+
+        /// <summary>
+        /// 兔子食谱的**唯一定义点**：<see cref="ParticleIds.Grass"/> 与 <see cref="ParticleIds.Flower"/>
+        /// 可食，其余粒子（草种子 / 腐殖质 / 土壤等）一律不可食。
+        /// </summary>
+        /// <remarks>
+        /// 感知扫描（<see cref="CreatureSensors.FindNearestGrassOrFlower"/>）、目标有效性复核与进食判定
+        /// （<see cref="TryEat"/>）三处都必须调用本方法——不允许各写一份类型比较，否则「看得到」与
+        /// 「吃得到」会漂移成两份食谱。纯比较、零分配、不消耗随机数。
+        /// </remarks>
+        /// <param name="typeId">待判定的粒子类型。</param>
+        /// <returns>是否属于兔子可食集合（草 / 花）。</returns>
+        public static bool IsEdibleType(ushort typeId)
+        {
+            return typeId == ParticleIds.Grass || typeId == ParticleIds.Flower;
+        }
 
         /// <summary>陆上水平加速度（格 / 逻辑帧²）。</summary>
         public const float Accel = 0.02f;
@@ -198,11 +215,11 @@ namespace TapTap2026.Simulation
 
             bool targetValid = tx != Creature.NoFoodTarget
                 && world.IsInBounds(tx, ty)
-                && world.GetCell(tx, ty).typeId == ParticleIds.Grass;
+                && IsEdibleType(world.GetCell(tx, ty).typeId);
 
             if (!targetValid)
             {
-                if (!CreatureSensors.FindNearestGrass(world, cx, cy, out tx, out ty))
+                if (!CreatureSensors.FindNearestGrassOrFlower(world, cx, cy, out tx, out ty))
                 {
                     // 无候选：计数并在超过上限后放弃。期间不写意图、不消耗随机数（先判后摇）。
                     creature.FoodTargetX = Creature.NoFoodTarget;
@@ -226,7 +243,7 @@ namespace TapTap2026.Simulation
             int feetY = FloorToInt(creature.Y);
             if (Abs(tx - feetX) <= EatRangeX && Abs(ty - feetY) <= EatRangeX)
             {
-                // 已在进食范围：停住，下一思考帧由 ThinkEat 清除一格草。
+                // 已在进食范围：停住，下一思考帧由 ThinkEat 清除一格可食植物。
                 creature.FoodTargetFailTicks = 0;
                 creature.AiState = StateEat;
                 creature.IntentVx = 0f;
@@ -261,7 +278,8 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// Eat 的每思考帧决策：停住，按固定枚举顺序在半径 <see cref="EatSearchRadius"/> 内找第一格草并清除；
+        /// Eat 的每思考帧决策：停住，按固定枚举顺序在半径 <see cref="EatSearchRadius"/> 内找第一格
+        /// **可食植物**（<see cref="IsEdibleType"/>：草 / 花）并清除；
         /// 找不到则回 SeekFood 重新扫描。顺序写死（正下、正前、正上、左、右），不依赖哈希 / 迭代顺序。
         /// </summary>
         private static void ThinkEat(Creature creature, CreatureWorld creatures, ParticleWorld world)
@@ -281,16 +299,17 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // 附近没有可吃的草：回 SeekFood 重新扫描（清目标，下一思考帧由 ThinkSeekFood 重扫）。
+            // 附近没有可食植物（草 / 花）：回 SeekFood 重新扫描（清目标，下一思考帧由 ThinkSeekFood 重扫）。
             creature.AiState = StateSeekFood;
             creature.FoodTargetX = Creature.NoFoodTarget;
             creature.FoodTargetY = Creature.NoFoodTarget;
         }
 
-        /// <summary>若 <c>(gx,gy)</c> 是草则清除一格、恢复饥饿、置冷却、回 Wander，并返回 true。</summary>
+        /// <summary>若 <c>(gx,gy)</c> 是可食植物（草 / 花，见 <see cref="IsEdibleType"/>）则清除一格、
+        /// 恢复饥饿、置冷却、回 Wander，并返回 true。</summary>
         private static bool TryEat(Creature creature, CreatureWorld creatures, ParticleWorld world, int gx, int gy)
         {
-            if (!world.IsInBounds(gx, gy) || world.GetCell(gx, gy).typeId != ParticleIds.Grass)
+            if (!world.IsInBounds(gx, gy) || !IsEdibleType(world.GetCell(gx, gy).typeId))
             {
                 return false;
             }

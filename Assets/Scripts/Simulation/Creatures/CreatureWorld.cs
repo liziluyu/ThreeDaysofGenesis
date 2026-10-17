@@ -15,8 +15,10 @@ namespace TapTap2026.Simulation
     /// 这样动物的存在与否不会扰动粒子模拟的任何一次摇骰——两层的确定性互相隔离，
     /// 加一只兔子不会让整片森林长歪。</para>
     /// <para><b>对世界近乎只读：</b>逐帧推进阶段只查询 <see cref="ParticleWorld"/>，不写任何格；
-    /// 唯一的写发生在死亡清扫阶段——由 <see cref="CreatureDeathMaterializer"/> 按轮廓写入生物质，
-    /// 且只走 <see cref="ParticleWorld.SetWithShade"/>（未来的打洞 / 吃草也必须走 Set / Clear / SetPhase）。</para>
+    /// 写只发生在四处，全部走世界 API：死亡清扫阶段由 <see cref="CreatureDeathMaterializer"/> 按轮廓写入生物质
+    /// （<see cref="ParticleWorld.SetWithShade"/>）、兔子在进食思考帧用 <see cref="ParticleWorld.Clear"/> 清掉一格草或花、
+    /// 鱼在进食思考帧用 <see cref="ParticleWorld.Clear"/> 清掉水草顶端一格、鸟在进食思考帧用
+    /// <see cref="ParticleWorld.Clear"/> 清掉一格生物质。未来的打洞 / 吃草同样必须走 Set / Clear / SetPhase。</para>
     /// <para><b>为什么用列表而不是数组池：</b>个体数量与粒子数不在一个量级（个位数到几十），
     /// 每帧 O(n) 遍历的成本可忽略，换取的是「生成 / 移除对渲染层与测试都直观」。</para>
     /// </remarks>
@@ -217,7 +219,8 @@ namespace TapTap2026.Simulation
         /// <para>③倒序遍历 → 移除下标 i 不影响尚未访问的更小下标；事件在移除**之前**发，
         /// 便于监听者读到最后的位置 / 状态。</para>
         /// <para>③ 的死亡物质化只走显式 shade 的 <see cref="ParticleWorld.SetWithShade"/>（不抽样颜色），
-        /// 因此**不消耗世界的随机流**；除这一处外，本方法对 <paramref name="world"/> 只读。</para>
+        /// 因此**不消耗世界的随机流**。除此之外，思考帧里的进食（兔子吃草 / 花、鱼吃水草、鸟吃生物质）会走
+        /// <see cref="ParticleWorld.Clear"/> 清格；除这些世界 API 写之外，本方法对 <paramref name="world"/> 只读。</para>
         /// <para>③b 放在死亡清扫之后：出生请求在②的思考帧入队，若当场生成会让新生儿**同帧**被②推进；
         /// 延后到这一步，新生儿年龄从 0 开始、下一帧才动，且死亡先结算 ⇒ 上限看的是本帧末的真实种群。</para>
         /// </remarks>
