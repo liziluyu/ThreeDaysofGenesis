@@ -11,19 +11,25 @@ namespace TapTap2026.Simulation
     //              与草 / 水草的年龄余数（bit3-5）、树木（bit3-5 / bit6-7）**在位上重叠**——依据同
     //              CellFlags.BiomassSettleMask 的注释：一格同一时刻只属于一个类型，Set / SetPhase 换类型时
     //              整字节覆写 flags，旧类型的残留读不到。
-    // 邻居查询范围：正下方 1 格（落稳判定的支撑）；ParticleRules.StepSolid 的斜滑净空链（摩擦 / 粘性 0.5 ⇒ 3 格）
+    // 邻居查询范围：正下方 1 格（落稳判定的支撑）+ 正上方 1 格（浮力判据）；ParticleRules.StepSolid 的斜滑净空链
+    //              （摩擦 / 粘性 0.5 ⇒ 3 格）
     // 交互的 ParticleIds：Humus —— 腐败命中后 70% 分支的产物（另 30% 走 Clear 直接消散）
     //
     // 来源：动物死亡时由 CreatureDeathMaterializer 按死亡轮廓逐格写入（ParticleWorld.SetWithShade，
     //       显式带上 profile 的颜色索引）。不可在编辑器中手刷（ParticleEditor 的 _unplaceableTypes）。
     //
     // 行为：
-    //   运动（OnMotion，60 Hz）：受重力的固体，一行 ParticleRules.StepSolid（摩擦 / 粘性 0.5 ⇒ 堆形与土一致）。
-    //       第一版**不被水搬运**、不横向自由流动：只下落、被固体支撑并自然堆积（水不是支撑，会沉穿）。
+    //   运动（OnMotion，60 Hz）：轻于水（density 0.8；浮力判据只认 Liquid 标签、不读密度，与冰的 0.92 同款写法），
+    //       三段式、每帧至多一次位移：
+    //       ① 正上方是液体 ⇒ Swap 上浮一格（水被挤下来）；
+    //       ② 否则正下方是液体（已浮在液面）⇒ 停住，绝不沉穿水面；
+    //       ③ 否则照常按固体下落 / 斜滑——ParticleRules.StepSolid（摩擦 / 粘性 0.5 ⇒ 堆形与土一致）。
+    //       链路：尸体浮在水面 → 落稳 → 腐败 → 产出的腐殖质比水重、沉入水底。
     //       运动本身不消耗世界随机流。
     //   逻辑帧（OnLogic，20 Hz）：先**落稳判定**、后**腐败判定**，严格「先判后摇」——
-    //       ① 正下方带 Solid 标签（含生物质本身）⇒ 落稳计数 +1 并饱和在 SettleFrames；否则计数清零并
-    //          **立即 return**（在下落，一个随机数都不消耗）；
+    //       ① 落稳判定：正下方带 Solid 标签（含生物质本身），**或**正下方是液体且正上方不是液体（浮在液面）
+    //          ⇒ 落稳计数 +1 并饱和在 SettleFrames；否则计数清零并 **立即 return**（在下落 / 仍在水里上浮，
+    //          一个随机数都不消耗）；
     //       ② 计数 < SettleFrames ⇒ return（还没落稳，同样不消耗随机数）；
     //       ③ 摇 NextUInt() % CorruptionDenominator（200 ⇒ 期望寿命 ≈ 10 秒 @20 Hz），未命中 ⇒ return；
     //       ④ 命中后再摇 NextUInt() % HumusBranchDenominator(10)：< 7 转腐殖质（SetPhase → Humus），
@@ -63,7 +69,7 @@ namespace TapTap2026.Simulation
 
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,   // **不带 Organic**：腐败由本类型自己结算，不再叠加世界的 20% 通用衰变骰
-            density: 1.0f,
+            density: 0.8f,   // 比水（1.0）轻：浮在水面；浮力判据只认 Liquid 标签，不读密度（同冰 0.92 的写法）
             heatCapacity: 1.0f,
             thermalConductivity: 0.5f,
             thermalEmissivity: 1.0f,
@@ -74,8 +80,8 @@ namespace TapTap2026.Simulation
             stickiness: 0.5f,
             palette: Palette,
             debugName: "生物质",
-            // 运动阅读盒：0.5/0.5 的 StepSolid 斜滑净空链 3 格 ⇒ (1, 0, 3)（与土 / 腐殖质同款）。
-            motionReadReach: new MotionReadBox(x: 1, up: 0, down: 3));
+            // 运动阅读盒：浮力读正上 1 格；斜滑净空链仍 3 格（0.5/0.5 的 StepSolid ⇒ (1, 1, 3)）。
+            motionReadReach: new MotionReadBox(x: 1, up: 1, down: 3));
         // hasLogic 保持默认 true：OnLogic 有真实行为（落稳计数 + 腐败），逻辑帧扫描不得跳过本格。
 
         /// <summary>
@@ -90,8 +96,20 @@ namespace TapTap2026.Simulation
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
-            // 受重力的固体：正下 → 斜滑净空链，单一决策、至多移动一次后立即由 StepSolid 内部 return。
-            // 运动路径不消耗世界随机流（斜滑的左右顺序由坐标哈希决定，不走 RNG）。
+            // 浮力与固体运动：① 正上方是液体 ⇒ 上浮一格（与冰镜像，水被挤下来）；
+            // ② 否则正下方是液体（已浮在液面）⇒ 停住，绝不沉穿水面；
+            // ③ 否则照常按固体下落 / 斜滑。
+            if (ParticleRules.HasTag(world, x, y + 1, ParticleTags.Liquid))
+            {
+                world.Swap(x, y, x, y + 1);
+                return;
+            }
+
+            if (ParticleRules.HasTag(world, x, y - 1, ParticleTags.Liquid))
+            {
+                return;
+            }
+
             ParticleRules.StepSolid(world, x, y);
         }
 
@@ -100,9 +118,12 @@ namespace TapTap2026.Simulation
             ref Cell cell = ref world.At(x, y);
             int count = (cell.flags & CellFlags.BiomassSettleMask) >> CellFlags.BiomassSettleShift;
 
-            // ① 落稳判定（先判）：正下方带 Solid 标签（石头 / 沙 / 土家族 / 腐殖质 / 生物质本身……）才算有支撑。
-            //    液体与气体不是支撑——生物质会沉穿水落到水底。
-            if (ParticleRules.HasTag(world, x, y - 1, ParticleTags.Solid))
+            // ① 落稳判定（先判）：固体支撑（石头 / 沙 / 土家族 / 腐殖质 / 生物质本身……）**或**浮在液面
+            //    （正下方是液体且正上方不是液体）都算落稳。仍在水里上浮（上方也是液体）不算。
+            bool supported = ParticleRules.HasTag(world, x, y - 1, ParticleTags.Solid)
+                || (ParticleRules.HasTag(world, x, y - 1, ParticleTags.Liquid)
+                    && !ParticleRules.HasTag(world, x, y + 1, ParticleTags.Liquid));
+            if (supported)
             {
                 if (count < SettleFrames)
                 {
@@ -113,7 +134,8 @@ namespace TapTap2026.Simulation
             }
             else
             {
-                // 没有支撑 = 在下落：计数清零并立即返回。**不消耗任何随机数**，随机流因此不随下落中的尸体数量漂移。
+                // 没有支撑 = 在下落、或仍在水里上浮：计数清零并立即返回。**不消耗任何随机数**，
+                // 随机流因此不随下落 / 上浮中的尸体数量漂移。
                 cell.flags = (byte)(cell.flags & CellFlags.BiomassSettleClearMask);
                 return;
             }

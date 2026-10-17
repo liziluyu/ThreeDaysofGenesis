@@ -97,7 +97,7 @@ namespace TapTap2026.Tests
             Assert.IsTrue(info.HasLogic, "OnLogic 有真实行为（落稳计数 + 腐败），必须保持 hasLogic: true");
             MotionReadBox reach = info.MotionReadReach;
             Assert.AreEqual(1, (int)reach.X, "运动阅读盒的水平半径");
-            Assert.AreEqual(0, (int)reach.Up, "运动阅读盒的向上半径");
+            Assert.AreEqual(1, (int)reach.Up, "运动阅读盒的向上半径：浮力读正上 1 格");
             Assert.AreEqual(3, (int)reach.Down, "运动阅读盒的向下半径（0.5/0.5 的斜滑净空链 3 格）");
             Assert.AreEqual(6, info.Palette.Length, "调色板是 6 档灰阶（死亡轮廓的颜色索引 0..5）");
             Assert.IsFalse(info.HasOutline, "生物质不描边");
@@ -206,25 +206,39 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 水**不是**支撑（生物质沉穿水柱落到水底石面、水只被排开不被湮灭）；
-        /// 沙 / 石是支撑（生物质停在它们上面、不覆盖它们）。
+        /// 生物质比水轻、**浮在水面**（水只被挤开、不被湮灭）：落入水柱时停在液面上一格；
+        /// 在水里生成的生物质沿水柱上浮到液面。沙 / 石仍是支撑（生物质停在它们上面、不覆盖它们）。
         /// </summary>
         [Test]
-        public void Biomass_SinksThroughWater_ButNotThroughRock()
+        public void Biomass_FloatsOnWater_ButNotThroughRock()
         {
-            // 单列世界：水不会横向摊开，沉降路径完全确定。
-            ParticleWorld sinking = new ParticleWorld(1, 8, 77u);
-            sinking.Set(0, 0, ParticleIds.Stone);
-            sinking.Set(0, 1, ParticleIds.Water);
-            sinking.Set(0, 2, ParticleIds.Water);
-            sinking.Set(0, 3, ParticleIds.Water);
-            sinking.StepMotion();                        // tick ≥ 1：此后放置的物质视作「运动中」（可排开液体）
-            sinking.Set(0, 5, Biomass);
-            StepMotion(sinking, 60);
+            // 单列世界：水不会横向摊开，浮沉路径完全确定。
+            ParticleWorld floating = new ParticleWorld(1, 8, 77u);
+            floating.Set(0, 0, ParticleIds.Stone);
+            floating.Set(0, 1, ParticleIds.Water);
+            floating.Set(0, 2, ParticleIds.Water);
+            floating.Set(0, 3, ParticleIds.Water);
+            floating.StepMotion();                        // tick ≥ 1：此后放置的物质视作「运动中」
+            floating.Set(0, 5, Biomass);
+            StepMotion(floating, 60);
 
-            Assert.AreEqual(Biomass, sinking.GetCell(0, 1).typeId, "水不是支撑：生物质应沉到水底石面上");
-            Assert.AreEqual(ParticleIds.Stone, sinking.GetCell(0, 0).typeId, "石面不得被覆盖");
-            Assert.AreEqual(3, CountType(sinking, ParticleIds.Water), "水只被排开、不得被湮灭");
+            Assert.AreEqual(Biomass, floating.GetCell(0, 4).typeId, "水是浮力面：生物质应停在液面上一格（y = 4，水面在 y = 3）");
+            Assert.AreEqual(ParticleIds.Water, floating.GetCell(0, 3).typeId, "水面那格仍是水");
+            Assert.AreEqual(ParticleIds.Stone, floating.GetCell(0, 0).typeId, "石面不得被覆盖");
+            Assert.AreEqual(3, CountType(floating, ParticleIds.Water), "水只被排开、不得被湮灭");
+
+            // 在水里生成（顶掉 y = 1 那格水）：应沿水柱上浮到液面 (0, 3)。
+            ParticleWorld rising = new ParticleWorld(1, 8, 77u);
+            rising.Set(0, 0, ParticleIds.Stone);
+            rising.Set(0, 1, ParticleIds.Water);
+            rising.Set(0, 2, ParticleIds.Water);
+            rising.Set(0, 3, ParticleIds.Water);
+            rising.Set(0, 1, Biomass);
+            StepMotion(rising, 60);
+
+            Assert.AreEqual(Biomass, rising.GetCell(0, 3).typeId, "水里的生物质应上浮到液面（y = 3）");
+            Assert.AreEqual(ParticleIds.Stone, rising.GetCell(0, 0).typeId, "石面不得被覆盖");
+            Assert.AreEqual(2, CountType(rising, ParticleIds.Water), "水只被换位、不得被湮灭");
 
             ParticleWorld blocked = new ParticleWorld(1, 8, 77u);
             blocked.Set(0, 0, ParticleIds.Stone);
@@ -236,6 +250,40 @@ namespace TapTap2026.Tests
             Assert.AreEqual(Biomass, blocked.GetCell(0, 2).typeId, "沙不可穿：生物质应停在沙上");
             Assert.AreEqual(ParticleIds.Sand, blocked.GetCell(0, 1).typeId, "沙不得被覆盖");
             Assert.AreEqual(ParticleIds.Stone, blocked.GetCell(0, 0).typeId, "石面不得被覆盖");
+        }
+
+        /// <summary>
+        /// 浮在液面的生物质**算落稳**：落稳计数逐帧 +1 并饱和在 <see cref="BiomassParticle.SettleFrames"/>。
+        /// 因此水面上的尸体会正常腐败（饱和当帧起就可能摇腐败骰）。
+        /// 直接调 <see cref="ParticleType.OnLogic"/>：避开逻辑帧里水的热 / 湿场对落稳判定的干扰。
+        /// </summary>
+        [Test]
+        public void Biomass_FloatingOnWater_CountsAsSettled()
+        {
+            ParticleWorld world = new ParticleWorld(1, 5, 4242u);
+            world.RandomTicksPerStep = 0;
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.Water);
+            world.Set(0, 2, ParticleIds.Water);
+            world.Set(0, 3, Biomass);
+
+            StepMotion(world, 4);
+            Assert.AreEqual(Biomass, world.GetCell(0, 3).typeId, "前置：生物质应浮在水面 (0, 3)");
+
+            ParticleType biomass = ParticleRegistry.Types[ParticleIds.Biomass];
+            for (int frame = 1; frame < BiomassParticle.SettleFrames; frame++)
+            {
+                biomass.OnLogic(world, 0, 3);
+                Assert.AreEqual(Biomass, world.GetCell(0, 3).typeId, $"第 {frame} 帧还没饱和，不得腐败");
+                Assert.AreEqual(frame, (int)BiomassParticle.SettleCount(world, 0, 3), $"第 {frame} 逻辑帧的落稳计数应为 {frame}");
+            }
+
+            // 饱和当帧起就可能摇腐败骰：计数饱和在 31，或这格已经不是生物质（腐败已结算）。
+            biomass.OnLogic(world, 0, 3);
+            Assert.IsTrue(
+                (int)BiomassParticle.SettleCount(world, 0, 3) == BiomassParticle.SettleFrames
+                    || world.GetCell(0, 3).typeId != Biomass,
+                "浮在液面应算落稳：计数应饱和在 31，或该格已完成腐败");
         }
 
         // ============================== 落稳与随机流 ==============================

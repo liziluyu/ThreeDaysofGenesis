@@ -154,15 +154,16 @@ namespace TapTap2026.Simulation
         /// **只能追加到清单末尾**。</summary>
         public static ushort Biomass;
 
-        /// <summary>冰。**静止固体**（Solid 标签、**不带 Organic**，因此被覆盖时不留腐殖质）：
+        /// <summary>冰。**受重力、浮在液面的固体**（Solid 标签、**不带 Organic**，因此被覆盖时不留腐殖质）：
         /// 只能由水在低温下冻结生成——<see cref="WaterParticle.OnRandomTick"/> 的冷端分支判「水面」
         /// （正上方**界内**气体 / 空、正下方落定），无冰邻格时先零星**成核**（要过冷、概率更稀有），
         /// 有冰邻格则沿冰缘**蔓延**，正上方是冰时按**几何梯度**逐层向下**加厚**
         /// （越深需要的温度越接近环境 0，见 <see cref="WaterParticle.FreezeThresholdAtDepth"/>）。
         /// 反向由自己按镜像阈值融化（<see cref="IceParticle.MeltThresholdAtDepth"/>，线性、越深越难融）。
         /// 两侧都显式结算潜热与热容差（相变一次本格 ±1°，<see cref="IceParticle.FusionTemperatureStep"/>），
-        /// 冻融往返逐位守恒。OnMotion **空体**：原地不落、不浮（不用 IsStatic 是因为静态类型
-        /// 收不到 OnLogic，而冰要靠它融化）。不占用任何 flags 私有位。
+        /// 冻融往返逐位守恒。OnMotion：受重力——下方是气体 / 空就直落一格；下方是液体则停在水面；
+        /// 上方是液体（没入水中）则逐帧上浮一格；不斜滑。不用 IsStatic 是因为静态类型收不到随机刻
+        /// （融化在 OnRandomTick）。不占用任何 flags 私有位。
         /// 不可在编辑器中选择（`ParticleEditor` 的 `_unplaceableTypes` / 场景序列化名单）。
         /// **只能追加到清单末尾**。</summary>
         public static ushort Ice;

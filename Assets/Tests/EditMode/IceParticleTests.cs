@@ -6,7 +6,8 @@ namespace TapTap2026.Tests
 {
     /// <summary>
     /// 冰（<see cref="IceParticle"/>）与水 ⇄ 冰相变：水面低温成核 / 沿冰缘蔓延 / 按几何梯度向下加厚、
-    /// 镜像融化（越深越难融）、潜热与热容差的守恒结算、静止固体不移动、浅色描边、隔离类型表不结冰。
+    /// 镜像融化（越深越难融）、潜热与热容差的守恒结算、受重力下落 / 浮在液面 / 没入水中上浮、
+    /// 浅色描边、隔离类型表不结冰。
     /// </summary>
     /// <remarks>
     /// <para><b>两条相变都走随机刻</b>（<see cref="ParticleType.OnRandomTick"/>）：随机刻命中是低频事件
@@ -111,10 +112,10 @@ namespace TapTap2026.Tests
         // ============================== 生产注册 ==============================
 
         /// <summary>
-        /// 生产注册路径：冰必须紧随生物质追加在清单末尾，且是「静止固体」的全部体征——
-        /// Solid、不带 Organic（死亡不留腐殖质）、非静态（收得到随机刻）、不受重力、
-        /// <c>OnLogic</c> 严格空体（融化在随机刻里 ⇒ hasLogic: false）、空 OnMotion 用默认阅读盒、
-        /// 调色板不透明、固体描边且**用浅色**、不做液面高光。
+        /// 生产注册路径：冰必须紧随生物质追加在清单末尾，且体征齐全——
+        /// Solid、不带 Organic（死亡不留腐殖质）、非静态（收得到随机刻）、受重力、
+        /// <c>OnLogic</c> 严格空体（融化在随机刻里 ⇒ hasLogic: false）、OnMotion 只读正上 / 正下 1 格
+        /// （照旧用默认阅读盒）、调色板不透明、固体描边且**用浅色**、不做液面高光。
         /// </summary>
         [Test]
         public void ProductionRegistration_BackfillsSolidIceId()
@@ -127,16 +128,16 @@ namespace TapTap2026.Tests
             Assert.IsTrue((info.Tags & ParticleTags.Solid) != 0, "冰是固体");
             Assert.AreEqual(0, (int)(info.Tags & ParticleTags.Organic), "冰不带 Organic：被覆盖时不留腐殖质");
             Assert.IsFalse(info.IsStatic, "冰必须非静态，否则收不到随机刻（融化）");
-            Assert.IsFalse(info.AffectedByGravity, "冰原地不落");
+            Assert.IsTrue(info.AffectedByGravity, "冰受重力");
             Assert.IsFalse(info.HasLogic, "OnLogic 是严格空体（融化写在 OnRandomTick），hasLogic 必须为 false");
             Assert.IsTrue(info.HasOutline, "固体描边");
             Assert.IsTrue(info.OutlineLighten, "冰用浅色描边（向 OutlineLightColor 提亮）");
             Assert.IsFalse(info.HasSurfaceHighlight, "液面高光是给液体的");
 
             MotionReadBox reach = info.MotionReadReach;
-            Assert.AreEqual(1, (int)reach.X, "运动阅读盒的水平半径（OnMotion 空体，用默认八邻盒）");
-            Assert.AreEqual(1, (int)reach.Up, "运动阅读盒的向上半径");
-            Assert.AreEqual(1, (int)reach.Down, "运动阅读盒的向下半径");
+            Assert.AreEqual(1, (int)reach.X, "运动阅读盒的水平半径（OnMotion 只读正上 / 正下 1 格，水平不读）");
+            Assert.AreEqual(1, (int)reach.Up, "运动阅读盒的向上半径（OnMotion 读正上方那一格）");
+            Assert.AreEqual(1, (int)reach.Down, "运动阅读盒的向下半径（OnMotion 读正下方那一格）");
 
             Assert.AreEqual(IceParticle.HeatCapacity, info.HeatCapacity, 1e-6f, "冰的热容 = 水的一半");
             Assert.AreEqual(IceParticle.HeatCapacity, WaterParticle.HeatCapacity - IceParticle.HeatCapacityDelta,
@@ -254,33 +255,43 @@ namespace TapTap2026.Tests
             Assert.AreEqual(Ice, world.GetCell(4, 2).typeId, "落在固体上的同样冷的水会结冰");
         }
 
-        /// <summary>两条随机刻相变都**不消耗世界随机流**（抽取由世界层完成）：调用前后与对照世界的下一个随机数一致。</summary>
+        /// <summary>
+        /// 随机刻的**门禁是只读的**：没达标的命中（水太暖不冻、冰太冷不化）不消耗世界随机流——
+        /// 调用前后与对照世界的下一个随机数一致。
+        /// <para>注意：**成功**的相变必然消耗一次随机流——<see cref="ParticleWorld.SetPhase"/> 要给新形态
+        /// 抽样 <c>shade</c>（与 <c>Set</c> 同一处 <c>NextUInt()</c>）。因此本用例只覆盖「先判后写」的失败分支。</para>
+        /// </summary>
         [Test]
         public void RandomTicks_ConsumeNoRandomStream()
         {
             var world = new ParticleWorld(9, 9, 777u);
             Ground(world, 1);
-            world.Set(3, 2, Ice);
-            world.Set(4, 2, Water);   // 够冷：会被冻上
-            SetTemperature(world, 4, 2, 3.5f);
-            world.Set(5, 2, Ice);     // 够暖：会被化掉
-            SetTemperature(world, 5, 2, IceParticle.MeltingPoint + 1f);
+            world.Set(3, 2, Ice);     // 让 (4,2) 处在「沿冰缘蔓延」的冰邻格几何里
+            world.Set(4, 2, Water);   // 太暖：不冻
+            world.Set(5, 2, Ice);     // 太冷：不化
+            UseComfortLight(world);
 
             var control = new ParticleWorld(9, 9, 777u);
             Ground(control, 1);
             control.Set(3, 2, Ice);
             control.Set(4, 2, Water);
-            SetTemperature(control, 4, 2, 3.5f);
             control.Set(5, 2, Ice);
-            SetTemperature(control, 5, 2, IceParticle.MeltingPoint + 1f);
+            UseComfortLight(control);
 
-            ushort frozenBefore = world.GetCell(4, 2).typeId;
+            float freezeGate = WaterParticle.FreezeThresholdAt(world, 0);
+            float meltGate = IceParticle.MeltThresholdAt(world, 0);
+            SetTemperature(world, 4, 2, freezeGate + 0.1f);
+            SetTemperature(control, 4, 2, freezeGate + 0.1f);
+            SetTemperature(world, 5, 2, meltGate - 0.1f);
+            SetTemperature(control, 5, 2, meltGate - 0.1f);
+
             RandomTick(world, Water, 4, 2);
             RandomTick(world, Ice, 5, 2);
 
-            Assert.AreEqual(Water, frozenBefore, "前置：那格本来是水");
+            Assert.AreEqual(Water, world.GetCell(4, 2).typeId, $"比蔓延门（{freezeGate}）暖 0.1°：不冻");
+            Assert.AreEqual(Ice, world.GetCell(5, 2).typeId, $"比融化门（{meltGate}）冷 0.1°：不化");
             Assert.AreEqual(control.NextUInt(), world.NextUInt(),
-                "随机刻相变（冻 / 化）都不消耗世界随机流");
+                "先判后写：没达标的随机刻命中不消耗世界随机流");
         }
 
         // ============================== 结冰：深度梯度与加厚 ==============================
@@ -604,28 +615,177 @@ namespace TapTap2026.Tests
                 "冻融往返的热账 = 原水热 + 注入热 × C_水/C_冰（潜热与热容差必须互为逆运算，否则净产热）");
         }
 
-        // ============================== 静止固体、守恒与渲染 ==============================
+        // ============================== 重力与浮力、守恒与渲染 ==============================
 
-        /// <summary>冰在原地不动：泡在水里、悬在空中都不落不浮，水也推不动它（rank 3 固体）。</summary>
+        /// <summary>重力：空中的冰逐帧竖直下落，最终停在石面上；不斜滑（冰不会沿坡滚开）。</summary>
         [Test]
-        public void Ice_StaysInPlace_AcrossMotionFrames()
+        public void Ice_UnsupportedInAir_FallsToSolidFloor()
         {
             var world = new ParticleWorld(9, 9, 20261013u);
+            Ground(world, 0);   // 世界底板：y = 0 也必须实心，否则 y = 1 的石头自己会下落
             Ground(world, 1);
-            world.Set(2, 5, Ice);   // 空中
-            world.Set(5, 2, Ice);   // 水里：下面两格水
-            world.Set(5, 3, Water);
-            world.Set(5, 4, Water);
+            world.Set(2, 7, Ice);
 
-            for (int i = 0; i < 200; i++)
+            for (int i = 0; i < 100; i++)
             {
                 world.StepMotion();
             }
 
-            Assert.AreEqual(Ice, world.GetCell(2, 5).typeId, "空中的冰不下落");
-            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(2, 4).typeId, "空中的冰下方仍是空气");
-            Assert.AreEqual(Ice, world.GetCell(5, 2).typeId, "水里的冰不上浮也不下沉");
-            Assert.AreEqual(Water, world.GetCell(5, 4).typeId, "水没能把冰挤走");
+            Assert.AreEqual(Ice, world.GetCell(2, 2).typeId, "冰应直落到石面（y = 1）上方");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(2, 3).typeId, "落定后正上方是空气");
+            Assert.AreNotEqual(Ice, world.GetCell(1, 2).typeId, "不斜滑（左侧）");
+            Assert.AreNotEqual(Ice, world.GetCell(3, 2).typeId, "不斜滑（右侧）");
+        }
+
+        /// <summary>
+        /// 浮力：水面正上方的冰**停在水面**——正下方是液体就按住（绝不沉穿水面），
+        /// 正下方的水也不会被挤走。石墙围住水槽，避免水横向流走干扰断言。
+        /// </summary>
+        [Test]
+        public void Ice_OnWaterSurface_StaysAfloat()
+        {
+            var world = new ParticleWorld(9, 9, 20261013u);
+            Ground(world, 0);
+            Ground(world, 1);
+            for (int y = 2; y <= 8; y++)
+            {
+                world.Set(1, y, Stone);
+                world.Set(7, y, Stone);
+            }
+
+            for (int y = 2; y <= 5; y++)
+            {
+                for (int x = 2; x <= 6; x++)
+                {
+                    world.Set(x, y, Water);
+                }
+            }
+
+            world.Set(4, 6, Ice);   // 水面（y = 5）正上方
+
+            for (int i = 0; i < 60; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(Ice, world.GetCell(4, 6).typeId, "冰停在液面：不沉下去");
+            Assert.AreEqual(Water, world.GetCell(4, 5).typeId, "冰正下方的水还在（没被置换）");
+            Assert.AreEqual(Water, world.GetCell(4, 4).typeId, "冰没有沉进水里");
+        }
+
+        /// <summary>
+        /// 浮力：没入水中的冰逐帧上浮一格（与水反向交换），直到停在井内水面——
+        /// 下方全是被挤下来的水，上方是井口外的空气。
+        /// </summary>
+        [Test]
+        public void Ice_SubmergedInWater_RisesToSurface()
+        {
+            var world = new ParticleWorld(9, 9, 20261013u);
+            Ground(world, 0);
+            Ground(world, 1);
+            for (int y = 2; y <= 7; y++)
+            {
+                world.Set(3, y, Stone);
+                world.Set(5, y, Stone);
+            }
+
+            for (int y = 2; y <= 6; y++)
+            {
+                world.Set(4, y, Water);
+            }
+
+            world.Set(4, 2, Ice);   // 井底：上方 4 格水
+
+            for (int i = 0; i < 30; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(Ice, world.GetCell(4, 6).typeId, "冰上浮到井内最上面一格（水面）");
+            for (int y = 2; y <= 5; y++)
+            {
+                Assert.AreEqual(Water, world.GetCell(4, y).typeId, $"冰下方第 {y} 格仍是水（被挤下来）");
+            }
+
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(4, 7).typeId, "冰上方是空气（井口开放）");
+        }
+
+        /// <summary>
+        /// 加厚层不浮：正上方压着冰的那格冰，即使正下方是水也不会穿越上面的冰上浮
+        /// （浮力分支要求**正上方是液体**；第二段「下方是液体 ⇒ 停住」把它按住）。
+        /// 与之相对，冰面那格上方是空气、下方是冰（同类不可置换），也保持原状。
+        /// </summary>
+        [Test]
+        public void Ice_UnderIceCannotRise_StaysPut()
+        {
+            var world = new ParticleWorld(9, 9, 20261013u);
+            Ground(world, 0);
+            Ground(world, 1);
+            for (int y = 2; y <= 7; y++)
+            {
+                world.Set(3, y, Stone);
+                world.Set(5, y, Stone);
+            }
+
+            for (int y = 2; y <= 4; y++)
+            {
+                world.Set(4, y, Water);
+            }
+
+            world.Set(4, 5, Ice);   // 加厚层：上方是冰、下方是水
+            world.Set(4, 6, Ice);   // 冰面：上方是空气
+
+            for (int i = 0; i < 30; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(Ice, world.GetCell(4, 5).typeId, "上方压着冰的加厚层不浮（下方是水也按住）");
+            Assert.AreEqual(Ice, world.GetCell(4, 6).typeId, "冰面停在原处（上方空气、下方冰不可置换）");
+            for (int y = 2; y <= 4; y++)
+            {
+                Assert.AreEqual(Water, world.GetCell(4, y).typeId, $"井内第 {y} 格仍是水");
+            }
+
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(4, 7).typeId, "冰面上方是空气");
+        }
+
+        /// <summary>
+        /// 三段分支的**先后次序**：从水槽上方的空中落下，先受重力逐格下落，接触液面后由「下方是液体 ⇒ 停住」
+        /// 按住——停在液面正上方一格，不沉入、也不穿水面。
+        /// </summary>
+        [Test]
+        public void Ice_FallingOntoWater_StopsAtSurface()
+        {
+            var world = new ParticleWorld(9, 9, 20261013u);
+            Ground(world, 0);
+            Ground(world, 1);
+            for (int y = 2; y <= 8; y++)
+            {
+                world.Set(1, y, Stone);
+                world.Set(7, y, Stone);
+            }
+
+            for (int y = 2; y <= 5; y++)
+            {
+                for (int x = 2; x <= 6; x++)
+                {
+                    world.Set(x, y, Water);
+                }
+            }
+
+            world.Set(4, 8, Ice);   // 水槽上方的高空
+
+            for (int i = 0; i < 100; i++)
+            {
+                world.StepMotion();
+            }
+
+            Assert.AreEqual(Ice, world.GetCell(4, 6).typeId, "冰落在液面正上方一格（水面是 y = 5）");
+            Assert.AreEqual(Water, world.GetCell(4, 5).typeId, "液面那格仍是水（没被置换）");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(4, 7).typeId, "冰上方是空气");
+            Assert.AreNotEqual(Ice, world.GetCell(4, 5).typeId, "冰没有沉进水里");
+            Assert.AreNotEqual(Ice, world.GetCell(4, 4).typeId, "冰没有穿水面沉下去");
         }
 
         /// <summary>水账守恒：水 → 冰 → 水 的全过程里「水格 + 冰格 + 湿度」始终不变。</summary>

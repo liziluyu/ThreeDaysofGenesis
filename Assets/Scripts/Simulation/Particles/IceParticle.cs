@@ -5,12 +5,19 @@ namespace TapTap2026.Simulation
     // IceParticle —— 冰（固体标签，摩擦度/粘性不读，填 0；热容 3.5 = 水的一半）
     //
     // flags 私有位：无（bit3-7 全部空闲）
-    // 邻居查询范围：正上方连续最多 ColumnScanDepth（8）格（深度扫描，判「离冰顶面几层」）
+    // 邻居查询范围：正上方连续最多 ColumnScanDepth（8）格（深度扫描，判「离冰顶面几层」）；
+    //               OnMotion 只读正上 / 正下各 1 格（默认运动阅读盒 (1,1,1) 覆盖）
     // 交互的 ParticleIds：Water（融化的目标形态）——结冰入口在水那侧
     //                    （WaterParticle.OnRandomTick 的冷端分支，FreezingPoint 一族常量在那边）
     //
-    // 行为：**原地不动的固体**。OnMotion 空体（不落、不浮），也不用 IsStatic——静态类型收不到随机刻
-    //       （RunRandomTicks 跳过 IsStatic），而冰要靠随机刻融化。
+    // 行为：**受重力、浮在液面**的固体。OnMotion 只竖直移动、每帧至多一格，**不斜滑**（冰排 / 冰面保持形状）：
+    //       ① 正上方是液体（没入水中）⇒ 与上方那格交换、上浮一格；
+    //       ② 否则正下方是液体（已浮在液面）⇒ 停住，绝不沉穿水面；
+    //       ③ 否则照常下落（ParticleRules.TryFall：正下方空气 / 气体才落，固体 / 同类自动挡下）。
+    //       浮力方向与水相反（冰升、水降），因此①**不走** CanDisplace 的地下水闸门——那条只约束
+    //       静止固体**向下**排开液体；目标格合法性由 HasTag(Liquid) 自己保证（越界 / 空气 / 非液体均 false）。
+    //       运动路径只有标签读取 + Swap / TryFall：零随机流、零分配、不读 Time.*。
+    //       也不用 IsStatic——静态类型收不到随机刻（RunRandomTicks 跳过 IsStatic），而冰要靠随机刻融化。
     //       **融化写在 OnRandomTick**：随机刻命中本格时，正上方连续冰格数 d = 「离冰顶面几层」
     //       （0 = 冰面，即最上面那格冰）；温度达到 MeltThresholdAt(world, d) = (MeltingPoint + MeltDepthStep·d)
     //       · 光照冷度缩放（结冰侧「越深越冷」的镜像：越深越难融，线性、无上限）就**当帧化回水**——
@@ -89,14 +96,14 @@ namespace TapTap2026.Simulation
 
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Solid,
-            density: 0.92f,       // 只作语义（固体的内置规则不读密度）：冰比水轻
+            density: 0.92f,       // 只作语义（固体的内置规则不读密度）：冰比水轻；浮力判据只认 Liquid 标签，不读 density
             heatCapacity: HeatCapacity,   // 冰：水（6.5）的一半——真实冰 2.09 / 水 4.18
             thermalConductivity: 0.85f,   // 导热好：冷锋能从冰面一路往下走，暖锋同理
             thermalEmissivity: 1.0f,      // 近黑体：暴露的冰面夜间继续向外辐射抽冷，驱动加厚
-            affectedByGravity: false,
-            isStatic: false,      // 必须非静态，否则收不到随机刻（融化）；靠空的 OnMotion 保持原地不动
+            affectedByGravity: true,      // 受重力：OnMotion 下方是空气 / 气体就直落一格
+            isStatic: false,      // 必须非静态，否则收不到随机刻（融化）
             maxFlowSpread: 0,
-            friction: 0f,         // 不移动，摩擦 / 粘性都不读
+            friction: 0f,         // 不走 StepSolid（自定义：竖直重力 + 浮力），摩擦 / 粘性不读
             stickiness: 0f,
             palette: Palette,
             debugName: "冰",
@@ -177,8 +184,25 @@ namespace TapTap2026.Simulation
 
         public void OnMotion(ParticleWorld world, int x, int y)
         {
-            // 冰长在原地：运动帧什么都不做。之所以不用 IsStatic，是因为静态类型收不到随机刻
-            //（ParticleWorld.RunRandomTicks 会跳过 IsStatic 的格），而冰需要随机刻来融化。
+            // ① 浮力：没入水中（正上方是液体）⇒ 上浮一格。与水反向（冰升、水降），因此**不经过**
+            //    ParticleRules.CanDisplace 的地下水闸门——那条闸门只约束静止固体**向下**排开液体；
+            //    目标合法性由 HasTag(Liquid) 自己保证（越界 / 空气 / 非液体都是 false）。
+            if (ParticleRules.HasTag(world, x, y + 1, ParticleTags.Liquid))
+            {
+                world.Swap(x, y, x, y + 1);
+                return;
+            }
+
+            // ② 已浮在液面（正下方是液体）⇒ 停住，绝不沉穿水面。
+            if (ParticleRules.HasTag(world, x, y - 1, ParticleTags.Liquid))
+            {
+                return;
+            }
+
+            // ③ 重力：只竖直下落一格，下方是空气 / 气体才落（固体 / 同类由 TryFall 自动挡下）。
+            //    不做斜滑 / 横移：冰只竖直移动，冰排 / 冰面保持形状。
+            //    整段运动路径只用标签读取 + Swap / TryFall：零随机流、零分配、不读 Time.*。
+            ParticleRules.TryFall(world, x, y);
         }
 
         /// <summary>

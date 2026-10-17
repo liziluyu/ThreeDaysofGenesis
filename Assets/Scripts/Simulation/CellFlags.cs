@@ -189,6 +189,32 @@ namespace TapTap2026.Simulation
         /// <summary><see cref="BiomassSettleMask"/> 在 <c>flags</c> 里的右移位数。</summary>
         public const int BiomassSettleShift = 3;
 
+        /// <summary>
+        /// bit3-6：**腐殖质私有**（<see cref="HumusParticle"/>）——被随机刻命中的**累计次数**
+        /// （0..<see cref="HumusParticle.DecayHits"/>；到 <see cref="HumusParticle.DecayHits"/> 次即分解）。
+        /// 腐殖质的 <see cref="Cell.shade"/> 已被调色板抽样占用（颜色），计数因此整段存进 <c>flags</c>，
+        /// 不新增 per-cell 世界数组。4 位足够表达 0..10。
+        /// <para>读用本掩码、清用 <see cref="HumusHitsClearMask"/>、写用
+        /// <c>(flags &amp; ClearMask) | ((hits &lt;&lt; Shift) &amp; Mask)</c> 组合，绝不整体赋值
+        /// <c>flags</c>（尤其保留 bit0 处理标记与 bit1 / bit2 通用位）。</para>
+        /// <para><b>与 <see cref="GrassAgeRemainderMask"/>（bit3-6）、<see cref="TreeSpeciesMask"/>（bit3-5）、
+        /// <see cref="SeedStrikeMask"/>（bit5-6）、<see cref="BiomassSettleMask"/>（bit3-7）等重叠</b>：
+        /// 能共用的**唯一**依据是「一格的私有位只被当前类型解释」——同一时刻一格只属于一个类型，而
+        /// <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.SetPhase"/> 换类型时**整字节覆写**
+        /// <c>flags</c>（<c>cell.flags = _stamp</c>），旧类型的私有位随之清零、新类型读不到旧类型残留。
+        /// 因此腐殖质格的 bit3-6 永远是随机刻命中计数、草格的 bit3-6 永远是年龄余数，二者不会同时有意义。
+        /// 任何**绕过 Set / SetPhase 直接改 <c>typeId</c> 而不整字节覆写 <c>flags</c> 的新路径**都会打破
+        /// 这条前提——届时必须给它们分派互不重叠的位。</para>
+        /// <see cref="HumusParticle"/> 在文件头部登记了该占用。
+        /// </summary>
+        public const byte HumusHitsMask = 0x78;
+
+        /// <summary><see cref="HumusHitsMask"/> 的清除掩码（<c>~0x78 &amp; 0xFF</c>）。</summary>
+        public const byte HumusHitsClearMask = 0x87;
+
+        /// <summary><see cref="HumusHitsMask"/> 在 <c>flags</c> 里的右移位数。</summary>
+        public const int HumusHitsShift = 3;
+
         /// <summary>风向记忆：无（尚未漂移，或记忆已被浮力等非水平运动清除）。</summary>
         public const byte DriftDirectionNone = 0;
 
