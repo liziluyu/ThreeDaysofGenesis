@@ -43,9 +43,9 @@
   "availableCreatures": [],
   "victory": {
     "particles": [
-      { "type": "SoilParticle", "minCount": 1 },
-      { "type": "StoneParticle", "minCount": 1 },
-      { "type": "SandParticle", "minCount": 1 }
+      { "type": "SoilParticle", "minCount": 1, "failureText": "土没能留下来" },
+      { "type": "StoneParticle", "minCount": 1, "failureText": "石头没能留下来" },
+      { "type": "SandParticle", "minCount": 1, "failureText": "沙子没能留下来" }
     ]
   }
 }
@@ -100,7 +100,8 @@
 
 [Serializable] public sealed class ParticleCountCondition
 {
-    public string type;    // DebugName 或类名
+    public string type;         // DebugName 或类名
+    public string failureText;  // 本条不满足时显示的失败原因；省略 / 空 = 回退到详细理由
     public int minBirths;  // 初始值 -1
     public int maxBirths;  // 初始值 -1
     public int minDeaths;  // 初始值 -1
@@ -111,7 +112,8 @@
 
 [Serializable] public sealed class CreatureCountCondition
 {
-    public string species;  // Creature 子类类名（如 RabbitCreature）或 DebugName（如 兔子）
+    public string species;      // Creature 子类类名（如 RabbitCreature）或 DebugName（如 兔子）
+    public string failureText;  // 本条不满足时显示的失败原因；省略 / 空 = 回退到详细理由
     public int minCount;    // 初始值 -1；对高速结束那一刻的存活数判定
     public int maxCount;    // 初始值 -1；对高速结束那一刻的存活数判定
 }
@@ -123,11 +125,13 @@
     "minSurfaceTemperature": 10.0,
     "maxSurfaceTemperature": 30.0,
     "minAverageHumidity": 0.35,
-    "particles": [ { "type": "GrassParticle", "minBirths": 40 } ],
-    "creatures": [ { "species": "RabbitCreature", "minCount": 1 } ]
+    "particles": [ { "type": "GrassParticle", "minBirths": 40, "failureText": "草没能存活下来" } ],
+    "creatures": [ { "species": "RabbitCreature", "minCount": 1, "failureText": "兔子没能存活下来" } ]
   }
 }
 ```
+
+**失败原因文案（`failureText`）**：`particles[]` / `creatures[]` 的每一条都可以配一段面向玩家的短文案（如「草没能存活下来」）。该条目的**任一**界限不满足时，`VictoryEvaluator.Evaluate` 的 `reason` 直接返回这段文案；省略 / 空则回退到带实测值与要求值的详细理由（调试口径）。高速模式结算面板**只显示这一行**——过关「过关！」，未过关就是该文案——不再列出每种粒子的产生 / 死亡数。
 
 ### 3.2 哨兵值表（**省略字段 = 不约束**）
 
@@ -166,11 +170,13 @@
    - 存活数是**跑满那一刻的存活实体数**（死亡后已物质化并移出实体表），不是累计生成数。
    - 物种名查不到 → `false` + `reason` 指出这是**配置错误**。
 6. 全部约束通过 → `true`，`reason` 为通过摘要。
-7. **任一不满足 → 立即返回 `false`**，`reason` 是**第一条未满足项**的描述，形如：
-   - `地表温度 12.3° 低于要求 20°`
-   - `GrassParticle 产生 3 低于要求 10`
-   - `GrassParticle 存量 3 低于要求 10` / `GrassParticle 存量 25 高于要求 10`
-   - `RabbitCreature 存活 0 低于要求 1`
+7. **任一不满足 → 立即返回 `false`**，`reason` 是**第一条未满足项**的描述：
+   - 该条目配了 `failureText` → 直接返回该文案（如 `草没能存活下来`）；
+   - 否则回退到带实测值的详细描述，形如：
+     - `地表温度 12.3° 低于要求 20°`
+     - `GrassParticle 产生 3 低于要求 10`
+     - `GrassParticle 存量 3 低于要求 10` / `GrassParticle 存量 25 高于要求 10`
+     - `RabbitCreature 存活 0 低于要求 1`
 
 **测试友好**：`Evaluate` 是纯函数，输入快照、输出布尔 + 理由，不读 `Time.*` / `Input` / 场景对象。
 
@@ -215,7 +221,7 @@ flowchart TD
     M --> N{"本阶段有 victory?"}
     N -- 是 --> N2["评估一次胜利条件，缓存结果 + reason（暴露 HasVerdict / LastResult / LastReason）"]
     N -- 否（沙盒）--> N3["跳过判定：不置 HasVerdict、不推进流程（结算面板不显示胜负行）"]
-    N2 --> O["ParticleEditor 结算面板末尾加一行：绿「过关！」/ 红「未过关：reason」"]
+    N2 --> O["ParticleEditor 结算面板只显示一行：绿「过关！」/ 红「失败原因」（阶段 JSON 的 failureText）"]
     O --> P["玩家在 ParticleEditor 按 Enter/H 确认退出 → 会话 Active 变 false"]
     P --> R{"本阶段配了结算对话?"}
     R -- 是 --> R2["播结算对话（successDialogueId / failureDialogueId）→ 等它播完"]
@@ -252,7 +258,7 @@ flowchart TD
 - 观察 `_driver.HighSpeed` 会话。**从「`Active` 且 `Completed`」那一帧起评估一次**胜利条件，缓存布尔结果与 `reason`（此后不再重复评估）。
   - **阶段没有 `victory`（沙盒）**：不评估、不置 `HasVerdict`、不推进流程——结算面板也不显示胜负行（见下）。
 - 快照取自会话：`LatestSurfaceTemperature` / `LatestAverageHumidity` + 遍历 `ParticleRegistry.Types` 取 `GetBirths` / `GetDeaths` / `GetFinalCount`（存量取的是「跑满那一刻」的全网格盘点；评估时机固定在 `Completed` 帧、会话尚未 `Exit`，因此非 0——`Exit` 后 `GetFinalCount` 会清空返回 0）+ 遍历 `CreatureSpawns.Species` 在**同一帧**的 `CreatureFrame` 里数存活实体。死掉的动物会在逻辑帧末尾物质化并移出实体表，因此存活数 = 跑满那一刻还活着的个体数。
-- 评估结论只**缓存**在本类（`HasVerdict` / `LastResult` / `LastReason`），**不在本类上屏**：由 `ParticleEditor` 在高速模式结算面板（屏幕中央，玩家按 `Enter` / `H` 确认退出的那个面板）末尾追加一行——过关 = 绿色「过关！」，失败 = 红色「未过关：<reason>」。本类只保留「全部阶段完成」的常驻横幅（场景里的 `HUD Canvas/CompletionBanner`，本类只开关它的激活态，不画 IMGUI）。
+- 评估结论只**缓存**在本类（`HasVerdict` / `LastResult` / `LastReason`），**不在本类上屏**：由 `ParticleEditor` 在高速模式结算面板（屏幕中央，玩家按 `Enter` / `H` 确认退出的那个面板）**只显示一行**——过关 = 绿色「过关！」，失败 = 红色失败原因（阶段 JSON 该检查项的 `failureText`；未配时回退到 `LastReason` 的详细理由）。面板**不再列出**每种粒子的产生 / 死亡数；沙盒阶段（无 `victory`）不显示面板。本类只保留「全部阶段完成」的常驻横幅（场景里的 `HUD Canvas/CompletionBanner`，本类只开关它的激活态，不画任何 IMGUI）。
 - **之后**观察到会话**退出**（`Active` 变 `false`，即玩家在 `ParticleEditor` 按 `Enter` / `H` 确认退出）→ 按**缓存的**结果行动：
   - **先看结算对话**：`_currentPhase.ResolveResultDialogueId(_lastResult)` 非空且能起播（`DialogueController.StartDialogue` 返回 true）→ 只起播它并把阶段切换**挂起**（`_awaitingResultDialogue = true`），本帧到此为止；之后每帧在 `Update` 开头检查 `_dialogue.IsActive`，**对话播完（或被强制关闭）才执行切换**。见 §4.4。
   - 没配结算对话 / 未接线 `DialogueController` / 注册表里查不到 → 与既有行为逐字一致，**立刻**执行切换（下面三条）。
@@ -391,7 +397,7 @@ flowchart LR
 
 ## 10. 测试
 
-`GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / 尺寸非法 / `simulationTicks` 负数非法 / `particles[].type` 为空 / `creatures[].species` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`repeatDialogueId` 写出即解析出 / 省略为 null、**`successDialogueId` / `failureDialogueId` 往返与「省略 / 空串 = 不播结算对话」**、`availableParticles` 省略或空数组 = 不限制、**`availableCreatures` 省略 = 不限制 / 空数组 = 无动物**、`simulationTicks` 往返与「省略 = 0 = 设置默认」、**`description` 往返与「省略 / 空串 = 无描述」**）/ **`victory` 归一化**（省略 / `{}` / `particles` 与 `creatures` 都为空 → `null`；有一条非 NaN 界限、非空 `particles` 或非空 `creatures` → 保留）；`GamePhaseData.ResolveOpeningDialogueId` 的首次 → `dialogueId`、重进 → `repeatDialogueId`、重进且未配 → null；**`GamePhaseData.ResolveResultDialogueId` 的过关 → `successDialogueId`、未过关 → `failureDialogueId`、只配一边时另一边为 null（= 那条路径不播结算对话）**；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、**动物存活数约束（`minCount`/`maxCount`、未知物种判配置错误、缺失快照按 0 存活）**、类型…
+`GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / **`failureText` 往返（粒子与动物条目）** / 尺寸非法 / `simulationTicks` 负数非法 / `particles[].type` 为空 / `creatures[].species` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`repeatDialogueId` 写出即解析出 / 省略为 null、**`successDialogueId` / `failureDialogueId` 往返与「省略 / 空串 = 不播结算对话」**、`availableParticles` 省略或空数组 = 不限制、**`availableCreatures` 省略 = 不限制 / 空数组 = 无动物**、`simulationTicks` 往返与「省略 = 0 = 设置默认」、**`description` 往返与「省略 / 空串 = 无描述」**）/ **`victory` 归一化**（省略 / `{}` / `particles` 与 `creatures` 都为空 → `null`；有一条非 NaN 界限、非空 `particles` 或非空 `creatures` → 保留）；`GamePhaseData.ResolveOpeningDialogueId` 的首次 → `dialogueId`、重进 → `repeatDialogueId`、重进且未配 → null；**`GamePhaseData.ResolveResultDialogueId` 的过关 → `successDialogueId`、未过关 → `failureDialogueId`、只配一边时另一边为 null（= 那条路径不播结算对话）**；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、**动物存活数约束（`minCount`/`maxCount`、未知物种判配置错误、缺失快照按 0 存活）**、类型…
 
 `GameSaveProgressTests`（EditMode，纯静态 API）：`SavePathFor` 空名回退、`LoadSave` 缺文件 / 坏 JSON → null、`WriteSave` → `LoadSave` 往返（含解锁集合排序）、`CollectUnlockedPhaseIds` 的 null / 旧档回填 / 去重剔空、`WriteSave` 传 null 解锁表。
 

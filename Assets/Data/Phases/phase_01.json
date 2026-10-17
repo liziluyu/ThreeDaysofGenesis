@@ -10,9 +10,9 @@
   "availableCreatures": [],
   "victory": {
     "particles": [
-      { "type": "SoilParticle", "minCount": 1 },
-      { "type": "StoneParticle", "minCount": 1 },
-      { "type": "SandParticle", "minCount": 1 }
+      { "type": "SoilParticle", "minCount": 1, "failureText": "土没能留下来" },
+      { "type": "StoneParticle", "minCount": 1, "failureText": "石头没能留下来" },
+      { "type": "SandParticle", "minCount": 1, "failureText": "沙子没能留下来" }
     ]
   }
 }

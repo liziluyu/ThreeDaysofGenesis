@@ -61,7 +61,7 @@ namespace TapTap2026.Game
         [Tooltip("高速模式结算面板（默认隐藏）。")]
         [SerializeField] private GameObject _reportPanel;
 
-        [Tooltip("结算面板的统计正文（每行一个类型）。")]
+        [Tooltip("结算面板正文（当前结算只显示胜负行，正文留空）。")]
         [SerializeField] private TMP_Text _reportBody;
 
         [Tooltip("结算面板的胜负行（无胜负结论时隐藏）。")]

@@ -8,7 +8,7 @@
   "availableCreatures": [],
   "victory": {
     "particles": [
-      { "type": "WaterParticle", "minBirths": 101, "minDeaths": 101 }
+      { "type": "WaterParticle", "minBirths": 101, "minDeaths": 101, "failureText": "水没能经历足够的生灭" }
     ]
   }
 }

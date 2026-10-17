@@ -8,8 +8,8 @@
   "availableCreatures": [],
   "victory": {
     "particles": [
-      { "type": "TreeLeafParticle", "minCount": 1 },
-      { "type": "GrassParticle", "minCount": 1 }
+      { "type": "TreeLeafParticle", "minCount": 1, "failureText": "树叶没能存活下来" },
+      { "type": "GrassParticle", "minCount": 1, "failureText": "草没能存活下来" }
     ]
   }
 }

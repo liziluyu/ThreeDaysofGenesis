@@ -21,8 +21,9 @@ namespace TapTap2026.Game
     /// **空格**暂停/恢复整个模拟（提交 <see cref="SimulationCommand.SetPaused"/> 命令，见 <see cref="SubmitPaused"/>）；
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
     /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
-    /// **H** 进入**高速模式**（倍速钉满档 16×、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
-    /// 结算面板末尾追加一行**胜负结论**——过关「过关！」绿、未过关「未过关：<c>理由</c>」红，取自 <see cref="GameController"/>）；
+    /// **H** 进入**高速模式**（倍速钉满档 16×、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央**只显示一行**结论——
+    /// 过关「过关！」绿、未过关为阶段 JSON 该检查项配的失败原因文案（红），取自 <see cref="GameController"/>；
+    /// 不再列产生 / 死亡数）；
     /// **Enter 或 H** 确认退出——退出后倍速回 1×、仍保持暂停，由玩家自己按空格继续）；
     /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
     /// **右上角光照面板**：一个 0..30 的**强度滑块** + 两行**秒读数**（白天 / 夜晚）+ 两行按秒步进按钮，
@@ -74,7 +75,7 @@ namespace TapTap2026.Game
         [SerializeField] private ParticleSimulationDriver _driver;
         [SerializeField] private ParticleRenderer _renderer;
 
-        [Tooltip("可选：高速模式结算面板据此追加一行胜负结论。留空则 Awake 里 GetComponent → FindObjectOfType 兜底；" +
+        [Tooltip("可选：高速模式结算面板据此显示一行胜负结论。留空则 Awake 里 GetComponent → FindObjectOfType 兜底；" +
                  "仍找不到就只不显示胜负行（不报错）。")]
         [SerializeField] private GameController _gameController;
 
@@ -201,7 +202,7 @@ namespace TapTap2026.Game
         /// 不在高速会话中为 null——它是 <see cref="ComposeProbeLine"/> 三段里的最高优先级那段。</summary>
         private string _highSpeedProbeText;
 
-        /// <summary>结算行末尾那一行是不是胜负结论（<see cref="BuildHighSpeedReport"/> 时确定）。</summary>
+        /// <summary>结算面板是否有胜负结论行（<see cref="BuildHighSpeedReport"/> 时确定；沙盒阶段为 false）。</summary>
         private bool _highSpeedReportHasVerdict;
 
         /// <summary>胜负结论是否为过关（决定结算面板那一行的颜色）。</summary>
@@ -563,7 +564,7 @@ namespace TapTap2026.Game
             _hud.SetCursorHint(_hudText, _hudColor);
             _hud.SetHighSpeedStatus(_drawHud && highSpeedActive ? _highSpeedHudText : null);
 
-            if (_drawHud && highSpeedActive && _highSpeedReportLines != null)
+            if (_drawHud && highSpeedActive && _highSpeedReportLines != null && _highSpeedReportLines.Length > 0)
             {
                 _hud.ShowHighSpeedReport(_highSpeedReportLines, _highSpeedReportHasVerdict, _highSpeedVerdictPass);
             }
@@ -969,7 +970,7 @@ namespace TapTap2026.Game
 
             if (highSpeed.Completed && _highSpeedReportLines == null)
             {
-                _highSpeedReportLines = BuildHighSpeedReport(highSpeed);
+                _highSpeedReportLines = BuildHighSpeedReport();
             }
         }
 
@@ -1023,48 +1024,24 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 结算行：遍历注册表，列出**产生或死亡非零**的类型，每行 <c>名称 产生 N 死亡 M</c>；
-        /// 全零类型过滤掉。空气（typeId 0）不显示——它只是被抹除留下的真空，不是「产生」。
-        /// 若 <see cref="GameController.HasVerdict"/> 为真（本会话已求过胜负），末尾追加一行结论：
-        /// 过关 <c>过关！</c> / 未过关 <c>未过关：&lt;理由&gt;</c>，并把过关与否记进
-        /// <see cref="_highSpeedVerdictPass"/> 供 <see cref="SandboxHud.ShowHighSpeedReport"/> 上色。
+        /// 高速模式结算行：**只有一行**结论——过关「过关！」，未过关为阶段 JSON 该检查项配的
+        /// 「失败原因」文案（经 <see cref="GameController.LastReason"/> 透传；未配则回退到详细理由）。
+        /// 不逐类型列产生 / 死亡数；沙盒阶段（无胜负结论）返回空数组，结算面板因此不显示。
+        /// 过关与否记进 <see cref="_highSpeedVerdictPass"/> 供 <see cref="SandboxHud.ShowHighSpeedReport"/> 上色。
         /// </summary>
-        private string[] BuildHighSpeedReport(HighSpeedFrame session)
+        private string[] BuildHighSpeedReport()
         {
-            ParticleType[] types = ParticleRegistry.Types;
-            var lines = new List<string>();
-
-            for (int id = 1; id < types.Length; id++)
-            {
-                ParticleType type = types[id];
-                if (type == null)
-                {
-                    continue;
-                }
-
-                long births = session.GetBirths(id);
-                long deaths = session.GetDeaths(id);
-                if (births == 0 && deaths == 0)
-                {
-                    continue;
-                }
-
-                lines.Add(string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}  产生 {1}  死亡 {2}",
-                    DisplayName(type), births, deaths));
-            }
-
             _highSpeedReportHasVerdict = _gameController != null && _gameController.HasVerdict;
-            if (_highSpeedReportHasVerdict)
+            if (!_highSpeedReportHasVerdict)
             {
-                _highSpeedVerdictPass = _gameController.LastResult;
-                lines.Add(_highSpeedVerdictPass
-                    ? "过关！"
-                    : "未过关：" + (_gameController.LastReason ?? string.Empty));
+                _highSpeedVerdictPass = false;
+                return Array.Empty<string>();
             }
 
-            return lines.ToArray();
+            _highSpeedVerdictPass = _gameController.LastResult;
+            return _highSpeedVerdictPass
+                ? new[] { "过关！" }
+                : new[] { _gameController.LastReason ?? "未过关" };
         }
 
         /// <summary>切到下一个可投放项（粒子类型之后接动物物种，到末尾回到开头）。</summary>

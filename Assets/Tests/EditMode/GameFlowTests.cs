@@ -45,7 +45,7 @@ namespace TapTap2026.Tests
                 "\"maxSurfaceTemperature\":40," +
                 "\"minAverageHumidity\":0.05," +
                 "\"maxAverageHumidity\":0.5," +
-                "\"particles\":[{\"type\":\"GrassParticle\",\"minBirths\":5,\"maxBirths\":50,\"minDeaths\":0,\"maxDeaths\":10,\"minCount\":2,\"maxCount\":20}]" +
+                "\"particles\":[{\"type\":\"GrassParticle\",\"minBirths\":5,\"maxBirths\":50,\"minDeaths\":0,\"maxDeaths\":10,\"minCount\":2,\"maxCount\":20,\"failureText\":\"草没能存活下来\"}]" +
                 "}" +
                 "}";
 
@@ -77,6 +77,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(10, condition.maxDeaths);
             Assert.AreEqual(2, condition.minCount);
             Assert.AreEqual(20, condition.maxCount);
+            Assert.AreEqual("草没能存活下来", condition.failureText);
         }
 
         /// <summary>可空字段（对话 / 下一阶段 / 白名单 / 胜利条件）缺省时保持初始值（null）；id 由加载方回填，解析器不填。
@@ -212,7 +213,7 @@ namespace TapTap2026.Tests
         {
             const string json =
                 "{\"sandboxWidth\":10,\"sandboxHeight\":10," +
-                "\"victory\":{\"creatures\":[{\"species\":\"RabbitCreature\",\"minCount\":1}]}}";
+                "\"victory\":{\"creatures\":[{\"species\":\"RabbitCreature\",\"minCount\":1,\"failureText\":\"兔子没能存活下来\"}]}}";
 
             GamePhaseData phase;
             string error;
@@ -223,6 +224,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual("RabbitCreature", phase.victory.creatures[0].species);
             Assert.AreEqual(1, phase.victory.creatures[0].minCount);
             Assert.AreEqual(-1, phase.victory.creatures[0].maxCount, "未写的上限保持 -1 = 不约束");
+            Assert.AreEqual("兔子没能存活下来", phase.victory.creatures[0].failureText);
         }
 
         /// <summary>动物约束缺 <c>species</c> 是配置错误，解析失败。</summary>
@@ -755,6 +757,33 @@ namespace TapTap2026.Tests
             StringAssert.Contains("高于要求", reason);
         }
 
+        /// <summary>条目配了 <c>failureText</c> → 任一界限不满足都只返回该文案（面向玩家的失败原因），不附实测值。</summary>
+        [Test]
+        public void Evaluate_ParticleConditionFailure_UsesConfiguredFailureText()
+        {
+            var condition = new VictoryCondition
+            {
+                particles = new[]
+                {
+                    new ParticleCountCondition
+                    {
+                        type = "GrassParticle",
+                        minCount = 10,
+                        failureText = "草没能存活下来",
+                    },
+                },
+            };
+
+            HighSpeedSnapshot snapshot = Snapshot(
+                25f,
+                0.3f,
+                Count(ParticleIds.Grass, 3L, 0L, 3L));
+
+            string reason;
+            Assert.IsFalse(VictoryEvaluator.Evaluate(condition, snapshot, out reason));
+            Assert.AreEqual("草没能存活下来", reason, "配了 failureText 就只给该文案");
+        }
+
         /// <summary>存量约束（minCount / maxCount）都满足 → true。</summary>
         [Test]
         public void Evaluate_FinalCountWithinRange_Passes()
@@ -840,6 +869,29 @@ namespace TapTap2026.Tests
 
             string reason;
             Assert.IsTrue(VictoryEvaluator.Evaluate(condition, snapshot, out reason), reason);
+        }
+
+        /// <summary>动物条目配了 <c>failureText</c> → 失败理由就是该文案。</summary>
+        [Test]
+        public void Evaluate_CreatureConditionFailure_UsesConfiguredFailureText()
+        {
+            var condition = new VictoryCondition
+            {
+                creatures = new[]
+                {
+                    new CreatureCountCondition
+                    {
+                        species = "RabbitCreature",
+                        minCount = 1,
+                        failureText = "兔子没能存活下来",
+                    },
+                },
+            };
+
+            string reason;
+            Assert.IsFalse(
+                VictoryEvaluator.Evaluate(condition, SnapshotWithCreatures(Alive(CreatureSpecies.Rabbit, 0)), out reason));
+            Assert.AreEqual("兔子没能存活下来", reason);
         }
 
         /// <summary>
@@ -982,6 +1034,8 @@ namespace TapTap2026.Tests
                     {
                         Assert.IsTrue(ResolvesParticle(victory.particles[p].type),
                             "阶段 " + ids[i] + " 的 victory.particles 里有未知类型：" + victory.particles[p].type);
+                        Assert.IsFalse(string.IsNullOrWhiteSpace(victory.particles[p].failureText),
+                            "阶段 " + ids[i] + " 的 victory.particles[" + p + "] 缺 failureText（高速结束后唯一显示的失败文案）");
                     }
                 }
 
@@ -991,6 +1045,8 @@ namespace TapTap2026.Tests
                     {
                         Assert.IsTrue(ResolvesCreature(victory.creatures[c].species),
                             "阶段 " + ids[i] + " 的 victory.creatures 里有未知物种：" + victory.creatures[c].species);
+                        Assert.IsFalse(string.IsNullOrWhiteSpace(victory.creatures[c].failureText),
+                            "阶段 " + ids[i] + " 的 victory.creatures[" + c + "] 缺 failureText（高速结束后唯一显示的失败文案）");
                     }
                 }
             }

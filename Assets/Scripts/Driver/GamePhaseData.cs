@@ -125,6 +125,13 @@ namespace TapTap2026.Game
         /// <summary>粒子类型名（<c>DebugName</c> 或类名，匹配规则同 <c>ParticleEditor</c> 的白名单）。</summary>
         public string type;
 
+        /// <summary>
+        /// 本条检查不满足时给玩家看的失败原因（如「草没能存活下来」）；null / 空 = 回退到
+        /// <c>VictoryEvaluator</c> 生成的详细理由（含实测值 / 要求值）。
+        /// 命中任一条界限即整条失败，同一条因此只配一段文本。
+        /// </summary>
+        public string failureText;
+
         /// <summary>产生数下限；<c>&lt; 0</c> = 不约束（<c>JsonUtility</c> 不支持 <c>long</c>，计数用 <c>int</c>）。</summary>
         public int minBirths = -1;
 
@@ -154,6 +161,12 @@ namespace TapTap2026.Game
         /// <summary>动物物种名（Creature 子类类名或 DebugName）。</summary>
         public string species;
 
+        /// <summary>
+        /// 本条检查不满足时给玩家看的失败原因（如「兔子没能存活下来」）；null / 空 = 回退到
+        /// <c>VictoryEvaluator</c> 生成的详细理由（含实测值 / 要求值）。
+        /// </summary>
+        public string failureText;
+
         /// <summary>结束时存活数下限；<c>&lt; 0</c> = 不约束。</summary>
         public int minCount = -1;
 
@@ -174,6 +187,7 @@ namespace TapTap2026.Game
         /// （<c>description</c> 即本阶段没有可显示的描述）。
         /// 缺字段保留 C# 字段初始值；额外校验沙箱宽高 ≥ 1、<c>simulationTicks</c> 非负、
         /// <c>victory.particles</c> 条目 type 非空、<c>victory.creatures</c> 条目 species 非空。
+        /// <c>failureText</c> 是可选文案：省略 / 空 = 回退到 <c>VictoryEvaluator</c> 生成的详细理由。
         /// 省略的 / 全哨兵（界限全 <see cref="float.NaN"/> 且无 particles / creatures）的 /
         /// <c>particles</c> 与 <c>creatures</c> 都为空的 <c>victory</c>
         /// 一律归一为 null，表示本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程）。

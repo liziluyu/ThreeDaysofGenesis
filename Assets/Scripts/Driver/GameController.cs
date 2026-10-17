@@ -104,7 +104,7 @@ namespace TapTap2026.Game
         /// <summary>缓存的胜负结论：true = 过关。仅在 <see cref="HasVerdict"/> 为真时有意义。</summary>
         public bool LastResult => _lastResult;
 
-        /// <summary>缓存的判定理由（通过摘要 / 第一条未满足项）；无结论时为 null。</summary>
+        /// <summary>缓存的判定理由（通过摘要 / 第一条未满足项；失败时若该条目配了 <c>failureText</c> 即为该文案）；无结论时为 null。</summary>
         public string LastReason => _lastReason;
 
         /// <summary>接线兜底（引用未接时 GetComponent → FindObjectOfType）并构建阶段映射表。只在启动阶段做一次。</summary>

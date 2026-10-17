@@ -8,9 +8,9 @@
   "availableCreatures": ["RabbitCreature", "FishCreature", "BirdCreature"],
   "victory": {
     "creatures": [
-      { "species": "RabbitCreature", "minCount": 1 },
-      { "species": "FishCreature", "minCount": 1 },
-      { "species": "BirdCreature", "minCount": 1 }
+      { "species": "RabbitCreature", "minCount": 1, "failureText": "兔子没能存活下来" },
+      { "species": "FishCreature", "minCount": 1, "failureText": "鱼没能存活下来" },
+      { "species": "BirdCreature", "minCount": 1, "failureText": "鸟没能存活下来" }
     ]
   }
 }

@@ -53,7 +53,8 @@ namespace TapTap2026.Game
     /// 按固定顺序检查：地表温度 min → max → 湿度 min → max → 按数组顺序逐条粒子约束
     /// （产生 min → max → 死亡 min → max → 存量 min → max）→ 按数组顺序逐条动物约束
     /// （存活 min → max），
-    /// 返回**第一条**未满足项的描述作为 <c>reason</c>。
+    /// 返回**第一条**未满足项的描述作为 <c>reason</c>。某条目配了 <c>failureText</c> 时，
+    /// 它的任一界限不满足都直接返回该文案（面向玩家的「失败原因」），否则回退到带实测值的详细描述。
     /// </summary>
     public static class VictoryEvaluator
     {
@@ -204,67 +205,43 @@ namespace TapTap2026.Game
 
                     if (particleCondition.minBirths >= 0 && births < particleCondition.minBirths)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 产生 {1} 低于要求 {2}。",
-                            displayName,
-                            births,
-                            particleCondition.minBirths);
+                        reason = FailureText(
+                            particleCondition.failureText, displayName, "产生", births, particleCondition.minBirths, true);
                         return false;
                     }
 
                     if (particleCondition.maxBirths >= 0 && births > particleCondition.maxBirths)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 产生 {1} 高于要求 {2}。",
-                            displayName,
-                            births,
-                            particleCondition.maxBirths);
+                        reason = FailureText(
+                            particleCondition.failureText, displayName, "产生", births, particleCondition.maxBirths, false);
                         return false;
                     }
 
                     if (particleCondition.minDeaths >= 0 && deaths < particleCondition.minDeaths)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 死亡 {1} 低于要求 {2}。",
-                            displayName,
-                            deaths,
-                            particleCondition.minDeaths);
+                        reason = FailureText(
+                            particleCondition.failureText, displayName, "死亡", deaths, particleCondition.minDeaths, true);
                         return false;
                     }
 
                     if (particleCondition.maxDeaths >= 0 && deaths > particleCondition.maxDeaths)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 死亡 {1} 高于要求 {2}。",
-                            displayName,
-                            deaths,
-                            particleCondition.maxDeaths);
+                        reason = FailureText(
+                            particleCondition.failureText, displayName, "死亡", deaths, particleCondition.maxDeaths, false);
                         return false;
                     }
 
                     if (particleCondition.minCount >= 0 && finalCount < particleCondition.minCount)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 存量 {1} 低于要求 {2}。",
-                            displayName,
-                            finalCount,
-                            particleCondition.minCount);
+                        reason = FailureText(
+                            particleCondition.failureText, displayName, "存量", finalCount, particleCondition.minCount, true);
                         return false;
                     }
 
                     if (particleCondition.maxCount >= 0 && finalCount > particleCondition.maxCount)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 存量 {1} 高于要求 {2}。",
-                            displayName,
-                            finalCount,
-                            particleCondition.maxCount);
+                        reason = FailureText(
+                            particleCondition.failureText, displayName, "存量", finalCount, particleCondition.maxCount, false);
                         return false;
                     }
 
@@ -355,23 +332,15 @@ namespace TapTap2026.Game
 
                     if (creatureCondition.minCount >= 0 && alive < creatureCondition.minCount)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 存活 {1} 低于要求 {2}。",
-                            displayName,
-                            alive,
-                            creatureCondition.minCount);
+                        reason = FailureText(
+                            creatureCondition.failureText, displayName, "存活", alive, creatureCondition.minCount, true);
                         return false;
                     }
 
                     if (creatureCondition.maxCount >= 0 && alive > creatureCondition.maxCount)
                     {
-                        reason = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} 存活 {1} 高于要求 {2}。",
-                            displayName,
-                            alive,
-                            creatureCondition.maxCount);
+                        reason = FailureText(
+                            creatureCondition.failureText, displayName, "存活", alive, creatureCondition.maxCount, false);
                         return false;
                     }
 
@@ -401,6 +370,33 @@ namespace TapTap2026.Game
                 ? "全部条件满足（本阶段无约束）。"
                 : "全部条件满足：" + string.Join("；", summary);
             return true;
+        }
+
+        /// <summary>
+        /// 一条未满足约束的失败原因：配置了 <paramref name="failureText"/> 就原样用它（面向玩家的文案），
+        /// 否则拼出带实测值与要求值的详细描述（调试 / 日志口径）。
+        /// </summary>
+        private static string FailureText(
+            string failureText,
+            string displayName,
+            string metric,
+            long value,
+            int requirement,
+            bool below)
+        {
+            if (!string.IsNullOrEmpty(failureText))
+            {
+                return failureText;
+            }
+
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} {1} {2} {3} {4}。",
+                displayName,
+                metric,
+                value,
+                below ? "低于要求" : "高于要求",
+                requirement);
         }
 
         /// <summary>
