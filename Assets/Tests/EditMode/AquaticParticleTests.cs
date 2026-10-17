@@ -274,8 +274,9 @@ namespace TapTap2026.Tests
         }
 
         [Test]
-        public void Plant_GrowthStopsAtMaxHeight()
+        public void Plant_GrowsPastOldHeightCap_UntilOneCellBelowSurface()
         {
+            // 旧 3 格上限已去除：行 4 还有水 ⇒ 顶格继续长；长到头顶只剩一格水 ⇒ 停。
             ParticleWorld world = new ParticleWorld(3, 8, SeedValue);
             world.Set(1, 0, SandId);
             world.Set(1, 1, PlantId);
@@ -284,10 +285,61 @@ namespace TapTap2026.Tests
             world.Set(1, 4, WaterId);
             world.Set(1, 5, WaterId);
 
-            RandomTick(world, PlantId, 1, 3); // 命中顶格：高度已达上限
+            float before = TotalWater(world);
 
-            Assert.AreEqual(3, CountType(world, PlantId), "株高到顶不再长");
-            Assert.AreEqual(WaterId, world.GetCell(1, 4).typeId);
+            RandomTick(world, PlantId, 1, 3); // 旧上限所在的顶格：现在应继续长
+
+            Assert.AreEqual(PlantId, world.GetCell(1, 4).typeId, "旧 3 格上限不再生效：行 4 应长成植物");
+            Assert.AreEqual(4, CountType(world, PlantId), "株高 4 格");
+            Assert.AreEqual(before, TotalWater(world), 1e-3f, "消耗一格水、长一格植物：守恒");
+
+            RandomTick(world, PlantId, 1, 4); // 新顶格：头顶只剩一格水（行 5）
+
+            Assert.AreEqual(WaterId, world.GetCell(1, 5).typeId, "保命水不动");
+            Assert.AreEqual(4, CountType(world, PlantId), "头顶只剩一格水时不再长");
+            Assert.AreEqual(before, TotalWater(world), 1e-3f, "不再生长时水账不动");
+        }
+
+        [Test]
+        public void Plant_InDeepWater_GrowsToSurfaceMinusOne()
+        {
+            // 行 0 沙、行 1 植物、行 2..10 水：无上限时一路长到行 9（水面下一格），只留行 10 一格水。
+            ParticleWorld world = new ParticleWorld(3, 12, SeedValue);
+            world.Set(1, 0, SandId);
+            world.Set(1, 1, PlantId);
+            for (int y = 2; y <= 10; y++)
+            {
+                world.Set(1, y, WaterId);
+            }
+
+            float before = TotalWater(world);
+
+            for (int i = 0; i < 30; i++)
+            {
+                int topY = 0;
+                for (int y = 1; y < world.Height; y++)
+                {
+                    if (world.GetCell(1, y).typeId == PlantId)
+                    {
+                        topY = y;
+                    }
+                }
+
+                int plantCountBefore = CountType(world, PlantId);
+                RandomTick(world, PlantId, 1, topY);
+                Assert.AreEqual(before, TotalWater(world), 1e-3f, "每一格生长都必须守恒");
+
+                if (CountType(world, PlantId) == plantCountBefore)
+                {
+                    break; // 已贴到水面：顶格不再长
+                }
+            }
+
+            Assert.AreEqual(PlantId, world.GetCell(1, 9).typeId, "应长到水面下一格（行 9）");
+            Assert.AreEqual(9, CountType(world, PlantId), "株高 = 9（行 1..9）");
+            Assert.AreEqual(WaterId, world.GetCell(1, 10).typeId, "保命水留在行 10");
+            Assert.AreEqual(1, CountType(world, WaterId), "只剩一格水");
+            Assert.AreEqual(before, TotalWater(world), 1e-3f, "全程守恒");
         }
 
         // ============================== 植物：死法（还水） ==============================
