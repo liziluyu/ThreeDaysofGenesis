@@ -722,10 +722,10 @@ namespace TapTap2026.Tests
             world.Set(2, 1, TestTypes.StaticId);
             world.Light.Enabled = false; // 无昼夜：亮度倍率 1，像素原样
 
-            var sky = new Color32(0xCC, 0xE5, 0xFF, 255);
-            var pixels = new Color32[world.CellCount];
+            var sky = new RenderColor(0xCC, 0xE5, 0xFF, 255);
+            var pixels = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, sky);
-            Color32 ground = pixels[world.Index(2, 1)];
+            RenderColor ground = pixels[world.Index(2, 1)];
 
             ParticlePixelBuffer.Fill(world, pixels, sky, 0.5f);
 
@@ -1574,14 +1574,18 @@ namespace TapTap2026.Tests
             world.Set(1, 0, TestTypes.GrainId);
             world.Set(2, 0, TestTypes.LiquidId);
 
-            var background = new Color32(9, 8, 7, 255);
-            var pixels = new Color32[world.CellCount];
+            var background = new RenderColor(9, 8, 7, 255);
+            var pixels = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, background);
 
             Assert.AreEqual(background, pixels[world.Index(0, 0)]);
             Assert.AreEqual(background, pixels[world.Index(3, 1)]);
-            Assert.AreEqual(TestGrainParticle.Palette[world.GetCell(1, 0).shade], pixels[world.Index(1, 0)]);
-            Assert.AreEqual(TestLiquidParticle.Palette[world.GetCell(2, 0).shade], pixels[world.Index(2, 0)]);
+            Assert.AreEqual(
+                RenderColorConversion.FromColor32(TestGrainParticle.Palette[world.GetCell(1, 0).shade]),
+                pixels[world.Index(1, 0)]);
+            Assert.AreEqual(
+                RenderColorConversion.FromColor32(TestLiquidParticle.Palette[world.GetCell(2, 0).shade]),
+                pixels[world.Index(2, 0)]);
         }
 
         [Test]
@@ -1591,19 +1595,19 @@ namespace TapTap2026.Tests
             world.Set(0, 0, TestTypes.LiquidId);
             world.At(0, 0).shade = 250;
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, default(Color32));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, default(RenderColor));
 
-            Assert.AreEqual(TestLiquidParticle.Palette[0], pixels[0]);
+            Assert.AreEqual(RenderColorConversion.FromColor32(TestLiquidParticle.Palette[0]), pixels[0]);
         }
 
         [Test]
         public void PixelBuffer_RejectsMismatchedBufferLength()
         {
             ParticleWorld world = new ParticleWorld(4, 2, 1u, TestTypes.Table);
-            var pixels = new Color32[world.CellCount - 1];
+            var pixels = new RenderColor[world.CellCount - 1];
 
-            Assert.Throws<ArgumentException>(() => ParticlePixelBuffer.Fill(world, pixels, default(Color32)));
+            Assert.Throws<ArgumentException>(() => ParticlePixelBuffer.Fill(world, pixels, default(RenderColor)));
         }
 
         [Test]
@@ -1614,8 +1618,8 @@ namespace TapTap2026.Tests
             world.Set(1, 0, TestTypes.GrainId);
             world.Set(2, 0, TestTypes.GrainId);
 
-            var background = new Color32(10, 20, 30, 255);
-            var plain = new Color32[world.CellCount];
+            var background = new RenderColor(10, 20, 30, 255);
+            var plain = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, plain, background);
 
             world.Heat.DebugHeatOverlay = true;
@@ -1623,7 +1627,7 @@ namespace TapTap2026.Tests
             world.Heat.SetHeat(1, 0, 10f); // 颗粒热容 1 ⇒ T = 10 ⇒ 满量程：纯红
             world.Heat.SetHeat(2, 0, 5f);  // T = 5 ⇒ 半程
 
-            var tinted = new Color32[world.CellCount];
+            var tinted = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, tinted, background);
 
             Assert.AreEqual(plain[0], tinted[0], "没有热量的格不受叠加影响");
@@ -1640,12 +1644,12 @@ namespace TapTap2026.Tests
         public void PixelBuffer_HeatOverlay_AlsoTintsAirCells()
         {
             ParticleWorld world = new ParticleWorld(2, 1, 1u, TestTypes.Table);
-            var background = new Color32(10, 20, 30, 255);
+            var background = new RenderColor(10, 20, 30, 255);
             world.Heat.DebugHeatOverlay = true;
             world.Heat.DebugFullScaleTemperature = 1f;
             world.Heat.SetHeat(1, 0, 1f); // 空气热容 1 ⇒ T = 1 ⇒ 满量程
 
-            var pixels = new Color32[world.CellCount];
+            var pixels = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, background);
 
             Assert.AreEqual(background, pixels[0]);
@@ -1657,12 +1661,12 @@ namespace TapTap2026.Tests
         public void PixelBuffer_HeatOverlay_IsIgnoredWhenFullScaleIsNonPositive()
         {
             ParticleWorld world = new ParticleWorld(1, 1, 1u, TestTypes.Table);
-            var background = new Color32(10, 20, 30, 255);
+            var background = new RenderColor(10, 20, 30, 255);
             world.Heat.DebugHeatOverlay = true;
             world.Heat.DebugFullScaleTemperature = 0f;
             world.Heat.SetHeat(0, 0, 100f);
 
-            var pixels = new Color32[world.CellCount];
+            var pixels = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, background);
 
             Assert.AreEqual(background, pixels[0], "满量程 <= 0 时叠加失效（也不会除零）");

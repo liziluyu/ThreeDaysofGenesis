@@ -4,7 +4,7 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 落下的固体声：把 <see cref="ParticleWorld.SolidMotion"/>（**固体的运动格数** = 本轮发生换位的固体端数）
+    /// 落下的固体声：把帧里的 <see cref="AudioFrame.SolidMovingCount"/>（**固体的运动格数** = 本轮发生换位的固体端数）
     /// 折算成一条**连续**循环声床的目标响度——下落的固体越多越响，低于死区就淡出静音。
     /// </summary>
     /// <remarks>
@@ -17,15 +17,17 @@ namespace TapTap2026.Game
     /// 因此不存在「在死区边界来回开合」的问题，也不需要低通去抹平抖动。响度的平滑已由
     /// <see cref="SoundController"/> 自己的 <c>_loudnessPerSecond</c> 完成（每条声床的音量朝目标每秒推进）。
     /// 这是本驱动比水的流动声简单的原因。</para>
-    /// <para><b>口径</b>：读的是 <see cref="ParticleWorld.SolidMotion"/>——带 <see cref="ParticleTags.Solid"/>
+    /// <para><b>口径</b>：帧里的运动格数来自 world 的固体运动观察者——带 <see cref="ParticleTags.Solid"/>
     /// 且**不带** <see cref="ParticleTags.Organic"/> 的类型，即会下落的粉末 / 石：石、沙、土、湿土、腐殖质、
     /// 腐殖土、湿润腐殖土、草种子（草种子不带 Organic——合并水生态种子后它必须能沉水发芽，见
     /// <see cref="GrassSeedParticle"/> 的文件头）。树叶 / 树木种子 / 草 / 花 / 树干带 <see cref="ParticleTags.Organic"/>，
     /// 被排除，故树叶飘落、树木种子下沉**不会**触发落沙声。</para>
-    /// <para><b>不重播</b>：本组件只做「读计数 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
+    /// <para><b>不重播</b>：本组件只做「读快照 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
     /// 每帧都推、推几次都一样；起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里这条循环声床。</para>
-    /// <para><b>先清账再判开关</b>：<c>_enabled == false</c> 期间也**无条件**读掉并重置运动计数，
-    /// 否则重新打开的那一帧会把关闭期间积压的运动当作「此刻在落」补发出去（响一下）。</para>
+    /// <para><b>不读世界、也不清账</b>：运动记账由 world 的唯一写者在发布帧之前抽干一次
+    /// （<see cref="SimulationFrameCollector.CollectAudio"/>），本组件只读 <see cref="AudioFrame"/>——
+    /// 因此多个消费者读同一帧各拿各的，谁也不会把账抢掉。陈旧帧（同一帧且序号没变 = 自上次读取以来没有新发布，
+    /// 例如暂停中）按「本轮没有运动」处理，与旧版每帧清账后读到 0 同义。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class FallingSandSoundDriver : MonoBehaviour
@@ -80,29 +82,37 @@ namespace TapTap2026.Game
             Silence();
         }
 
+        /// <summary>上一次读到的帧（对象身份 + 序号一起判定新鲜度）。</summary>
+        private SimulationFrame _lastFrame;
+
+        /// <summary>上一次读到的帧序号（配合 <see cref="_lastFrame"/> 识别陈旧帧）。</summary>
+        private long _lastSequence;
+
         private void Update()
         {
-            Pump(_driver != null ? _driver.World : null);
+            Pump(_driver != null ? _driver.CurrentFrame : null);
         }
 
         /// <summary>
-        /// 把 <paramref name="world"/> **本轮**（自上次调用以来）累积的固体运动格数折算成声床目标响度：
-        /// 读计数 → 清账 → 映射 → 推给 <see cref="SoundController.SetAmbience"/>。
+        /// 把帧快照里**本帧**（自该帧发布以来）的固体运动格数折算成声床目标响度：
+        /// 读快照 → 映射 → 推给 <see cref="SoundController.SetAmbience"/>。
         /// 由 <see cref="Update"/> 每帧调一次；公开是为了让测试能脱离帧循环确定性地驱动它。
         /// </summary>
-        /// <param name="world">要观察的世界；null（驱动未就绪）时收声。</param>
+        /// <param name="frame">已发布的完整帧；null（驱动未就绪）时收声。陈旧帧按 0 运动处理。</param>
         /// <returns>本帧推给声音控制器的目标响度（<c>[0, _volume]</c>）。</returns>
-        public float Pump(ParticleWorld world)
+        public float Pump(SimulationFrame frame)
         {
-            if (world == null)
+            if (frame == null)
             {
                 return Silence();
             }
 
-            // **无条件先清账**：关闭期间也必须把运动计数读掉，否则重新打开的那一帧会把
-            // 关闭期间积压的运动当作「此刻在落」补发出去（响一下）。
-            long moving = world.SolidMotion.MovingCount;
-            world.SolidMotion.Reset();
+            // 新鲜 = 换了帧对象，或同一帧里序号又推进了：槽位会回收复用，单看序号会把
+            // 「另一个发布者的第 1 帧」误判成陈旧（各发布者序号都从 1 开始），故身份与序号都必须记。
+            bool fresh = !ReferenceEquals(frame, _lastFrame) || frame.Sequence != _lastSequence;
+            _lastFrame = frame;
+            _lastSequence = frame.Sequence;
+            long moving = fresh ? frame.Audio.SolidMovingCount : 0L;
 
             if (!_enabled || _sound == null)
             {

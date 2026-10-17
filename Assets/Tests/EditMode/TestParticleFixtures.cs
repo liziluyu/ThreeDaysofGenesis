@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TapTap2026.Simulation;
 using UnityEngine;
 
@@ -865,6 +866,58 @@ namespace TapTap2026.Tests
         private static ParticleType Bind(ushort id, IParticleType behaviour)
         {
             return new ParticleType(id, behaviour.Info, behaviour.GetType().Name, behaviour.OnMotion, behaviour.OnLogic, behaviour.OnRandomTick, behaviour.OnSpawn, behaviour.OnKill);
+        }
+    }
+}
+
+namespace TapTap2026.Tests
+{
+    /// <summary>
+    /// 测试用的**帧采集装置**：把活世界按生产路径采成一帧已发布的 <see cref="SimulationFrame"/>
+    /// （<see cref="SimulationFrameCollector"/> + <see cref="SimulationFramePublisher"/>），
+    /// 让驱动程序（音频 / 渲染 / UI）的测试能在不启动 <c>ParticleSimulationDriver</c> 的前提下
+    /// 拿到与生产完全同构的帧快照。
+    /// </summary>
+    /// <remarks>
+    /// <para>每帧调用 <see cref="Publish"/> 一次即模拟「驱动发布了一帧」：像素、世界面向数据、音频观察
+    /// 都在这一次里采集并发布（音频观察顺带抽干 world 的运动 / 新增记账——这正是生产里由发布侧做的事）。</para>
+    /// <para>发布器按世界实例缓存（像素数组绝不跨尺寸复用；同一世界连续发布复用同一套槽位，
+    /// 与驱动的行为一致），因此 <see cref="SimulationFrame.Sequence"/> 会像生产那样逐帧递增。</para>
+    /// </remarks>
+    internal sealed class FramePump
+    {
+        private readonly Dictionary<ParticleWorld, SimulationFramePublisher> _publishers =
+            new Dictionary<ParticleWorld, SimulationFramePublisher>();
+
+        /// <summary>本装置持有的光照配置（默认全零：渲染测试自己不关心昼夜时用它）。</summary>
+        internal LightSettings Light = LightSettings.Default;
+
+        /// <summary>把 <paramref name="world"/> 的**当前**状态采成一帧并发布，返回该帧。</summary>
+        internal SimulationFrame Publish(ParticleWorld world, bool paused = false, bool probe = false, int probeX = 0, int probeY = 0)
+        {
+            if (!_publishers.TryGetValue(world, out SimulationFramePublisher publisher))
+            {
+                publisher = new SimulationFramePublisher(world.Width, world.Height, 1);
+                _publishers.Add(world, publisher);
+            }
+
+            SimulationFrame frame = publisher.BeginWrite();
+            SimulationFrameCollector.CollectRender(world, Light, frame.Render);
+            CellProbe probeSnapshot = probe
+                ? SimulationFrameCollector.ReadProbe(world, probeX, probeY)
+                : default(CellProbe);
+            SimulationFrameCollector.CollectWorld(world, paused, probeSnapshot, frame.World);
+            SimulationFrameCollector.CollectCreatures(null, 20f, frame.Creatures);
+            SimulationFrameCollector.CollectAudio(world, frame.Audio);
+            SimulationFrameCollector.CollectHighSpeed(null, 0f, frame.HighSpeed);
+            publisher.Publish();
+            return frame;
+        }
+
+        /// <summary>只采世界面向数据（探针）并发布其余的默认段，返回该帧——供探针 / HUD 测试用。</summary>
+        internal SimulationFrame PublishProbe(ParticleWorld world, int x, int y)
+        {
+            return Publish(world, false, true, x, y);
         }
     }
 }

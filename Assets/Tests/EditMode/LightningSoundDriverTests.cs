@@ -30,6 +30,9 @@ namespace TapTap2026.Tests
         private LightningSoundDriver _driver;
         private AudioClip _lightning;
 
+        /// <summary>帧采集装置：把世界采成已发布的帧（本驱动只读帧，不读世界）。</summary>
+        private readonly FramePump _frames = new FramePump();
+
         [SetUp]
         public void SetUp()
         {
@@ -76,7 +79,7 @@ namespace TapTap2026.Tests
 
             for (int i = 0; i < 200; i++)
             {
-                Assert.IsFalse(_driver.Pump(dry), "没有起爆就不该响");
+                Assert.IsFalse(_driver.Pump(_frames.Publish(dry)), "没有起爆就不该响");
             }
 
             Assert.AreEqual(0, _sound.OneShotPlayCount);
@@ -93,12 +96,12 @@ namespace TapTap2026.Tests
             Assert.IsTrue(StrikeOnce(world, 12, 20), "饱和世界里必须起爆");
             Assert.Greater(CountType(world, ParticleIds.Lightning), 1, "一条完整闪电是几十格，绝不是 1 格");
 
-            Assert.IsTrue(_driver.Pump(world), "起爆那一帧要响");
+            Assert.IsTrue(_driver.Pump(_frames.Publish(world)), "起爆那一帧要响");
             Assert.AreEqual(1, _sound.OneShotPlayCount, "整条多格雷电只响一次");
 
             for (int i = 0; i < 10; i++)
             {
-                Assert.IsFalse(_driver.Pump(world), "没有新起爆就不再响");
+                Assert.IsFalse(_driver.Pump(_frames.Publish(world)), "没有新起爆就不再响");
             }
 
             Assert.AreEqual(1, _sound.OneShotPlayCount, "一次起爆只累计一次起播");
@@ -115,10 +118,10 @@ namespace TapTap2026.Tests
             Assert.IsTrue(StrikeOnce(world, 12, 20), "第一处必须起爆");
             Assert.IsTrue(StrikeOnce(world, 6, 20), "第二处必须起爆");
 
-            Assert.IsTrue(_driver.Pump(world), "这一帧有新雷电 → 响");
+            Assert.IsTrue(_driver.Pump(_frames.Publish(world)), "这一帧有新雷电 → 响");
             Assert.AreEqual(1, _sound.OneShotPlayCount, "两处起爆同帧也只响一声");
 
-            Assert.IsFalse(_driver.Pump(world), "账已清，下一帧不再响（不补发）");
+            Assert.IsFalse(_driver.Pump(_frames.Publish(world)), "账已清，下一帧不再响（不补发）");
             Assert.AreEqual(1, _sound.OneShotPlayCount);
         }
 
@@ -134,13 +137,13 @@ namespace TapTap2026.Tests
             Saturate(world, 12, 20, 0.12f);
             Assert.IsTrue(StrikeOnce(world, 12, 20), "必须起爆");
 
-            Assert.IsFalse(_driver.Pump(world), "关闭时不响");
+            Assert.IsFalse(_driver.Pump(_frames.Publish(world)), "关闭时不响");
             Assert.AreEqual(0, _sound.OneShotPlayCount);
 
             serialized.FindProperty("_enabled").boolValue = true;
             serialized.ApplyModifiedPropertiesWithoutUndo();
 
-            Assert.IsFalse(_driver.Pump(world), "关闭期间的起爆已被读掉，重新打开不补发");
+            Assert.IsFalse(_driver.Pump(_frames.Publish(world)), "关闭期间的起爆已被读掉，重新打开不补发");
             Assert.AreEqual(0, _sound.OneShotPlayCount);
         }
 

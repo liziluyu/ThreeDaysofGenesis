@@ -32,7 +32,7 @@ namespace TapTap2026.Game
         /// <summary>粒子类型 id；动物项恒为 0（空气，无意义）。</summary>
         public ushort TypeId { get; }
 
-        /// <summary>动物物种在工厂表里的下标；粒子项恒为 −1。</summary>
+        /// <summary>动物物种在 <see cref="CreatureSpawns.Species"/> 里的下标（即生成命令的物种下标）；粒子项恒为 −1。</summary>
         public int CreatureIndex { get; }
 
         /// <summary>本项是不是动物物种（true ⇒ 左键放置实体、<see cref="TypeId"/> 无意义）。</summary>
@@ -63,7 +63,7 @@ namespace TapTap2026.Game
             return new ParticleSelectionEntry(index, typeId, -1, displayName, className, swatch, singlePlacement);
         }
 
-        /// <summary>动物物种项（恒为「单颗 + 冷却」投放，见 <see cref="ParticleEditor.SpawnCreature"/>）。</summary>
+        /// <summary>动物物种项（恒为「单颗 + 冷却」投放，见 <see cref="ParticleEditor.SubmitPlacement"/>）。</summary>
         public static ParticleSelectionEntry ForCreature(int index, int creatureIndex, string displayName, string className,
             Color swatch)
         {

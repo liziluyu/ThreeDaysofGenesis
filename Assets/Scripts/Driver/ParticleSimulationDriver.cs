@@ -1,4 +1,3 @@
-using Stopwatch = System.Diagnostics.Stopwatch;
 using TapTap2026.Rendering;
 using TapTap2026.Simulation;
 using UnityEngine;
@@ -6,25 +5,28 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 固定时间步长驱动 + 渲染调度。是**唯一**同时认识模拟与渲染的地方。
+    /// 主线程侧的模拟驱动（阶段 3）：**只采样、只计划、只消费帧**——世界与 tick 循环都在
+    /// <see cref="SimulationWorker"/> 的那条常驻线程上。
     /// </summary>
     /// <remarks>
-    /// 解耦点：<see cref="ParticleWorld.StepMotion"/> / <see cref="ParticleWorld.StepLogic"/> 只管推进模拟，从不渲染；
-    /// 渲染由本类在 <see cref="Update"/> 里按 <see cref="ParticleSimulationSettings.StepsPerPresent"/> 决定何时上屏。
-    /// 默认值 1 = 每个运动帧后渲染一次；调大即可变成「多个运动帧渲染一次」，无需改动模拟或渲染代码。
-    /// <para>两级节拍：运动帧 60 Hz（只跑粒子运动）、逻辑帧 20 Hz（相变 / 反应 / 热传导 / 湿度 / 降水 / 光照 / 随机刻）。
-    /// 逻辑帧是运动帧节拍上的子节拍——每 <see cref="ParticleSimulationSettings.LogicTicksPerMotionTick"/>
-    /// 个运动帧跑一次 <see cref="ParticleWorld.StepLogic"/>，其余只跑 <see cref="ParticleWorld.StepMotion"/>。</para>
-    /// <para>沙箱尺寸：默认取 <see cref="ParticleSimulationSettings"/> 的宽高，本组件的「沙箱尺寸」字段非 0 时覆盖之。
-    /// 运行中改尺寸（Inspector 或 <see cref="Resize"/>）会重建一个空世界，已有内容不保留。</para>
-    /// <para>倍速：每真实帧跑几个运动帧由 <see cref="SpeedController"/> 决定（普通编辑模式恒 1×，
-    /// 只有高速模式会改档——进入钉满档、退出钉回 1×）。
-    /// 本类只负责测量本帧 tick 循环耗时并回喂、以及转发倍率；输入与展示在 <see cref="ParticleEditor"/>。
-    /// 倍速只改每帧的 tick 数，tick 内部逐位不变；超预算的部分直接丢弃、绝不结转。</para>
-    /// <para>高速模式：状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯 C#、纯观察者——零 RNG 消耗、零格子写入）。
-    /// 本类只做三件事：懒建会话、把每个逻辑帧转发给 <see cref="HighSpeedSession.OnLogicTick"/>、
-    /// 见到 <see cref="HighSpeedSession.Completed"/> 就地 <see cref="Pause"/>。进入 / 退出与输入封锁、HUD 在
-    /// <see cref="ParticleEditor"/>。</para>
+    /// <para><b>主线程只做四件事</b>：①采 Unity 侧配置（Inspector 字段 / 设置资产 / <c>Time.deltaTime</c> /
+    /// <c>Application.targetFrameRate</c>）并变化时入队命令；②按上一批的实测耗时与预算计划「本帧跑几个运动 tick」
+    /// （<see cref="SpeedController"/> 全在主线程，worker 侧没有第二套累加器）；③非阻塞地排一批请求
+    /// （槽位满就放弃本次，**绝不等待模拟**）；④消费最新已发布帧并在有新帧时调
+    /// <see cref="ParticleRenderer.Present(RenderFrame)"/> 上传纹理。</para>
+    /// <para><b>对外只有两个口</b>：入口 <see cref="Submit"/>（有序值类型命令）与出口 <see cref="CurrentFrame"/>
+    /// （不可变 <see cref="SimulationFrame"/>）。本类**不持有** <see cref="ParticleWorld"/> / <see cref="CreatureWorld"/> /
+    /// <see cref="HighSpeedSession"/> 的任何引用，也没有任何可变兼容别名。</para>
+    /// <para><b>节拍</b>：运动帧 60 Hz（只跑粒子运动）、逻辑帧 20 Hz（相变 / 反应 / 热传导 / 湿度 / 降水 / 光照 / 随机刻），
+    /// 逻辑帧是运动帧节拍上的子节拍（每 <see cref="ParticleSimulationSettings.LogicTicksPerMotionTick"/> 个运动帧一次）；
+    /// 倍速只改「本帧计划几个运动 tick」，tick 内部逐位不变，超预算的部分直接丢弃、绝不结转。</para>
+    /// <para><b>命令边界</b>：命令随请求一起交给 worker，在**下一个运动 tick 开始前**按
+    /// <see cref="SimulationCommand.Sequence"/> 顺序全部应用；应用过命令的批次一定发布一帧，
+    /// 因此每一帧都对应一个完整的世界状态，不存在「半个 tick 的世界」。</para>
+    /// <para><b>生命周期</b>：<see cref="Awake"/> 建 worker（世界与第一帧同步建好，消费方随后立刻可读）并启线程；
+    /// <see cref="OnEnable"/> 兜底重启；<see cref="OnDisable"/> / <see cref="OnDestroy"/> 停止并 <c>Join</c>
+    /// （绝不让线程活过 Unity 对象销毁）。worker 故障由 <see cref="Update"/> 在主线程读出来并
+    /// <c>Debug.LogError</c>——worker 自己从不碰任何 Unity API。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleSimulationDriver : MonoBehaviour
@@ -32,14 +34,15 @@ namespace TapTap2026.Game
         [SerializeField] private ParticleSimulationSettings _settings;
         [SerializeField] private ParticleRenderer _renderer;
 
-        [Tooltip("是否推进模拟。关掉即暂停：运动帧与逻辑帧一起冻结，仍可用 PresentNow 手动上屏。")]
+        [Tooltip("是否推进模拟。关掉即暂停：运动帧与逻辑帧一起冻结，仍可提交 PresentNow 命令手动上屏。" +
+                 "运行时由对话 / UI 提交的 SetPaused 命令改的是 worker 里的权威状态，不会与本字段互相覆盖。")]
         [SerializeField] private bool _simulate = true;
 
         [Header("沙箱尺寸（格，0 = 用 Settings 资产的值）")]
-        [Tooltip("网格宽度。运行时在 Inspector 改这里（或改 Settings 资产）会重建一个空世界。")]
+        [Tooltip("网格宽度。运行时在 Inspector 改这里（或改 Settings 资产）会在下一个命令边界重建一个空世界。")]
         [SerializeField, Min(0)] private int _widthOverride;
 
-        [Tooltip("网格高度。运行时在 Inspector 改这里（或改 Settings 资产）会重建一个空世界。")]
+        [Tooltip("网格高度。运行时在 Inspector 改这里（或改 Settings 资产）会在下一个命令边界重建一个空世界。")]
         [SerializeField, Min(0)] private int _heightOverride;
 
         [Header("调试")]
@@ -50,133 +53,93 @@ namespace TapTap2026.Game
         [SerializeField] private float _heatDebugFullScale = HeatMap.DefaultDebugFullScaleTemperature;
 
         private ParticleSimulationSettings _fallbackSettings;
-        private ParticleWorld _world;
-        private CreatureWorld _creatures;
+
+        /// <summary>常驻模拟 worker（世界 / tick / 帧环的唯一持有者）。</summary>
+        private SimulationWorker _worker;
+
+        /// <summary>主线程独占的倍速控制器：计划「本帧跑几个运动 tick」，并把上一批的实测耗时回喂成每 tick 成本。</summary>
         private SpeedController _speed;
-        private HighSpeedSession _highSpeed;
-        private readonly Stopwatch _frameStopwatch = new Stopwatch();
-        private double _lastFrameSimMs;
-        private int _stepsSincePresent;
-        private int _motionTicks;
 
-        /// <summary>当前世界。在 <c>Awake</c> 之后可用。</summary>
-        public ParticleWorld World
+        /// <summary>待发命令（主线程入队；随请求整批交给 worker，抽不完的留在这里等下一批）。</summary>
+        private readonly SimulationCommandQueue _commands = new SimulationCommandQueue();
+
+        /// <summary>主线程是否已启动 worker（用于区分「worker 未跑」与「worker 正在跑」）。</summary>
+        private bool _workerRunning;
+
+        /// <summary>当前光照配置（世界重建后由 worker 用最近的命令值重新应用）。</summary>
+        private LightSettings _lightSettings = LightSettings.Default;
+
+        /// <summary>当前 tick 配置（同上）。</summary>
+        private SimulationTickSettings _tickSettings;
+
+        /// <summary>上一次采样到的 <see cref="_simulate"/>：只有真的变了才入队 SetPaused（不与其它暂停方打架）。</summary>
+        private bool _sampledSimulate;
+
+        /// <summary>上一批对应的请求序号；回执序号与之相同才把实测耗时当作有效样本回喂（否则样本与计划数不配对）。</summary>
+        private long _sampledRequestSequence;
+
+        /// <summary>上一批的实测耗时（毫秒）；无有效样本时为 0。</summary>
+        private double _lastBatchSimMs;
+
+        /// <summary>是否已有一个在途的 Resize（避免异步窗口里每帧重发、反复重建世界）。</summary>
+        private bool _resizeInFlight;
+
+        /// <summary>在途 Resize 的目标尺寸。</summary>
+        private int _resizeInFlightWidth;
+
+        /// <summary>在途 Resize 的目标尺寸。</summary>
+        private int _resizeInFlightHeight;
+
+        /// <summary>最近一次已上屏的帧序号（0 = 还没上屏过）。</summary>
+        private long _presentedSequence;
+
+        /// <summary>最近一次已上屏的世代号。换世代必须重新上屏（尺寸 / 内容都换了）。</summary>
+        private int _presentedGeneration = -1;
+
+        /// <summary>最近一次已读到的帧引用（与 <see cref="_presentedSequence"/> 一起判「这一帧是不是新的」）。</summary>
+        private SimulationFrame _presentedFrame;
+
+        /// <summary>已报过的故障次数（每个新故障只报一次）。</summary>
+        private int _reportedFaults;
+
+        /// <summary>高速模式的倍速钉档状态：帧里的 <see cref="HighSpeedFrame.Active"/> 变化时钉满档 / 钉回 1×。</summary>
+        private bool _highSpeedPinned;
+
+        /// <summary>最新已发布的完整帧；<see cref="Awake"/> 之后恒非 null。**UI / 渲染 / 音频只读它。**</summary>
+        public SimulationFrame CurrentFrame
         {
-            get { return _world; }
+            get
+            {
+                SimulationWorker worker = _worker;
+                return worker != null ? worker.CurrentFrame : null;
+            }
         }
 
-        /// <summary>当前动物世界。与 <see cref="World"/> 同生共死（<see cref="CreateWorld"/> 里一起重建），
-        /// 因此 <see cref="World"/> 非 null 时它也非 null。渲染器每帧轮询它做对账。</summary>
-        public CreatureWorld Creatures
-        {
-            get { return _creatures; }
-        }
-
-        /// <summary>逻辑帧速率（Hz，来自设置资产）。渲染层据此把 <see cref="Creature.PrevX"/>/<see cref="Creature.PrevY"/>
-        /// 到当前位置的插值按「本逻辑帧已流逝的比例」推进。</summary>
+        /// <summary>逻辑帧速率（Hz，来自设置资产）。光照面板按它把「秒」换算成刻数。</summary>
         public float LogicRate
         {
             get { return Settings.LogicRate; }
         }
 
-        /// <summary>倍速控制器（本类只测量耗时并转发倍率）。输入与展示在 <see cref="ParticleEditor"/>，
-        /// 档位只由 <see cref="HighSpeedSession"/> 改变——普通编辑模式恒 1×。</summary>
-        public SpeedController Speed
+        /// <summary>worker 是否在跑（诊断 / 测试用）。</summary>
+        public bool WorkerRunning
         {
-            get { return _speed; }
+            get { return _workerRunning; }
         }
 
-        /// <summary>高速模式会话（状态机与统计全在内核，纯 C#）。世界建好后**懒建**，时长取设置资产的
-        /// <see cref="ParticleSimulationSettings.HighSpeedLogicFrames"/>；世界重建会连带丢弃旧会话。</summary>
-        public HighSpeedSession HighSpeed
+        /// <summary>worker 最近一批的实测耗时（毫秒，回喂倍速控制器的那个样本）；还没有有效样本时为 0。</summary>
+        public double LastBatchSimMs
         {
-            get
-            {
-                if (_highSpeed == null && _world != null)
-                {
-                    _highSpeed = new HighSpeedSession(_world, Settings.HighSpeedLogicFrames);
-                }
-
-                return _highSpeed;
-            }
-        }
-
-        /// <summary>是否处于高速模式：进入后、确认退出前恒为 true（<see cref="HighSpeedSession.Completed"/> 后仍为 true）。
-        /// 只读字段、**不触发懒建**——每帧查询它的调用方（<see cref="SoundController"/> 的静音闸门）不该因此凭空建出会话；
-        /// 会话仍由 <see cref="EnterHighSpeed"/> 或 <see cref="GameController"/> 的轮询建立。</summary>
-        public bool HighSpeedActive
-        {
-            get { return _highSpeed != null && _highSpeed.Active; }
-        }
-
-        /// <summary>进入高速模式：转发给内核会话（把倍速钉到控制器满档，退出时钉回 1×）。幂等，已在模式中则无事发生。
-        /// 暂停中进入会先 <see cref="Resume"/>——否则 tick 循环被暂停挡住，会话永远停在 0/<see cref="HighSpeedSession.DurationLogicTicks"/>
-        /// 且模式锁定编辑与退出热键，形成死锁。跑满时长后驱动会重新 <see cref="Pause"/>（见 Update）。
-        /// 本方法只做转发与暂停解除——输入与显示在 <see cref="ParticleEditor"/>。</summary>
-        public void EnterHighSpeed()
-        {
-            HighSpeedSession session = HighSpeed;
-            if (session != null)
-            {
-                session.Enter(_speed);
-                if (session.Active)
-                {
-                    Resume();
-                }
-            }
-        }
-
-        /// <summary>是否推进模拟（运动帧与逻辑帧）。运行时可切换（继续/暂停）。</summary>
-        public bool Simulate
-        {
-            get { return _simulate; }
-            set { _simulate = value; }
-        }
-
-        /// <summary>是否处于暂停：暂停时不推进任何帧（运动帧与逻辑帧一起冻结），网格内容不变化。</summary>
-        public bool Paused
-        {
-            get { return !_simulate; }
-            set { _simulate = !value; }
-        }
-
-        /// <summary>进入暂停：冻结所有帧（运动帧与逻辑帧）。幂等。由调用方决定何时暂停（例如输入处理）。</summary>
-        public void Pause()
-        {
-            _simulate = false;
-        }
-
-        /// <summary>退出暂停：恢复推进所有帧。幂等。</summary>
-        public void Resume()
-        {
-            _simulate = true;
-        }
-
-        /// <summary>把网格**当前**状态立即上屏一次（暂停中改了网格后可用）。本方法不推进逻辑帧。</summary>
-        public void PresentNow()
-        {
-            Present();
+            get { return _lastBatchSimMs; }
         }
 
         /// <summary>
-        /// 按新尺寸重建一个**空**世界并立即上屏一次（相机由渲染器重新框住整张网格）。**已有内容不保留。**
+        /// 提交一条命令：立即定序，随下一批请求交给 worker，在**下一个运动 tick 开始前**按序应用（见类注释）。
+        /// 命令是值类型，因此调用方不需要、也拿不到任何活世界引用。
         /// </summary>
-        /// <remarks>
-        /// 等价于在 Inspector 里填「沙箱尺寸」字段：两者都只是把尺寸覆盖写回本组件，
-        /// 下一帧 <see cref="Update"/> 检测到世界尺寸不符时同样重建。范围夹在 <c>1..ParticleWorld.MaxSide</c>。
-        /// </remarks>
-        public void Resize(int width, int height)
+        public void Submit(SimulationCommand command)
         {
-            _widthOverride = Mathf.Clamp(width, 1, ParticleWorld.MaxSide);
-            _heightOverride = Mathf.Clamp(height, 1, ParticleWorld.MaxSide);
-
-            if (_world == null)
-            {
-                return;
-            }
-
-            CreateWorld();
-            Present();
+            _commands.Enqueue(command);
         }
 
         /// <summary>本帧生效的网格宽度：覆盖值 &gt; 0 时用它，否则用 <see cref="ParticleSimulationSettings.Width"/>。</summary>
@@ -225,9 +188,27 @@ namespace TapTap2026.Game
         private void Awake()
         {
             ParticleRegistration.RegisterAll();
+
             ParticleSimulationSettings settings = Settings;
             _speed = new SpeedController(SpeedController.MinSpeed, settings.SpeedMax);
-            CreateWorld();
+
+            // 先采一次 Unity 侧配置：建世界时就按生产参数应用（与「建出来立刻带资产参数」的既有行为一致）。
+            _tickSettings = ReadTickSettings();
+            _sampledSimulate = _simulate;
+
+            // 建 worker：世界与第一帧在**当前线程**同步建好（消费方不必等第一次 Update 才有帧可读），
+            // 随后世界只归 worker 线程；这里立刻启线程，Update 因此永远有一个活的 worker。
+            _worker = new SimulationWorker(new SimulationWorkerSetup(
+                RequestedWidth,
+                RequestedHeight,
+                settings.Seed,
+                settings.LogicTicksPerMotionTick,
+                settings.LogicRate,
+                settings.StepsPerPresent,
+                settings.HighSpeedLogicFrames,
+                _tickSettings,
+                _lightSettings));
+            StartWorker();
 
             // 免场景接线的过渡手段：动物渲染器必须与驱动在同一个 GameObject 上，当前场景还没手工挂它，
             // 因此这里补挂一个。今后若在场景里手工配置（或换成别的渲染实现），这段自动补挂可直接删掉。
@@ -237,52 +218,25 @@ namespace TapTap2026.Game
             }
         }
 
-        /// <summary>按 <see cref="RequestedWidth"/>/<see cref="RequestedHeight"/> 建世界并清空累加器，
-        /// 然后把所有空格填成大气粒子——风与对流需要空气本身是会动、携带热量的物质。
-        /// typeId 0 此后只作为「被抹除留下的真空」短暂出现，行为规则同样允许气体换入。</summary>
-        private void CreateWorld()
+        private void OnEnable()
         {
-            // 世界换了，旧会话持有的是旧世界——退出并丢弃，下次访问 HighSpeed 时按新世界重建。
-            if (_highSpeed != null)
+            // Awake 已启线程；这条兜底是为「运行时按 Inspector 勾掉再勾上」准备的（OnDisable 会停线程）。
+            if (_worker != null)
             {
-                if (_highSpeed.Active)
-                {
-                    _highSpeed.Exit(_speed);
-                }
-
-                _highSpeed = null;
+                StartWorker();
             }
-
-            ParticleSimulationSettings settings = Settings;
-            _world = new ParticleWorld(RequestedWidth, RequestedHeight, settings.Seed);
-            _speed.ResetAccumulator();
-            _lastFrameSimMs = 0.0;
-            _stepsSincePresent = 0;
-            _motionTicks = 0;
-
-            if (ParticleIds.Atmosphere != ParticleRegistry.AirTypeId)
-            {
-                for (int y = 0; y < _world.Height; y++)
-                {
-                    for (int x = 0; x < _world.Width; x++)
-                    {
-                        _world.Set(x, y, ParticleIds.Atmosphere);
-                    }
-                }
-            }
-
-            // 动物世界与世界同步重建。种子与世界随机流**分离**（异或一个黄金比例常数派生）：
-            // 动物层不消耗世界的随机流，两者的确定性互不污染。
-            _creatures = new CreatureWorld(settings.Seed ^ 0x9E3779B9u);
         }
 
-        private void Start()
+        private void OnDisable()
         {
-            Present();
+            // 停止并 Join：unity 对象进入销毁流程 / 组件被禁用后，绝不允许 worker 再写世界。
+            StopWorker();
         }
 
         private void OnDestroy()
         {
+            StopWorker();
+
             // 代码兜底创建的 ScriptableObject 不受场景管理，必须自己销毁，否则每次进播放都泄漏一个实例。
             if (_fallbackSettings != null)
             {
@@ -291,118 +245,247 @@ namespace TapTap2026.Game
             }
         }
 
-        private void Update()
+        private void StartWorker()
         {
-            if (_world == null)
+            SimulationWorker worker = _worker;
+            if (worker == null || _workerRunning)
             {
                 return;
             }
 
-            // Inspector 里改了「沙箱尺寸」（或 Settings 资产的宽高）后在此生效；尺寸一致时零成本跳过。
-            if (_world.Width != RequestedWidth || _world.Height != RequestedHeight)
+            worker.Start();
+            _workerRunning = true;
+        }
+
+        private void StopWorker()
+        {
+            SimulationWorker worker = _worker;
+            if (worker == null || !_workerRunning)
             {
-                CreateWorld();
-                Present();
+                return;
             }
 
-            // 热力学参数与调试叠加：每帧写回，运行时改 Inspector / 资产即时生效，重建世界后也自动重新应用。
-            HeatMap heat = _world.Heat;
-            ParticleSimulationSettings current = Settings;
-            heat.Conductivity = current.Conductivity;
-            heat.VoidHeatLoss = current.VoidHeatLoss;
-            heat.RadiativeLoss = current.RadiativeLoss;
-            heat.AdiabaticLapse = current.AdiabaticLapse;
-            heat.AirThermalConductivity = current.AirThermalConductivity;
-            heat.AirThermalEmissivity = current.AirThermalEmissivity;
-            heat.DebugHeatOverlay = _heatDebugOverlay;
-            heat.DebugFullScaleTemperature = _heatDebugFullScale;
-            _world.RandomTicksPerStep = current.RandomTicksPerStep;
+            _workerRunning = false;
+            worker.Stop();
+        }
 
-            if (_simulate)
+        /// <summary>
+        /// 一个驱动帧：①采样 Unity 侧配置并变化时入队；②非阻塞排一批请求（把命令与计划 tick 数交给 worker，
+        /// **本帧不同步推进世界**）；③非阻塞收回执（回喂耗时才、钉高速倍速）；④消费新帧并上屏。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="Update"/> 用 <see cref="Time.deltaTime"/> 调它；公开（含显式 <paramref name="deltaTime"/>）是为了让测试
+        /// 能脱离帧循环确定性地驱动命令 / 帧边界——与四个声音驱动器的 <c>Pump</c> 同一口径。
+        /// 注意本方法**从不等待 worker**：worker 忙时这一帧就只是不发请求，帧仍旧可以取用上一批的成果。
+        /// </remarks>
+        public void Advance(float deltaTime)
+        {
+            SimulationWorker worker = _worker;
+            if (worker == null || !_workerRunning)
             {
-                ParticleSimulationSettings settings = Settings;
-                int motionRate = Mathf.Max(1, Mathf.RoundToInt(settings.MotionRate));
-                int stepsPerPresent = settings.StepsPerPresent;
-                int logicEvery = settings.LogicTicksPerMotionTick;
+                return;
+            }
 
-                // 预算：本帧允许花在模拟 tick 上的时间**绝对上限** = 目标帧率对应的一帧时间 × 预算比例。
-                // 目标帧率取 Application.targetFrameRate（<= 0 即不限帧时按 60 算），因此基准是固定的名义帧时间，
-                // 不是本帧的真实 deltaTime：高刷屏（如 144 Hz）下 8.33ms 相当于真实帧时间的 120%，
-                // 掉帧时则只占真实帧时间的一小部分——这是有意的绝对上限语义。
-                int targetFrameRate = Application.targetFrameRate > 0 ? Application.targetFrameRate : 60;
-                double budgetMs = 1000.0 / targetFrameRate * settings.SpeedBudgetFraction;
+            SampleUnityConfiguration();
+            SurfaceWorkerFault(worker);
+            DrainWorldMessages(worker);
+            DrainResponses(worker);
+            RequestWorkerBatch(worker, deltaTime);
+            ConsumeFrame(worker);
+        }
 
-                // 倍速在这里落地：倍率只改变「本帧跑几个运动 tick」，每个 tick 内部逐位不变。
-                // 暂停（_simulate = false）时不调用：欠账不涨，恢复后接着当前倍率跑。
-                // 把 logicEvery（= round(运动速率 / 逻辑速率)）一并注入：自适应档按它把一个逻辑周期的运动成本折算进预算比较。
-                int ticks = _speed.PlanMotionTicks(
-                    Time.deltaTime, _lastFrameSimMs, budgetMs, motionRate, logicEvery);
+        private void Update()
+        {
+            Advance(Time.deltaTime);
+        }
 
-                _frameStopwatch.Restart();
-                for (int i = 0; i < ticks; i++)
-                {
-                    bool highSpeedCompleted = false;
+        /// <summary>
+        /// 采样主线程侧配置：Inspector 的尺寸覆盖变化 ⇒ 入队 <see cref="SimulationCommandKind.Resize"/>;
+        /// Inspector 的推进开关变化 ⇒ 入队 <see cref="SimulationCommandKind.SetPaused"/>；
+        /// 热力学 / 随机刻 / 调试叠加变化 ⇒ 入队 <see cref="SimulationCommandKind.SetSimulationSettings"/>。
+        /// 三者都只在**真的变了**时入队，因此队列不会被每帧的无意义写入淹没。
+        /// </summary>
+        private void SampleUnityConfiguration()
+        {
+            SimulationFrame frame = CurrentFrame;
+            int width = RequestedWidth;
+            int height = RequestedHeight;
 
-                    // 逻辑帧是运动帧节拍上的一个子节拍：每 logicEvery 个运动帧跑一次「逻辑 + 运动」，
-                    // 其余运动帧只跑运动。因此运动帧 60 Hz、逻辑帧 = 60 / logicEvery。
-                    _motionTicks++;
-                    if (_motionTicks >= logicEvery)
-                    {
-                        _motionTicks = 0;
-                        _world.StepLogic();
+            // 观测到的尺寸已经是目标 ⇒ 在途的 resize 落地了；否则最多补一次（worker 异步推进，
+            // 不补的话新尺寸要等下一帧采样才生效，补多次的话会反复重建世界、把刚播种的内容冲掉）。
+            if (frame != null && frame.World.Width == width && frame.World.Height == height)
+            {
+                _resizeInFlight = false;
+            }
+            else if (!_resizeInFlight || _resizeInFlightWidth != width || _resizeInFlightHeight != height)
+            {
+                _commands.Enqueue(SimulationCommand.Resize(width, height));
+                _resizeInFlight = true;
+                _resizeInFlightWidth = width;
+                _resizeInFlightHeight = height;
+            }
 
-                        // 动物层与世界同节拍推进（物理对世界只读）。放在逻辑帧之后、高速会话转发之前：
-                        // 会话只统计粒子类型，且需要看到与本逻辑帧一致的动物状态。
-                        _creatures.Step(_world);
+            if (_simulate != _sampledSimulate)
+            {
+                _sampledSimulate = _simulate;
+                _commands.Enqueue(SimulationCommand.SetPaused(!_simulate));
+            }
 
-                        // 高速模式：每个逻辑帧给内核会话记一笔（产生/死亡计数 + 每 10 帧采样），
-                        // 跑满时长就地暂停并跳出——世界恰好停在 DurationLogicTicks 这一刻，不越跑。
-                        HighSpeedSession session = _highSpeed;
-                        if (session != null && session.Active)
-                        {
-                            if (!session.Completed)
-                            {
-                                session.OnLogicTick();
-                            }
-
-                            if (session.Completed)
-                            {
-                                Pause();
-                                highSpeedCompleted = true;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        _world.StepMotion();
-                    }
-
-                    // 渲染与模拟解耦的接缝：上屏只在本帧所有运动帧跑完之后决定一次（高倍速下多推无意义）。
-                    _stepsSincePresent++;
-
-                    if (highSpeedCompleted)
-                    {
-                        break;
-                    }
-                }
-                _frameStopwatch.Stop();
-
-                // 回喂实测耗时，供控制器更新「每 tick 多少钱」的 EMA 与自适应档的 AIMD 判断。
-                _lastFrameSimMs = _frameStopwatch.Elapsed.TotalMilliseconds;
-
-                if (_stepsSincePresent >= stepsPerPresent)
-                {
-                    Present();
-                }
+            SimulationTickSettings tick = ReadTickSettings();
+            if (!tick.Equals(_tickSettings))
+            {
+                _tickSettings = tick;
+                _commands.Enqueue(SimulationCommand.SetSimulationSettings(tick));
             }
         }
 
-        private void Present()
+        /// <summary>从设置资产与 Inspector 字段采一份 tick 配置快照（唯一的 Unity 侧配置面）。</summary>
+        private SimulationTickSettings ReadTickSettings()
         {
-            _stepsSincePresent = 0;
+            ParticleSimulationSettings settings = Settings;
+            return new SimulationTickSettings(
+                settings.RandomTicksPerStep,
+                settings.Conductivity,
+                settings.VoidHeatLoss,
+                settings.RadiativeLoss,
+                settings.AdiabaticLapse,
+                settings.AirThermalConductivity,
+                settings.AirThermalEmissivity,
+                _heatDebugOverlay,
+                _heatDebugFullScale);
+        }
+
+        /// <summary>
+        /// 非阻塞地排一批请求：先按预算计划本帧的运动 tick 数，等到有空闲请求槽（worker 没在跑满两批）才把命令
+        /// 与计划数交出去；暂停中只要有命令待发也照样排（否则画笔 / resize / PresentNow 在暂停时会卡住）。
+        /// **任何情况下都不等待 worker**：抢不到槽就放弃本次请求（超预算的欠账按既有「丢时间不追账」语义丢弃）。
+        /// </summary>
+        private void RequestWorkerBatch(SimulationWorker worker, float deltaTime)
+        {
+            SimulationFrame frame = CurrentFrame;
+            bool paused = frame != null && frame.World.Paused;
+            int pending = _commands.PendingCount;
+
+            if (pending == 0 && paused)
+            {
+                // 暂停且无事可做：不发请求，worker 保持空闲（也就不产生无意义的帧）。
+                return;
+            }
+
+            int ticks = paused ? 0 : PlanMotionTicks(deltaTime);
+            if (ticks == 0 && pending == 0)
+            {
+                return;
+            }
+
+            if (!worker.TryAcquireRequestSlot(out int slot))
+            {
+                return;
+            }
+
+            // 本批的请求序号 = worker 侧自增序号的下一个：回执带回来的实测耗时靠它与本批计划配对。
+            _sampledRequestSequence = worker.RequestSequence + 1;
+            worker.RequestBatch(slot, ticks, _speed.EffectiveSpeed, _commands);
+        }
+
+        /// <summary>
+        /// 主线程侧的计划：按真实帧时间、上一批实测耗时与名义帧预算，算出本帧该跑几个运动 tick。
+        /// 预算取 <c>1000 / Application.targetFrameRate</c>（不限帧按 60 兜底）× 预算比例，是**绝对上限**语义。
+        /// </summary>
+        private int PlanMotionTicks(float deltaTime)
+        {
+            ParticleSimulationSettings settings = Settings;
+            int motionRate = Mathf.Max(1, Mathf.RoundToInt(settings.MotionRate));
+            int targetFrameRate = Application.targetFrameRate > 0 ? Application.targetFrameRate : 60;
+            double budgetMs = 1000.0 / targetFrameRate * settings.SpeedBudgetFraction;
+
+            int ticks = _speed.PlanMotionTicks(
+                deltaTime, _lastBatchSimMs, budgetMs, motionRate, settings.LogicTicksPerMotionTick);
+
+            return ticks > SimulationWorker.MaxBatchTicks ? SimulationWorker.MaxBatchTicks : ticks;
+        }
+
+        /// <summary>
+        /// 非阻塞地取回执：把与本次计划配对的实测耗时回喂倍速控制器（不配对的样本按无效样本跳过），
+        /// 并按帧里的高速状态把倍速钉满档 / 钉回 1×。
+        /// </summary>
+        private void DrainResponses(SimulationWorker worker)
+        {
+            while (worker.TryReadResponse(out SimulationBatchResult result))
+            {
+                if (result.RequestSequence == _sampledRequestSequence)
+                {
+                    _lastBatchSimMs = result.SimMs;
+                }
+            }
+
+            SimulationFrame frame = CurrentFrame;
+            if (frame == null)
+            {
+                return;
+            }
+
+            bool active = frame.HighSpeed.Active;
+            if (active != _highSpeedPinned)
+            {
+                _highSpeedPinned = active;
+                _speed.SetSpeed(active ? _speed.MaxSpeedLimit : _speed.MinSpeedLimit);
+            }
+        }
+
+        /// <summary>
+        /// 消费最新已发布帧：**只有新帧**（换了发布器 / 序号前进）才走渲染上传；上传本身是主线程的 Unity 纹理操作
+        /// （世界 → 像素的映射早已在 worker 上完成）。resize 换了尺寸时 <see cref="ParticleRenderer.Present(RenderFrame)"/>
+        /// 会自己重建纹理与网格并重新框镜头。
+        /// </summary>
+        private void ConsumeFrame(SimulationWorker worker)
+        {
+            SimulationFrame frame = worker.CurrentFrame;
+            if (frame == null)
+            {
+                return;
+            }
+
+            if (ReferenceEquals(frame, _presentedFrame)
+                && frame.Sequence == _presentedSequence
+                && frame.Generation == _presentedGeneration)
+            {
+                return;
+            }
+
+            _presentedFrame = frame;
+            _presentedSequence = frame.Sequence;
+            _presentedGeneration = frame.Generation;
+
             if (_renderer != null)
             {
-                _renderer.Present(_world);
+                _renderer.Present(frame.Render);
+            }
+        }
+
+        /// <summary>把 worker 的故障在主线程报出来（每个新故障一次）；worker 自己绝不调 Unity 日志。</summary>
+        private void SurfaceWorkerFault(SimulationWorker worker)
+        {
+            int count = worker.FaultCount;
+            if (count <= _reportedFaults)
+            {
+                return;
+            }
+
+            _reportedFaults = count;
+            Debug.LogError(
+                $"[ParticleSimulationDriver] 模拟 worker 故障，已停止推进模拟：{worker.Fault}");
+        }
+
+        /// <summary>
+        /// 把世界产生的诊断消息（未注册类型 / shade 越界等）在主线程记出来——消息本身由 worker 线程产生，
+        /// 但 Unity 日志只能在主线程调（见 <c>ParticleWorld.MessageSink</c> 与 <c>SimulationWorker.TryReadWorldMessage</c>）。
+        /// </summary>
+        private void DrainWorldMessages(SimulationWorker worker)
+        {
+            while (worker.TryReadWorldMessage(out string message))
+            {
+                Debug.LogError(message);
             }
         }
     }

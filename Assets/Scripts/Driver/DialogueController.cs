@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using TapTap2026.Simulation;
 using UnityEngine;
 
 namespace TapTap2026.Game
@@ -432,6 +433,11 @@ namespace TapTap2026.Game
 
         // ============================== 暂停 / 输入屏蔽 ==============================
 
+        /// <summary>
+        /// 对话开始时暂停模拟：只在**当前没暂停**时才记「暂停是本对话造成的」，避免把玩家自己的暂停
+        /// 当成自己的账。暂停状态读最新已发布帧（<see cref="WorldFrame.Paused"/>），写入走
+        /// <see cref="SimulationCommandKind.SetPaused"/> 命令（驱动在下一个 tick 边界应用）。
+        /// </summary>
         private void PauseSimulation()
         {
             if (_driver == null)
@@ -440,21 +446,29 @@ namespace TapTap2026.Game
                 return;
             }
 
-            _pausedByDialogue = !_driver.Paused;
+            _pausedByDialogue = !IsSimulationPaused();
             if (_pausedByDialogue)
             {
-                _driver.Pause();
+                _driver.Submit(SimulationCommand.SetPaused(true));
             }
         }
 
+        /// <summary>对话结束时恢复模拟：只恢复「本对话暂停的」那次（玩家自己的暂停不动）。</summary>
         private void ResumeSimulation()
         {
             if (_driver != null && _pausedByDialogue)
             {
-                _driver.Resume();
+                _driver.Submit(SimulationCommand.SetPaused(false));
             }
 
             _pausedByDialogue = false;
+        }
+
+        /// <summary>模拟当前是否暂停（读最新已发布帧；驱动尚未发布过帧时按「未暂停」处理）。</summary>
+        private bool IsSimulationPaused()
+        {
+            SimulationFrame frame = _driver != null ? _driver.CurrentFrame : null;
+            return frame != null && frame.World.Paused;
         }
 
         private void SetEditorSuppressed(bool suppressed)

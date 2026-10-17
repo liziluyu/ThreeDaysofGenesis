@@ -36,6 +36,13 @@ namespace TapTap2026.Simulation
         /// <summary>死亡委托。</summary>
         public readonly ParticleKillDelegate OnKill;
 
+        /// <summary>
+        /// <see cref="ParticleTypeInfo.Palette"/> 的**纯值镜像**（长度与每个字节都相同，注册时一次；见
+        /// <see cref="RenderColorConversion.FromPalette"/>）：worker 侧光栅化的唯一取色来源，
+        /// 因此渲染路径不认识 Unity <c>Color32</c>。源调色板本身不改——授权面仍是 <c>Color32[]</c>。
+        /// </summary>
+        public readonly RenderColor[] RenderPalette;
+
         public ParticleType(
             ushort id,
             ParticleTypeInfo info,
@@ -54,6 +61,7 @@ namespace TapTap2026.Simulation
             OnRandomTick = onRandomTick;
             OnSpawn = onSpawn;
             OnKill = onKill;
+            RenderPalette = RenderColorConversion.FromPalette(info.Palette);
         }
     }
 }

@@ -12,7 +12,9 @@ namespace TapTap2026.Tests
     /// <summary>
     /// 投放选择的公开契约（<see cref="ParticleSelectionEntry"/> + <see cref="ParticleEditor"/> 的选择 API）：
     /// 列表构成（先粒子后动物、白名单过滤）、按名字 / typeId / 下标选择、越界与陈旧实例的拒绝、
-    /// 右键循环、<see cref="ParticleEditor.SelectionChanged"/> 的触发时机，以及阶段投放名单重建列表的语义。
+    /// 右键循环、<see cref="ParticleEditor.SelectionChanged"/> 的触发时机、阶段投放名单重建列表的语义，
+    /// 以及 ProbeText 的显示口径（<see cref="ParticleEditor.ComposeProbeLine"/> 的三段优先级与
+    /// <see cref="ParticleEditor.DescribeHighSpeedRunning"/> 的固定格式）。
     /// </summary>
     /// <remarks>
     /// 只读选择状态、只调选择 API——不碰需要世界或场景的入口（<c>Paint</c> / <c>SpawnCreature</c> /
@@ -339,21 +341,63 @@ namespace TapTap2026.Tests
             }
         }
 
-        /// <summary>光标格读数是中文的：粒子中文名 + 温度 / 热量 / 湿度三个中文标签；空气格显示「空气」。</summary>
+        /// <summary>光标格读数是中文的：粒子中文名 + 温度 / 热量 / 湿度三个中文标签；空气格显示「空气」。
+        /// 读数取自**帧里的探针快照**（<see cref="WorldFrame.Probe"/>），测试因此按生产路径采一帧再读。</summary>
         [Test]
         public void DescribeCell_UsesChineseNameAndLabels()
         {
             var world = new ParticleWorld(8, 8, 20261015u);
             world.Set(4, 4, ParticleIds.Water);
 
-            string water = ParticleEditor.DescribeCell(world, 4, 4);
+            var frames = new FramePump();
+            SimulationFrame frame = frames.PublishProbe(world, 4, 4);
+
+            string water = ParticleEditor.DescribeCell(frame.World.Probe);
             StringAssert.Contains("水", water, "显示该格粒子的中文名");
             StringAssert.Contains("温度=", water);
             StringAssert.Contains("热量=", water);
             StringAssert.Contains("湿度=", water);
 
-            string air = ParticleEditor.DescribeCell(world, 0, 0);
+            string air = ParticleEditor.DescribeCell(frames.PublishProbe(world, 0, 0).World.Probe);
             StringAssert.Contains("空气", air, "空气格显示「空气」");
+        }
+
+        /// <summary>ProbeText 的高速状态行是**用户指定的固定格式**：状态词 + 实测倍速 + 地表温度 + 湿度。</summary>
+        [Test]
+        public void DescribeHighSpeedRunning_FixedFormat()
+        {
+            Assert.AreEqual("正在运转 ×7.6 地表 12.3° 湿度 0.456",
+                ParticleEditor.DescribeHighSpeedRunning(7.6f, 12.3f, 0.456f),
+                "倍速一位小数、温度一位小数带度、湿度三位小数");
+
+            Assert.AreEqual("正在运转 ×1.0 地表 -- 湿度 --",
+                ParticleEditor.DescribeHighSpeedRunning(1f, float.NaN, float.NaN),
+                "温度和湿度未采样（NaN）时都显示 --，不猜数字");
+
+            Assert.AreEqual("正在运转 ×16.0 地表 20.0° 湿度 0.000",
+                ParticleEditor.DescribeHighSpeedRunning(16f, 20f, 0f),
+                "小数位固定：整数值也照写一位 / 三位");
+        }
+
+        /// <summary>ProbeText 的三段优先级：高速状态行 &gt; 悬停的投放项名 &gt; 光标格读数。</summary>
+        [Test]
+        public void ComposeProbeLine_PrefersRunningStatusThenHoveredName()
+        {
+            Assert.AreEqual("状态行",
+                ParticleEditor.ComposeProbeLine("状态行", "投放项名", "格读数"),
+                "三段都有时高速状态行胜出（会话期间编辑被锁，状态行是此刻唯一有意义的读数）");
+
+            Assert.AreEqual("投放项名",
+                ParticleEditor.ComposeProbeLine(null, "投放项名", "格读数"),
+                "没有高速状态行时悬停的投放项名胜出（指针停在按钮上时底下那格的读数没有意义）");
+
+            Assert.AreEqual("格读数",
+                ParticleEditor.ComposeProbeLine(null, null, "格读数"),
+                "只有光标格读数时照旧显示（既有行为不变）");
+
+            Assert.AreEqual(string.Empty,
+                ParticleEditor.ComposeProbeLine(null, string.Empty, null),
+                "三段皆空（null 与空串一视同仁）时给空串，不是 null");
         }
 
         /// <summary>该 typeId 的可投粒子项显示名是 <paramref name="displayName"/>，且类名是同一类型（按名字两种写法都能选中）。</summary>

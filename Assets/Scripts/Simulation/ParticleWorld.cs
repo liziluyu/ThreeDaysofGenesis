@@ -156,6 +156,14 @@ namespace TapTap2026.Simulation
         /// </summary>
         internal HighSpeedMonitor _monitor;
 
+        /// <summary>
+        /// 诊断消息的出口：**诊断消息由世界产生、由持有者转发**。
+        /// <c>null</c> = 无人接管（测试 / 主线程直接使用世界）⇒ 当场 <see cref="Debug.LogError(string)"/>，与既有行为一致；
+        /// 非 null（模拟 worker 接管）⇒ 只调这个委托，世界**绝不直接碰 Unity 日志**——Unity 日志只能在主线程调，
+        /// 而世界在阶段 3 起是跑在 worker 线程上的。
+        /// </summary>
+        internal Action<string> MessageSink;
+
         /// <summary>使用全局注册表 <see cref="ParticleRegistry.Types"/> 创建世界。</summary>
         public ParticleWorld(int width, int height, uint seed)
             : this(width, height, seed, ParticleRegistry.Types)
@@ -968,7 +976,7 @@ namespace TapTap2026.Simulation
             }
             else
             {
-                Color32[] palette = type.Info.Palette;
+                RenderColor[] palette = type.RenderPalette;
                 cell.shade = (byte)(NextUInt() % (uint)palette.Length);
             }
 
@@ -1163,7 +1171,7 @@ namespace TapTap2026.Simulation
             }
             else
             {
-                Color32[] palette = _types[typeId].Info.Palette;
+                RenderColor[] palette = _types[typeId].RenderPalette;
                 cell.shade = (byte)(NextUInt() % (uint)palette.Length);
             }
 
@@ -2280,7 +2288,7 @@ namespace TapTap2026.Simulation
             }
 
             _unknownTypeReported = true;
-            Debug.LogError(
+            Report(
                 $"[ParticleWorld] 未注册的 typeId {typeId} 被写入网格，已忽略。请确认 ParticleRegistration.RegisterAll() 已执行。");
         }
 
@@ -2296,8 +2304,21 @@ namespace TapTap2026.Simulation
             }
 
             _invalidShadeReported = true;
-            Debug.LogError(
+            Report(
                 $"[ParticleWorld] SetWithShade 的 shade {shade} 超出类型 {typeId} 的调色板范围，已忽略本次写入。");
+        }
+
+        /// <summary>把一条诊断消息交给持有者（worker）或直接记日志（无人接管时），见 <see cref="MessageSink"/>。</summary>
+        private void Report(string message)
+        {
+            Action<string> sink = MessageSink;
+            if (sink != null)
+            {
+                sink(message);
+                return;
+            }
+
+            Debug.LogError(message);
         }
     }
 }

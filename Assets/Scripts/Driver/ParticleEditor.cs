@@ -14,11 +14,11 @@ namespace TapTap2026.Game
     /// 都是可在编辑器里摆放的场景对象。
     /// **按住左键**用当前选中项填满鼠标处半径 <see cref="BrushRadius"/> 的圆（选中动物物种时改为**在鼠标格放置一只实体**）；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
     /// **右键**在可投放项间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷；
-    /// **末尾接动物物种**兔子 / 鱼，见 <see cref="CreatureFactories"/>）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
+    /// **末尾接动物物种**兔子 / 鱼 / 鸟，见 <see cref="CreatureSpawns"/>）；鼠标旁常驻色块 + 类型名 + 半径，显示当前正在投放的是哪一种、多大；
     /// 光标处另有一圈**白色像素圆**标出笔刷足迹——半径 = 当前笔刷半径，圈上的格恰好是左键会写到的格；
     /// 它画在**像素场景的顶层**（渲染器的一层 sprite，1 像素 = 1 格，与格子逐格对齐、压在所有像素之上，见
     /// <see cref="ParticleRenderer.SetBrushOutline"/>），随 <see cref="_drawHud"/> 一起开关；
-    /// **空格**暂停/恢复整个模拟（调驱动的 <see cref="ParticleSimulationDriver.Pause"/> / <see cref="ParticleSimulationDriver.Resume"/>）；
+    /// **空格**暂停/恢复整个模拟（提交 <see cref="SimulationCommand.SetPaused"/> 命令，见 <see cref="SubmitPaused"/>）；
     /// **按住左方向键 / A**、**按住右方向键 / D** 把相机在沙箱内左右平移（视口始终夹在网格左右边界内，移不出沙箱；
     /// 平移只动相机、不碰世界，因此暂停中与高速模式中都能用）；
     /// **H** 进入**高速模式**（倍速钉满档 16×、锁编辑，跑满设置资产的高速时长自动暂停并在屏幕中央显示产生/死亡结算，
@@ -27,7 +27,7 @@ namespace TapTap2026.Game
     /// 普通编辑模式**不能调模拟速度**（恒 1×，速度只由高速模式改变）；
     /// **右上角光照面板**：一个 0..30 的**强度滑块** + 两行**秒读数**（白天 / 夜晚）+ 两行按秒步进按钮，
     /// 都直接写 <see cref="ParticleLightDriver"/> 的**强度 / 亮相位刻数 / 暗相位刻数**
-    /// （驱动器是这三个值的唯一配置面、每帧写回 <c>world.Light</c>，写世界会被下一帧覆盖），改完即时生效；
+    /// （驱动器是这三个值的唯一配置面，变化时才提交 <see cref="SimulationCommandKind.SetLightSettings"/> 命令），改完即时生效；
     /// 面板里没有文本输入，键盘热键不必再为它让位，但**使用 HUD 面板期间（指针落在
     /// 光照面板 / 按钮面板矩形内）屏蔽左键投放/擦除**——点按钮、拖滑块都不会顺手在底下画一笔；
     /// 对话激活时面板变灰不可编辑，**高速模式则整块锁死**——进入会话即强制隐藏（会话结果依赖光照输入），
@@ -35,22 +35,28 @@ namespace TapTap2026.Game
     /// **清除模式**（按住 <c>E</c> 即进、松开即退；投放面板的「清除」按钮翻转它，见 <see cref="EraseMode"/> / <see cref="ToggleEraseMode"/>）下按左键改为擦除：把鼠标处半径 <see cref="BrushRadius"/> 内的粒子清成空气（不切换当前投放项）；
     /// **L** 等价于点场景里的**光照按钮**——翻转右上角光照面板的显隐（<see cref="ToggleLightPanel"/>，热键 <see cref="_lightPanelKey"/>；
     /// 高速模式期间与按钮一样被拒绝）；
-    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子中文名、温度、热量与湿度；
+    /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子中文名、温度、热量与湿度——ProbeText 显示的其实是
+    /// **高速状态行 &gt; 悬停的投放项名 &gt; 光标格读数**三段按优先级取一（悬停名字由投放面板经
+    /// <see cref="SetHoveredSelection"/> 上报，判据见 <see cref="ComposeProbeLine"/>）；
     /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
     /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
     /// （网格 quad 挂在它的 transform 下，1 cell = 1 unit，无旋转与缩放）。</para>
-    /// <para>写入一律走 <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.Clear"/>：世界会把新格标记成「本 tick 未处理」，
-    /// 因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
-    /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者），本类只管输入与显示：
-    /// <see cref="ParticleSimulationDriver.HighSpeedActive"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
-    /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、光照面板热键、相机平移与只读读数——锁的是编辑，看视角不锁。</para>
+    /// <para><b>本类不写世界</b>：投放 / 擦除 / 生成实体 / 暂停 / 相机外的读数一律走
+    /// <see cref="ParticleSimulationDriver.Submit"/>（值类型命令，在下一个 tick 边界按序应用）。
+    /// 世界会把新格标记成「本 tick 未处理」，因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
+    /// <para><b>只读入口</b>：光标格读数取自 <see cref="ParticleSimulationDriver.CurrentFrame"/>（世界面向帧里的探针快照），
+    /// 高速读数 / 结算取自同一帧的 <see cref="SimulationFrame.HighSpeed"/>——本类因此拿不到、也不读活世界。</para>
+    /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者，world 私有），本类只管输入与显示：
+    /// 帧里的 <see cref="HighSpeedFrame.Active"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
+    /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、光照面板热键、相机平移与只读读数——锁的是编辑，看视角不锁。
+    /// 进入 / 退出分别提交 <see cref="SimulationCommandKind.EnterHighSpeed"/> / <see cref="SimulationCommandKind.ExitHighSpeed"/> 命令。</para>
     /// <para>阶段限制：<see cref="SetPlacementFilter"/> 由 <see cref="GameController"/> 在阶段启动时按 JSON 调用，
     /// 与 Inspector 白名单取交集（只缩小、不放开）；清空（null / 空数组）即恢复默认白名单。</para>
-    /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段而不是 <c>world.Light</c>：
-    /// 该组件每帧把字段写回世界，写世界会被下一帧覆盖。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
+    /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段：该组件是这三个值的唯一配置面，
+    /// 变化时才把整份配置作为命令提交给驱动。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
     /// <para>按钮入口（给场景里的 uGUI 按钮 <c>onClick</c> 接线）：<see cref="TogglePauseMenu"/>（开关暂停界面 +
     /// 暂停 / 恢复模拟）、<see cref="ToggleLightPanel"/>（开关光照面板）、<see cref="EnterHighSpeedMode"/>（进入高速模式）。
     /// 投放面板（<c>HUD Canvas/ParticlePanel</c>）的按钮走 <see cref="SelectByName"/> /
@@ -130,26 +136,14 @@ namespace TapTap2026.Game
 
         /// <summary>
         /// 可投放的动物物种：投放选择里**排在所有粒子类型之后**（见 <see cref="Selections"/>），
-        /// 选中后左键放置产出**实体**而不是格（见 <see cref="SpawnCreature"/>）。
+        /// 选中后左键放置改为提交 <see cref="SimulationCommandKind.SpawnCreature"/> 命令（见 <see cref="SubmitPlacement"/>）。
         /// </summary>
         /// <remarks>
-        /// 只列工厂——显示名 / 占位色 / 类名取自原型实例（<see cref="Creature.DebugName"/> /
-        /// <see cref="Creature.PlaceholderColor"/>），物种元数据的唯一真源留在 <see cref="Creature"/> 派生类里，
-        /// 这里不再抄一份。兔子 / 鱼 / 鸟是**预定全集**里的三个。
+        /// 物种表在 <see cref="CreatureSpawns"/>（与命令应用共用一份真源）；显示名 / 占位色 / 类名取自原型实例
+        /// （<see cref="Creature.DebugName"/> / <see cref="Creature.PlaceholderColor"/>），物种元数据的唯一真源
+        /// 留在 <see cref="Creature"/> 派生类里，这里不再抄一份。
         /// 动物投放不看粒子白名单与阶段投放名单（<see cref="SetPlacementFilter"/> 只管粒子）。
         /// </remarks>
-        private static readonly Func<Creature>[] CreatureFactories =
-        {
-            () => new RabbitCreature(),
-            () => new FishCreature(),
-            () => new BirdCreature(),
-        };
-
-        /// <summary>
-        /// 各动物物种的原型实例（<see cref="Awake"/> 里从 <see cref="CreatureFactories"/> 现建一份）：
-        /// 物种元数据（<see cref="Creature.DebugName"/> / <see cref="Creature.PlaceholderColor"/> / 类名）的
-        /// **唯一真源**——建 <see cref="Selections"/> 与按类名查找都读它，不再另抄一份平行数组。
-        /// </summary>
         private Creature[] _creaturePrototypes;
 
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
@@ -178,14 +172,28 @@ namespace TapTap2026.Game
         private Color _hudColor;
         private string _probeText;
 
+        /// <summary>投放面板（<see cref="ParticleSelectionPanel"/>）的悬停上报（见 <see cref="SetHoveredSelection"/>）：
+        /// 非 null 时 ProbeText 改显示它的 <see cref="ParticleSelectionEntry.DisplayName"/>；null = 没人在悬停。</summary>
+        private ParticleSelectionEntry _hoveredSelection;
+
         /// <summary>光标是否落在网格内，以及光标格——<see cref="ProbeCell"/> 用同一次射线投影顺手记下
         /// （不重复算），<see cref="ApplyBrushOutline"/> 据此摆笔刷轮廓叠层。</summary>
         private bool _hoverCellValid;
         private int _hoverCellX;
         private int _hoverCellY;
 
+        /// <summary>上一次向驱动请求的探针格与请求时的世界 tick（见 <see cref="ProbeCell"/> 的重发判据）。</summary>
+        private bool _probedCellValid;
+        private int _probedCellX;
+        private int _probedCellY;
+        private int _probedTick;
+
         private string _highSpeedHudText;
         private string[] _highSpeedReportLines;
+
+        /// <summary>ProbeText 上的高速状态行（<see cref="DescribeHighSpeedRunning"/> 的产物）；
+        /// 不在高速会话中为 null——它是 <see cref="ComposeProbeLine"/> 三段里的最高优先级那段。</summary>
+        private string _highSpeedProbeText;
 
         /// <summary>结算行末尾那一行是不是胜负结论（<see cref="BuildHighSpeedReport"/> 时确定）。</summary>
         private bool _highSpeedReportHasVerdict;
@@ -225,9 +233,19 @@ namespace TapTap2026.Game
         public const float SinglePlacementCooldownSeconds = 0.5f;
 
         /// <summary>编辑是否被锁住：对话激活（<see cref="SuppressInput"/>）或高速模式进行中
-        /// （<see cref="ParticleSimulationDriver.HighSpeedActive"/>）。投放面板据此把整排按钮变灰不可点
+        /// （帧里的 <see cref="HighSpeedFrame.Active"/>）。投放面板据此把**可见的**按钮变灰不可点
         /// （与 <see cref="SandboxHud.SetLightPanelInteractable"/> 同一条判据）。</summary>
-        public bool EditingLocked { get { return SuppressInput || (_driver != null && _driver.HighSpeedActive); } }
+        public bool EditingLocked { get { return SuppressInput || HighSpeedActive; } }
+
+        /// <summary>高速模式是否进行中（读最新已发布帧；驱动尚未发布过帧时为 false）。</summary>
+        private bool HighSpeedActive
+        {
+            get
+            {
+                SimulationFrame frame = _driver != null ? _driver.CurrentFrame : null;
+                return frame != null && frame.HighSpeed.Active;
+            }
+        }
 
         /// <summary>是否处于**清除模式**：为真时左键走 <see cref="Erase"/>（在同一半径内清成空气）而不是投放。
         /// 键盘上按住 <c>E</c> 即进、松开即退；投放面板的「清除」按钮翻转它（<see cref="ToggleEraseMode"/>）。</summary>
@@ -371,6 +389,34 @@ namespace TapTap2026.Game
             return false;
         }
 
+        /// <summary>
+        /// 投放面板报进来的**悬停投放项**（见 <see cref="SetHoveredSelection"/>）：非 null 时 ProbeText 改显示它的
+        /// <see cref="ParticleSelectionEntry.DisplayName"/>；没人在悬停时为 null。
+        /// </summary>
+        /// <remarks>只读：悬停只影响显示来源，不改投放选择（<see cref="CurrentSelection"/> 仍由
+        /// <see cref="Select(ParticleSelectionEntry)"/> 等入口决定）。</remarks>
+        public ParticleSelectionEntry HoveredSelection { get { return _hoveredSelection; } }
+
+        /// <summary>
+        /// 投放面板（<c>ParticleSelectionPanel</c>）的悬停入口：指针停在某颗投放按钮上时把那一项报进来，
+        /// 指针移开或面板收起时报 null（撤下）。
+        /// </summary>
+        /// <remarks>
+        /// 只改**显示来源**，不动投放选择；同一实例重复上报不动作（面板每帧都会再报一次，见
+        /// <see cref="ParticleSelectionPanel.Refresh"/>）。这里**不**主动推 HUD——值变了下一帧
+        /// <see cref="PushHud"/> 自然带上，免得面板的 PointerEnter / PointerExit（跑在 EventSystem 里）
+        /// 在帧中途插一次上屏。
+        /// </remarks>
+        public void SetHoveredSelection(ParticleSelectionEntry entry)
+        {
+            if (ReferenceEquals(_hoveredSelection, entry))
+            {
+                return;
+            }
+
+            _hoveredSelection = entry;
+        }
+
         private void Awake()
         {
             if (_driver == null)
@@ -440,11 +486,12 @@ namespace TapTap2026.Game
                 return;
             }
 
-            // 动物物种的原型实例：显示名 / 占位色 / 类名都取自它，物种差异的唯一真源在 Creature 派生类里。
-            _creaturePrototypes = new Creature[CreatureFactories.Length];
-            for (int i = 0; i < CreatureFactories.Length; i++)
+            // 动物物种的原型实例：显示名 / 占位色 / 类名都取自它，物种差异的唯一真源在 Creature 派生类里；
+            // 物种全集与生成共用同一张表（CreatureSpawns），因此这里与命令应用不会漂移。
+            _creaturePrototypes = new Creature[CreatureSpawns.Count];
+            for (int i = 0; i < CreatureSpawns.Count; i++)
             {
-                _creaturePrototypes[i] = CreatureFactories[i]();
+                _creaturePrototypes[i] = CreatureSpawns.Create(i);
             }
 
             _selections = BuildSelections();
@@ -499,14 +546,14 @@ namespace TapTap2026.Game
                 return;
             }
 
-            bool highSpeedActive = _driver != null && _driver.HighSpeedActive;
+            bool highSpeedActive = HighSpeedActive;
 
             _hud.SetHudVisible(_drawHud);
             _hud.SetPauseMenuVisible(_drawHud && _pauseMenuVisible);
             // 高速模式**强制隐藏**光照面板（会话结果依赖光照输入，见 SetLightPanelVisible 的锁）：
             // 不管 _lightPanelVisible 记着什么，会话进行中都不显示——退出后按原状态恢复。
             _hud.SetLightPanelVisible(_drawHud && _lightPanelVisible && !highSpeedActive);
-            _hud.SetProbeText(_drawHud ? _probeText : null);
+            _hud.SetProbeText(_drawHud ? BuildProbeLine() : null);
             _hud.SetCursorHint(_hudText, _hudColor);
             _hud.SetHighSpeedStatus(_drawHud && highSpeedActive ? _highSpeedHudText : null);
 
@@ -524,6 +571,43 @@ namespace TapTap2026.Game
             _hud.SetLightPanelInteractable(!EditingLocked);
         }
 
+        /// <summary>ProbeText 当前该显示的那一段（三段按优先级取一，判据见 <see cref="ComposeProbeLine"/>）。</summary>
+        private string BuildProbeLine()
+        {
+            return ComposeProbeLine(
+                _highSpeedProbeText,
+                _hoveredSelection != null ? _hoveredSelection.DisplayName : null,
+                _probeText);
+        }
+
+        /// <summary>
+        /// ProbeText 的内容按优先级取一：**高速状态行 &gt; 悬停的投放项名 &gt; 光标格读数**（三段都空则空文本）。
+        /// </summary>
+        /// <param name="highSpeedLine">高速会话运行中的状态行（<see cref="DescribeHighSpeedRunning"/>）；不在会话中为 null。</param>
+        /// <param name="hoveredName">投放面板报上来的悬停项显示名（见 <see cref="SetHoveredSelection"/>）；没人在悬停为 null。</param>
+        /// <param name="cellReadout">光标格读数（见 <see cref="ProbeCell"/>）；光标在视口外时也有值。</param>
+        /// <remarks>
+        /// 两条优先级都来自「哪一段此刻才说得通」：① 高速会话跑着时编辑被锁
+        /// （<see cref="EditingLocked"/>）、投放面板点不动，状态行是此刻唯一有意义的读数；
+        /// ② 指针停在投放按钮上时光标格读数（面板底下的格子）没有意义，该按钮绑定的投放项名才是玩家在问的。
+        /// 空串与 null 一视同仁（HUD 的空文本就是「不显示」，见 <see cref="SandboxHud.SetProbeText"/> 的去重口径），
+        /// 因此返回的要么是这三段之一，要么是 <see cref="string.Empty"/>，不会是空白串。
+        /// </remarks>
+        public static string ComposeProbeLine(string highSpeedLine, string hoveredName, string cellReadout)
+        {
+            if (!string.IsNullOrEmpty(highSpeedLine))
+            {
+                return highSpeedLine;
+            }
+
+            if (!string.IsNullOrEmpty(hoveredName))
+            {
+                return hoveredName;
+            }
+
+            return string.IsNullOrEmpty(cellReadout) ? string.Empty : cellReadout;
+        }
+
         /// <summary>编辑输入：热键、相机平移、光标读数、切类型 / 调半径 / 投放 / 擦除。</summary>
         private void UpdateEditing()
         {
@@ -537,29 +621,21 @@ namespace TapTap2026.Game
                 return;
             }
 
-            ParticleWorld world = _driver.World;
-            if (world == null)
+            SimulationFrame frame = _driver.CurrentFrame;
+            if (frame == null)
             {
                 return;
             }
 
             // 高速模式热键：不在模式中时按 H 进入；结算完成后按 Enter（或 H）确认退出。
-            HandleHighSpeedKeys();
+            HandleHighSpeedKeys(frame);
 
-            RefreshHighSpeed();
+            RefreshHighSpeed(frame);
 
-            // 暂停热键：这里只负责「按下了就切一下」，
-            // 具体冻结/恢复由驱动暴露的 Pause()/Resume() 执行（驱动不认识输入）。高速模式中也保留。
+            // 暂停热键：这里只负责「按下了就切一下」，具体冻结/恢复由驱动在下一 tick 边界应用 SetPaused 命令。
             if (_pauseKey != KeyCode.None && Input.GetKeyDown(_pauseKey))
             {
-                if (_driver.Paused)
-                {
-                    _driver.Resume();
-                }
-                else
-                {
-                    _driver.Pause();
-                }
+                SubmitPaused(!frame.World.Paused);
             }
 
             // 光照面板热键：与场景里的「光照」按钮同一个入口（ToggleLightPanel）——因此按钮改语义时热键跟着改，
@@ -572,14 +648,14 @@ namespace TapTap2026.Game
 
             // 相机平移：只动相机、不碰世界，所以放在高速模式的锁编辑拦截**之前**——
             // 高速模式锁的是编辑，观看视角（平移 + 光标读数）跟着解锁一起禁用没有意义。
-            UpdateCameraPan(world);
+            UpdateCameraPan(frame.World.Width);
 
             // 高速模式锁编辑：在这里**统一拦截**——右键切换、滚轮调半径、左键投放/擦除一概跳过，
             // 只保留上面的空格暂停、光照面板热键（模式期间被锁死，按了也不会打开面板）与下面只读的光标读数。
             // 不是每个输入分支各加一个判断。
-            if (_driver.HighSpeedActive)
+            if (frame.HighSpeed.Active)
             {
-                ProbeCell(world, Input.mousePosition);
+                ProbeCell(frame, Input.mousePosition);
 
                 // 锁编辑时不画笔刷轮廓：白圈会被读成「这里能落笔」（只读光标读数照旧）。
                 _hoverCellValid = false;
@@ -589,7 +665,7 @@ namespace TapTap2026.Game
             // 普通编辑模式不允许调模拟速度（恒 1×）——速度只由高速模式钉 16× / 退出回 1×，
             // 因此这里没有 = / - / Tab 的热键处理；SpeedController 的档位 API 只被内核会话调用。
 
-            ProbeCell(world, Input.mousePosition);
+            ProbeCell(frame, Input.mousePosition);
 
             if (Input.GetMouseButtonDown(1))
             {
@@ -627,28 +703,102 @@ namespace TapTap2026.Game
 
             if (!pointerOverPanel
                 && Input.GetMouseButton(0)
-                && TryGetCell(Input.mousePosition, world, out int x, out int y))
+                && TryGetCell(Input.mousePosition, frame.World.Width, frame.World.Height, out int x, out int y))
             {
-                // 清除模式（E 按住或面板「清除」槽）：改走擦除（按住的整段时间都擦），不改当前投放项。
-                if (_eraseMode)
+                SubmitPlacement(x, y);
+            }
+        }
+
+        /// <summary>
+        /// 在 (cx, cy) 落一笔：清除模式走 <see cref="SimulationCommandKind.EraseDisk"/>，
+        /// 选中动物物种走 <see cref="SimulationCommandKind.SpawnCreature"/>，否则走
+        /// <see cref="SimulationCommandKind.PaintDisk"/>（单颗投放白名单的类型由命令里的 Flag 表达）。
+        /// </summary>
+        /// <remarks>
+        /// 单颗投放 / 生成实体的 <see cref="SinglePlacementCooldownSeconds"/> 冷却在这里判——它是**输入节流**（按住左键
+        /// 不该每帧落一颗），因此归输入侧；真正写世界的是驱动在下一 tick 边界应用的命令。
+        /// 暂停中画完还要补一条 <see cref="SimulationCommandKind.PresentNow"/>：命令同批入队，
+        /// 驱动按序应用后再发布帧，因此刚画下去的东西当帧就能看到。
+        /// </remarks>
+        /// <returns>是否真的入队了一条投放 / 擦除命令（冷却中或无可投项时 false）。</returns>
+        public bool SubmitPlacement(int cx, int cy)
+        {
+            if (_driver == null)
+            {
+                return false;
+            }
+
+            // 清除模式（E 按住或面板「清除」槽）：纯擦除，不看当前投放项、不受单颗白名单影响。
+            if (_eraseMode)
+            {
+                _driver.Submit(SimulationCommand.EraseDisk(cx, cy, BrushRadius));
+                SubmitPresentNowIfPaused();
+                return true;
+            }
+
+            ParticleSelectionEntry selection = CurrentSelection;
+            if (selection == null)
+            {
+                // 没有任何可投项：没有东西可画。
+                return false;
+            }
+
+            if (selection.IsCreature)
+            {
+                // 选中动物物种：生成一只实体（不写格），与单颗投放共用冷却。
+                if (!TryConsumeSinglePlacement())
                 {
-                    Erase(world, x, y);
-                }
-                else if (CurrentSelection != null && CurrentSelection.IsCreature)
-                {
-                    // 选中动物物种：放置产出实体、不写格（因此暂停时也无所谓上屏）。
-                    SpawnCreature(world, x, y);
-                }
-                else
-                {
-                    Paint(world, x, y);
+                    return false;
                 }
 
-                // 暂停时驱动不会自己上屏，不补这一下就看不到刚画下去的东西。
-                if (!_driver.Simulate)
-                {
-                    _driver.PresentNow();
-                }
+                _driver.Submit(SimulationCommand.SpawnCreature(selection.CreatureIndex, cx, cy));
+                SubmitPresentNowIfPaused();
+                return true;
+            }
+
+            // 单颗投放类（草种子 / 树木种子）与生成实体共用冷却：按住左键也只会每 500ms 落一颗。
+            if (selection.SinglePlacement && !TryConsumeSinglePlacement())
+            {
+                return false;
+            }
+
+            _driver.Submit(SimulationCommand.PaintDisk(
+                cx, cy, BrushRadius, selection.TypeId, selection.SinglePlacement, _treeSpecies));
+            SubmitPresentNowIfPaused();
+            return true;
+        }
+
+        /// <summary>暂停中改了世界后提交一次立即上屏（推进中不必：下一帧自然会发布）。</summary>
+        private void SubmitPresentNowIfPaused()
+        {
+            SimulationFrame frame = _driver.CurrentFrame;
+            if (frame != null && frame.World.Paused)
+            {
+                _driver.Submit(SimulationCommand.PresentNow());
+            }
+        }
+
+        /// <summary>
+        /// 单颗投放 / 生成实体的冷却闸门：冷却未到返回 false，否则记下本次时间并返回 true。
+        /// 用 <see cref="Time.unscaledTime"/>——冷却按真实时间流逝，暂停时也照常计时。
+        /// </summary>
+        private bool TryConsumeSinglePlacement()
+        {
+            if (Time.unscaledTime - _lastSinglePlacementTime < SinglePlacementCooldownSeconds)
+            {
+                return false;
+            }
+
+            _lastSinglePlacementTime = Time.unscaledTime;
+            return true;
+        }
+
+        /// <summary>提交暂停 / 恢复命令（值类型：驱动在下一 tick 边界应用）。</summary>
+        public void SubmitPaused(bool paused)
+        {
+            if (_driver != null)
+            {
+                _driver.Submit(SimulationCommand.SetPaused(paused));
             }
         }
 
@@ -682,9 +832,9 @@ namespace TapTap2026.Game
         /// 相机左右平移：按住 <see cref="_panLeftKeys"/> / <see cref="_panRightKeys"/> 里的任一键（默认左方向键 + A、
         /// 右方向键 + D），按 <see cref="_panSpeed"/> 格/秒把相机沿沙箱水平方向推，同时按住两个方向即抵消（不动）。
         /// 相机位置的写入与「视口不许越出沙箱左右边界」的夹取都在渲染器（<see cref="ParticleRenderer.PanCamera"/>），
-        /// 本方法只管按键 → 格数：只动相机、不碰 <c>Cell[]</c>，因此不参与确定性、也不受暂停影响。
+        /// 本方法只管按键 → 格数：只动相机、不碰世界（宽度取自帧），因此不参与确定性、也不受暂停影响。
         /// </summary>
-        private void UpdateCameraPan(ParticleWorld world)
+        private void UpdateCameraPan(int worldWidth)
         {
             float direction = 0f;
             if (IsAnyKeyHeld(_panLeftKeys))
@@ -699,7 +849,7 @@ namespace TapTap2026.Game
 
             // 无输入时也调一次（delta = 0）：Game 视图宽高比变化会让原本界内的相机落到沙箱外，靠这次夹取拉回来。
             // Time.deltaTime 是真实帧时间——暂停（驱动不推进模拟）不冻结它，因此暂停中也能平移观看。
-            _renderer.PanCamera(world, direction * Mathf.Max(0f, _panSpeed) * Time.deltaTime);
+            _renderer.PanCamera(worldWidth, direction * Mathf.Max(0f, _panSpeed) * Time.deltaTime);
         }
 
         /// <summary>数组里是否有键被按住；<paramref name="keys"/> 为 null / 空（或元素是 <see cref="KeyCode.None"/>）即无键。</summary>
@@ -725,25 +875,21 @@ namespace TapTap2026.Game
         /// 高速模式热键：不在模式中时按 <see cref="_highSpeedKey"/> 进入；结算完成后按 Enter / 小键盘 Enter
         /// （或再次按 <see cref="_highSpeedKey"/>）确认退出。模式进行中这些键都不生效——进入后不能主动退出，只能等跑完。
         /// </summary>
-        private void HandleHighSpeedKeys()
+        private void HandleHighSpeedKeys(SimulationFrame frame)
         {
-            HighSpeedSession session = _driver.HighSpeed;
-            if (session == null)
-            {
-                return;
-            }
+            HighSpeedFrame highSpeed = frame.HighSpeed;
 
-            if (!session.Active)
+            if (!highSpeed.Active)
             {
                 if (_highSpeedKey != KeyCode.None && Input.GetKeyDown(_highSpeedKey))
                 {
-                    _driver.EnterHighSpeed();
+                    SubmitEnterHighSpeed();
                 }
 
                 return;
             }
 
-            if (!session.Completed)
+            if (!highSpeed.Completed)
             {
                 return;
             }
@@ -756,54 +902,109 @@ namespace TapTap2026.Game
 
             if (confirm)
             {
-                ConfirmHighSpeedExit(session);
+                SubmitHighSpeedExit();
             }
         }
 
-        /// <summary>确认结算：退出内核会话（把倍速钉回 1×），清掉结算缓存并解除编辑锁定。
-        /// **保持暂停**——恢复推进由玩家自己按空格决定。</summary>
-        private void ConfirmHighSpeedExit(HighSpeedSession session)
+        /// <summary>提交进入高速模式命令（幂等；暂停中进入由驱动先解除暂停）。</summary>
+        public void SubmitEnterHighSpeed()
         {
-            session.Exit(_driver.Speed);
+            if (_driver != null)
+            {
+                _driver.Submit(SimulationCommand.EnterHighSpeed());
+            }
+        }
+
+        /// <summary>确认结算：提交退出命令（驱动把倍速钉回 1×），清掉结算缓存并解除编辑锁定。
+        /// **保持暂停**——恢复推进由玩家自己按空格决定。</summary>
+        public void SubmitHighSpeedExit()
+        {
+            if (_driver != null)
+            {
+                _driver.Submit(SimulationCommand.ExitHighSpeed());
+            }
+
             _highSpeedHudText = null;
+            _highSpeedProbeText = null;
             _highSpeedReportLines = null;
             _highSpeedReportHasVerdict = false;
         }
 
         /// <summary>
-        /// 刷新高速模式 HUD：运行时每帧重建左下角那一行读数；结算完成后**只建一次**结算行
-        /// （<see cref="HighSpeedSession.Completed"/> 是终态，行内容不会再变）。不在模式中时清空两个缓存。
+        /// 刷新高速模式 HUD：运行时每帧重建左下角那一行进度读数与 ProbeText 上的**高速状态行**；结算完成后
+        /// **只建一次**结算行（帧里的 <see cref="HighSpeedFrame.Completed"/> 是终态，行内容不会再变）。
+        /// 不在模式中时清空三个缓存。
         /// </summary>
-        private void RefreshHighSpeed()
+        private void RefreshHighSpeed(SimulationFrame frame)
         {
-            HighSpeedSession session = _driver.HighSpeed;
-            if (session == null || !session.Active)
+            HighSpeedFrame highSpeed = frame.HighSpeed;
+            if (!highSpeed.Active)
             {
                 _highSpeedHudText = null;
+                _highSpeedProbeText = null;
                 _highSpeedReportLines = null;
                 _highSpeedReportHasVerdict = false;
                 return;
             }
 
             _highSpeedHudText = DescribeHighSpeed(
-                session.ElapsedLogicTicks,
-                session.DurationLogicTicks,
-                _driver.Speed.EffectiveSpeed,
-                session.LatestSurfaceTemperature,
-                session.LatestAverageHumidity);
+                highSpeed.ElapsedLogicTicks,
+                highSpeed.DurationLogicTicks,
+                highSpeed.EffectiveSpeed,
+                highSpeed.LatestSurfaceTemperature,
+                highSpeed.LatestAverageHumidity);
 
-            if (session.Completed && _highSpeedReportLines == null)
+            // ProbeText 上的状态行：同一份帧数据、另一种口径（见 DescribeHighSpeedRunning）——
+            // 编辑被锁的会话期间它是 ProbeText 唯一显示的内容（见 ComposeProbeLine）。
+            _highSpeedProbeText = DescribeHighSpeedRunning(
+                highSpeed.EffectiveSpeed,
+                highSpeed.LatestSurfaceTemperature,
+                highSpeed.LatestAverageHumidity);
+
+            if (highSpeed.Completed && _highSpeedReportLines == null)
             {
-                _highSpeedReportLines = BuildHighSpeedReport(session);
+                _highSpeedReportLines = BuildHighSpeedReport(highSpeed);
             }
         }
 
         /// <summary>
         /// 左下角进度行的文案：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>。
-        /// 倍速只显示**实测**吞吐（<see cref="SpeedController.EffectiveSpeed"/>，EMA 平滑的一位小数）——
+        /// 倍速只显示**实测**吞吐（<see cref="HighSpeedFrame.EffectiveSpeed"/>，EMA 平滑的一位小数）——
         /// 高速模式恒钉 16× 目标，目标没有显示价值；温度 / 湿度还没采到样本（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
         /// </summary>
         private static string DescribeHighSpeed(int elapsed, int duration, float effectiveSpeed, float temperature, float humidity)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "高速 {0}/{1} ×{2} {3}",
+                elapsed, duration, effectiveSpeed.ToString("0.0", CultureInfo.InvariantCulture),
+                DescribeEnvironment(temperature, humidity));
+        }
+
+        /// <summary>
+        /// ProbeText 上的**高速状态行**：<c>正在运转 ×7.6 地表 12.3° 湿度 0.456</c>。
+        /// </summary>
+        /// <remarks>
+        /// **格式固定**：状态词 + 实测倍速 + 地表温度 + 湿度。倍速是 <see cref="HighSpeedFrame.EffectiveSpeed"/>
+        /// （EMA 平滑的一位小数），**不显示目标档**（会话恒钉 16×，目标没有显示价值）；温度 / 湿度未采样
+        /// （<see cref="float.NaN"/>）时显示 <c>--</c>。**进度不进这行**（已跑 tick / 总时长留给了左下角的
+        /// <see cref="DescribeHighSpeed"/>）：会话期间编辑被锁，玩家只需要知道「还在跑、跑多快、环境怎么样」。
+        /// </remarks>
+        public static string DescribeHighSpeedRunning(float effectiveSpeed, float temperature, float humidity)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "正在运转 ×{0} {1}",
+                effectiveSpeed.ToString("0.0", CultureInfo.InvariantCulture),
+                DescribeEnvironment(temperature, humidity));
+        }
+
+        /// <summary>
+        /// 环境尾段（两条高速读数行共用）：<c>地表 12.3° 湿度 0.456</c>——温度一位小数带 <c>°</c>、
+        /// 湿度三位小数；未采样（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
+        /// 数值固定用不变文化格式化，免得跟着系统区域设置漂出逗号小数点。
+        /// </summary>
+        private static string DescribeEnvironment(float temperature, float humidity)
         {
             string surface = float.IsNaN(temperature)
                 ? "--"
@@ -812,10 +1013,7 @@ namespace TapTap2026.Game
                 ? "--"
                 : humidity.ToString("0.000", CultureInfo.InvariantCulture);
 
-            return string.Format(
-                CultureInfo.InvariantCulture,
-                "高速 {0}/{1} ×{2} 地表 {3} 湿度 {4}",
-                elapsed, duration, effectiveSpeed.ToString("0.0", CultureInfo.InvariantCulture), surface, wetness);
+            return string.Format(CultureInfo.InvariantCulture, "地表 {0} 湿度 {1}", surface, wetness);
         }
 
         /// <summary>
@@ -825,7 +1023,7 @@ namespace TapTap2026.Game
         /// 过关 <c>过关！</c> / 未过关 <c>未过关：&lt;理由&gt;</c>，并把过关与否记进
         /// <see cref="_highSpeedVerdictPass"/> 供 <see cref="SandboxHud.ShowHighSpeedReport"/> 上色。
         /// </summary>
-        private string[] BuildHighSpeedReport(HighSpeedSession session)
+        private string[] BuildHighSpeedReport(HighSpeedFrame session)
         {
             ParticleType[] types = ParticleRegistry.Types;
             var lines = new List<string>();
@@ -894,25 +1092,18 @@ namespace TapTap2026.Game
 
         /// <summary>
         /// 显式设置暂停界面的显隐（按钮想拆成「开 / 关」两个时用），并同步模拟的暂停状态：
-        /// 可见 → <see cref="ParticleSimulationDriver.Pause"/>、收起 → <see cref="ParticleSimulationDriver.Resume"/>。
-        /// <para><b>两处豁免</b>：① 高速模式期间只切显示、不动模拟——会话自持推进状态（进入时 Resume、
-        /// 跑满自动 Pause），中途被外部 Pause 会卡在跑不满时长的死状态；② 对话激活（<see cref="SuppressInput"/>）
+        /// 可见 → 提交 <see cref="SimulationCommandKind.SetPaused"/>（暂停）、收起 → 提交恢复。
+        /// <para><b>两处豁免</b>：① 高速模式期间只切显示、不动模拟——会话自持推进状态（进入时解除暂停、
+        /// 跑满自动暂停），中途被外部暂停会卡在跑不满时长的死状态；② 对话激活（<see cref="SuppressInput"/>）
         /// 时同样只切显示——暂停记账归对话系统，这里抢会破坏它的「只恢复自己暂停的」语义。立即推给 HUD。</para>
         /// </summary>
         public void SetPauseMenuVisible(bool visible)
         {
             _pauseMenuVisible = visible;
 
-            if (_driver != null && !SuppressInput && !_driver.HighSpeedActive)
+            if (!SuppressInput && !HighSpeedActive)
             {
-                if (visible)
-                {
-                    _driver.Pause();
-                }
-                else
-                {
-                    _driver.Resume();
-                }
+                SubmitPaused(visible);
             }
 
             PushHud();
@@ -937,7 +1128,7 @@ namespace TapTap2026.Game
         /// </summary>
         public void SetLightPanelVisible(bool visible)
         {
-            if (_driver != null && _driver.HighSpeedActive)
+            if (HighSpeedActive)
             {
                 return;
             }
@@ -957,7 +1148,7 @@ namespace TapTap2026.Game
                 return;
             }
 
-            _driver.EnterHighSpeed();
+            SubmitEnterHighSpeed();
 
             // 按钮的 onClick 跑在 Update 之外（EventSystem），不补这一下的话光照面板要等下一帧才被
             // PushHud 的锁收起来——点「高速」后有一帧仍看得见面板。热键路径本来就在 Update 内、同帧推到。
@@ -1037,194 +1228,79 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// **擦除**：把以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆清成空气。
-        /// 与 <see cref="Paint"/> 无关——擦除不看当前投放类型，也不受单颗投放白名单影响（按住 E 就是纯擦）。
-        /// </summary>
-        /// <returns>真正被清掉的格数（本来就是空气的格不计）；越界格被跳过。</returns>
-        public int Erase(ParticleWorld world, int cx, int cy)
-        {
-            int radiusSquared = BrushRadius * BrushRadius;
-            int cleared = 0;
-
-            for (int dy = -BrushRadius; dy <= BrushRadius; dy++)
-            {
-                for (int dx = -BrushRadius; dx <= BrushRadius; dx++)
-                {
-                    if (dx * dx + dy * dy > radiusSquared)
-                    {
-                        continue;
-                    }
-
-                    int x = cx + dx;
-                    int y = cy + dy;
-
-                    // 先确认真有东西可清：Clear 抹空气也返回 true，直接计数会把「白擦的格」算进去。
-                    if (world.IsInBounds(x, y) && !world.IsAir(x, y) && world.Clear(x, y))
-                    {
-                        cleared++;
-                    }
-                }
-            }
-
-            return cleared;
-        }
-
-        /// <summary>
-        /// 投放当前粒子。普通类型填满以 (cx, cy) 为圆心、<see cref="BrushRadius"/> 为半径的实心圆；
-        /// **单颗投放白名单**里的类型（见 <see cref="_singlePlacementTypes"/>）无论半径多大都只在中心落一颗，
-        /// 且两次投放之间共享 <see cref="SinglePlacementCooldownSeconds"/> 的冷却。
-        /// **火**另有投放资格判定（<see cref="FireParticle.CanPlaceAt"/>）：目标必须是空气 / 气体格、
-        /// **不覆盖任何实体**（固 / 液）——**没有附着 / 悬空限制**，火可刷在任何空位（浮空的火是游离火，
-        /// 会上升 + 摇曳并很快熄灭）。不合格的格被跳过（圆内部分投放，其余类型不受影响）。
-        /// </summary>
-        /// <returns>写入成功的格数；越界格被跳过（<see cref="ParticleWorld.Set"/> 返回 false）；冷却中返回 0；
-        /// 当前选中的是动物物种（或无可投项）时恒返回 0（没有粒子可投，放置走 <see cref="SpawnCreature"/>）。</returns>
-        public int Paint(ParticleWorld world, int cx, int cy)
-        {
-            ParticleSelectionEntry selection = CurrentSelection;
-            if (selection == null || selection.IsCreature)
-            {
-                // 当前选中的是动物物种：没有「当前粒子」可投，放置走 SpawnCreature（见 Update 的分支）。
-                return 0;
-            }
-
-            if (selection.SinglePlacement)
-            {
-                return PaintSingle(world, cx, cy);
-            }
-
-            ushort typeId = selection.TypeId;
-            int radiusSquared = BrushRadius * BrushRadius;
-            int written = 0;
-
-            for (int dy = -BrushRadius; dy <= BrushRadius; dy++)
-            {
-                for (int dx = -BrushRadius; dx <= BrushRadius; dx++)
-                {
-                    if (dx * dx + dy * dy > radiusSquared)
-                    {
-                        continue;
-                    }
-
-                    // 火不许覆盖实体（见 FireParticle.CanPlaceAt）；其余类型照常投放。
-                    if (typeId == ParticleIds.Fire && !FireParticle.CanPlaceAt(world, cx + dx, cy + dy))
-                    {
-                        continue;
-                    }
-
-                    if (world.Set(cx + dx, cy + dy, typeId))
-                    {
-                        written++;
-                    }
-                }
-            }
-
-            return written;
-        }
-
-        /// <summary>
-        /// 放置当前选中的动物物种（右键循环里排在粒子之后的那几项）：在 (cx, cy) 格生成一只**实体**、不写格。
-        /// 与「单颗投放」共用 <see cref="SinglePlacementCooldownSeconds"/> 冷却，因此按住左键不会每帧刷出一只动物。
-        /// 脚底中心落在格中心 <c>(cx + 0.5, cy)</c>；越界由 <see cref="CreatureWorld.Spawn"/> 夹回世界内。
+        /// 刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」。
+        /// 只有这一行格子读数——清除模式与当前倍速都不在这里显示（清除模式看光标旁的色块与面板高亮，
+        /// 实测吞吐看高速模式左下角读数行，见 <see cref="DescribeHighSpeed"/>）。
         /// </summary>
         /// <remarks>
-        /// **不做地形校验**：点在石头里也会生成——物理层不解决 AABB 与地形的重叠，动物会原地卡住
-        /// （已知限制，与纯物理阶段的取舍一致；将来若要「不许生成在实体内」，在这里加判据即可）。
-        /// 本方法不消耗世界随机流（动物层有自己的随机流），也不受粒子白名单 / 阶段投放名单约束。
+        /// 读数**不读活世界**：光标格变化时提交一条 <see cref="SimulationCommandKind.ProbeCell"/> 请求，
+        /// 驱动在该命令**被应用的那一刻**采一份快照并写进下一帧的 <see cref="WorldFrame.Probe"/>；这里只在请求格与
+        /// 帧里带回的格一致时显示（否则等下一帧，光标刚移过去的那一帧显示上一次的读数——实际不可见）。
+        /// 快照按命令批次采一次、之后不再重采，因此这里在**光标换格 / 世界推进了一 tick / 帧里没有有效读数**时
+        /// 重发一次请求（没有 tick 的渲染帧不发命令），读数才能持续跟着世界走。
         /// </remarks>
-        /// <returns>真的生成了返回 true；当前选中项不是动物（含没有任何可投项）、没有动物世界或冷却未到返回 false。</returns>
-        public bool SpawnCreature(ParticleWorld world, int cx, int cy)
+        private void ProbeCell(SimulationFrame frame, Vector3 screenPosition)
         {
-            ParticleSelectionEntry selection = CurrentSelection;
-            if (selection == null || !selection.IsCreature || world == null)
-            {
-                return false;
-            }
-
-            CreatureWorld creatures = _driver != null ? _driver.Creatures : null;
-            if (creatures == null)
-            {
-                return false;
-            }
-
-            // unscaledTime：冷却按真实时间流逝，暂停（Simulate = false）时也照常计时（同 PaintSingle）。
-            if (Time.unscaledTime - _lastSinglePlacementTime < SinglePlacementCooldownSeconds)
-            {
-                return false;
-            }
-
-            _lastSinglePlacementTime = Time.unscaledTime;
-            creatures.Spawn(CreatureFactories[selection.CreatureIndex](), world, cx + 0.5f, cy);
-            return true;
-        }
-
-        /// <summary>
-        /// 单颗投放：只在 (cx, cy) 落一颗。冷却未到时什么都不做（返回 0），因此按住左键也只会每
-        /// <see cref="SinglePlacementCooldownSeconds"/> 落一颗，而不是每帧一颗。
-        /// </summary>
-        private int PaintSingle(ParticleWorld world, int cx, int cy)
-        {
-            // unscaledTime：冷却按真实时间流逝，暂停（Simulate = false）时也照常计时。
-            if (Time.unscaledTime - _lastSinglePlacementTime < SinglePlacementCooldownSeconds)
-            {
-                return 0;
-            }
-
-            // 只有 CurrentSelection 的单颗投放粒子项会走到这里（见 Paint 的分发）。
-            ushort typeId = CurrentSelection.TypeId;
-            if (!world.Set(cx, cy, typeId))
-            {
-                return 0;
-            }
-
-            if (typeId == ParticleIds.TreeSeed)
-            {
-                // Set 已把 flags 清成边沿标记、shade 重新抽样过；这里盖上物种位并把 shade 折进该物种色片。
-                TreeSpecies.Stamp(world, cx, cy, _treeSpecies, TreeSpecies.SeedColorsPerSpecies);
-            }
-
-            _lastSinglePlacementTime = Time.unscaledTime;
-            return 1;
-        }
-
-        /// <summary>刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」。
-        /// 只有这一行格子读数——清除模式与当前倍速都不在这里显示（清除模式看光标旁的色块与面板高亮，
-        /// 实测吞吐看高速模式左下角读数行，见 <see cref="DescribeHighSpeed"/>）。</summary>
-        private void ProbeCell(ParticleWorld world, Vector3 screenPosition)
-        {
-            bool inGrid = TryGetCell(screenPosition, world, out int x, out int y);
-            _probeText = inGrid ? DescribeCell(world, x, y) : "视口外";
+            bool inGrid = TryGetCell(screenPosition, frame.World.Width, frame.World.Height, out int x, out int y);
 
             // 光标格顺手留给 ApplyBrushOutline 的笔刷轮廓（与读数同一次射线，不重复投影）。
             _hoverCellValid = inGrid;
             _hoverCellX = x;
             _hoverCellY = y;
+
+            if (!inGrid)
+            {
+                _probeText = "视口外";
+                _probedCellValid = false;
+                return;
+            }
+
+            bool cellChanged = !_probedCellValid || _probedCellX != x || _probedCellY != y;
+
+            // 换格、世界又推进了一 tick（读数会变）、或帧里根本没有有效读数（刚重建世界）⇒ 重新请求。
+            // 驱动在**命令被应用的那一刻**采快照、之后不再重采（见 ParticleSimulationDriver 的 ProbeCell 分支），
+            // 所以读数要与世界同步就得每个 tick 重发一次；而按 tick 判据重发不会让「没有 tick 的渲染帧」
+            // 白白制造命令（暂停中不移动光标同样一条命令都不发）。
+            bool needsProbe = cellChanged
+                || frame.World.Tick != _probedTick
+                || !frame.World.Probe.Valid;
+            if (needsProbe)
+            {
+                _probedCellValid = true;
+                _probedCellX = x;
+                _probedCellY = y;
+                _probedTick = frame.World.Tick;
+                if (_driver != null)
+                {
+                    _driver.Submit(SimulationCommand.ProbeCell(x, y));
+                }
+            }
+
+            CellProbe probe = frame.World.Probe;
+            _probeText = probe.Valid && probe.X == x && probe.Y == y ? DescribeCell(probe) : "读取中…";
         }
 
         /// <summary>
-        /// (x,y) 的读数行：坐标 + 粒子中文名 + 温度 + 热量 + 湿度。
+        /// 读数行的文案：坐标 + 粒子中文名 + 温度 + 热量 + 湿度。
         /// 温度是导出量 <c>T = Q / 热容</c>，热量是格子里存的那份 Q，湿度对这一格而言（固/液恒为 0）。
         /// 粒子名取 <see cref="ParticleTypeInfo.DebugName"/>（每类型一个中文名，见各粒子类型的 <c>Info</c>），
         /// 空气与未注册 / 空槽一律显示「空气」。
         /// 数值固定用不变文化格式化，免得跟着系统区域设置漂出逗号小数点。
         /// </summary>
-        public static string DescribeCell(ParticleWorld world, int x, int y)
+        /// <param name="probe">帧里带回的探针快照（<see cref="WorldFrame.Probe"/>）；无效快照按空气显示。</param>
+        public static string DescribeCell(in CellProbe probe)
         {
-            ushort typeId = world.GetCell(x, y).typeId;
-            ParticleType[] types = world.Types;
+            ParticleType[] types = ParticleRegistry.Types;
+            ushort typeId = probe.TypeId;
 
             string name = typeId != ParticleRegistry.AirTypeId && typeId < types.Length && types[typeId] != null
                 ? DisplayName(types[typeId])
                 : "空气";
 
-            float temperature = world.Heat.GetTemperature(x, y);
-            float heat = world.Heat.GetHeat(x, y);
-            float humidity = world.Humidity.Get(x, y);
-
             return string.Format(
                 CultureInfo.InvariantCulture,
                 "({0},{1})  {2}  温度={3:0.0}  热量={4:0.00}  湿度={5:0.000}",
-                x, y, name, temperature, heat, humidity);
+                probe.X, probe.Y, name, probe.Temperature, probe.Heat, probe.Humidity);
         }
 
         /// <summary>按注册顺序收集可投放的类型 id：跳过空气（0）、注册表尾部的空槽、所有不在
@@ -1326,7 +1402,7 @@ namespace TapTap2026.Game
         /// <summary>
         /// 按当前 <see cref="_placeable"/> 与 <see cref="_creaturePrototypes"/> 重建 <see cref="_selections"/>：
         /// **先粒子类型**（顺序即 <see cref="_placeable"/> 的注册顺序，显示名 / 色块 / 是否单颗投放都取自类型注册表），
-        /// **再动物物种**（顺序即 <see cref="CreatureFactories"/>，显示名 / 色块取自原型实例）。
+        /// **再动物物种**（顺序即 <see cref="CreatureSpawns.Species"/>，显示名 / 色块取自原型实例）。
         /// </summary>
         /// <remarks>
         /// 只在 <see cref="Awake"/> 与 <see cref="SetPlacementFilter"/> 的成功路径上调用；每次调用都造一批新实例
@@ -1402,7 +1478,7 @@ namespace TapTap2026.Game
         /// <see cref="CameraScreenFeed.ToCameraPixel"/> 把指针换算进那张图的矩形。未接管（编辑模式）时原样直传。
         /// </remarks>
         /// <returns>映射结果在网格内则 true；相机缺失、射线与平面平行或落在网格外则 false。</returns>
-        public bool TryGetCell(Vector3 screenPosition, ParticleWorld world, out int x, out int y)
+        public bool TryGetCell(Vector3 screenPosition, int worldWidth, int worldHeight, out int x, out int y)
         {
             x = 0;
             y = 0;
@@ -1428,7 +1504,7 @@ namespace TapTap2026.Game
 
             x = Mathf.FloorToInt(local.x);
             y = Mathf.FloorToInt(local.y);
-            return world.IsInBounds(x, y);
+            return (uint)x < (uint)worldWidth && (uint)y < (uint)worldHeight;
         }
     }
 }

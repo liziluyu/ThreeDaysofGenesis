@@ -266,6 +266,7 @@ public void SetPlacementFilter(string[] allowedNames);
 ```
 
 - 结果 = **名单 ∩ `CollectPlaceableTypes()` 的默认白名单**：阶段只能**收窄**、不能扩宽（例如阶段写上 `GrassParticle` 也不会让它变得可手刷）。
+- 投放面板（`ParticleSelectionPanel`）按重建后的可投列表**逐颗显隐**十颗投放按钮：名单外的粒子（本关未解锁）整颗隐藏，解锁后按场景里的原位置重新出现；动物物种不受名单影响，照常可见。
 - 重算后**自动选中第一个可投类型**（供 `RefreshHud` 显示）。
 - 名单里查不到的名字 → `LogWarning` 跳过；交集为空 → `LogError` 且**保持当前状态不变**（不把玩家丢进「没有任何可投类型」的编辑器）。
 

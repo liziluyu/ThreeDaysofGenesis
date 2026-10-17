@@ -475,8 +475,8 @@ namespace TapTap2026.Tests
             Saturate(world, 12, 20, 0.12f);
             Assert.IsTrue(StrikeOnce(world, 12, 20), "必须起爆");
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             int painted = 0;
             for (int y = 0; y < H; y++)
@@ -491,7 +491,7 @@ namespace TapTap2026.Tests
 
                     painted++;
                     Assert.AreEqual(
-                        palette[cell.shade], pixels[world.Index(x, y)],
+                        RenderColorConversion.FromColor32(palette[cell.shade]), pixels[world.Index(x, y)],
                         $"雷电格 ({x},{y}) 应按 shade={cell.shade} 画出对应黄色档");
                 }
             }

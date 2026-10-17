@@ -16,7 +16,7 @@ namespace TapTap2026.Tests
     /// <see cref="ParticleWorld.StepMotion"/> 就让整行各下落一格，运动格数恰好等于摆了几格
     /// （与扫描方向无关，因为每格的正下方都不受同帧其它格影响）。驱动不读比例，所以「摆几格 = 几格在动」
     /// 就是可直接断言的期望值。声音控制器用现建现销的零数据片段，经 <see cref="SerializedObject"/> 接线；
-    /// <c>Pump(world)</c> 不带 dt——本驱动没有 EMA。</para>
+    /// <c>Pump(frame)</c> 不带 dt——本驱动没有 EMA；帧由 <see cref="FramePump"/> 按生产路径采出。</para>
     /// </remarks>
     public sealed class FallingSandSoundDriverTests
     {
@@ -27,6 +27,9 @@ namespace TapTap2026.Tests
         private SoundController _sound;
         private FallingSandSoundDriver _driver;
         private AudioClip _sand;
+
+        /// <summary>帧采集装置：把世界采成已发布的帧（本驱动只读帧，不读世界）。</summary>
+        private readonly FramePump _frames = new FramePump();
 
         [SetUp]
         public void SetUp()
@@ -71,7 +74,7 @@ namespace TapTap2026.Tests
             }
 
             Assert.AreEqual(0L, world.SolidMotion.MovingCount, "底行的沙不会移动");
-            Assert.AreEqual(0f, _driver.Pump(world), 1e-6f, "没有运动格 → 目标响度 0");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world)), 1e-6f, "没有运动格 → 目标响度 0");
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f);
         }
 
@@ -83,7 +86,7 @@ namespace TapTap2026.Tests
             FloatSolidRow(world, 5, W, ParticleIds.Sand);
             world.StepMotion();
 
-            float loudness = _driver.Pump(world);
+            float loudness = _driver.Pump(_frames.Publish(world));
 
             Assert.Greater(loudness, 0f, "固体在落就该有声");
             Assert.AreEqual(loudness, _sound.TargetLoudness("falling_sand"), 1e-6f, "目标响度推给了声音控制器");
@@ -104,8 +107,8 @@ namespace TapTap2026.Tests
             Assert.AreEqual((long)(W / 2), small.SolidMotion.MovingCount, "半行沙下落 = 半行运动格");
             Assert.AreEqual((long)W, large.SolidMotion.MovingCount, "整行沙下落 = 整行运动格");
 
-            float smallLoudness = _driver.Pump(small);
-            float largeLoudness = _driver.Pump(large);
+            float smallLoudness = _driver.Pump(_frames.Publish(small));
+            float largeLoudness = _driver.Pump(_frames.Publish(large));
 
             Assert.Greater(smallLoudness, 0f, "半行沙也该有声");
             Assert.Greater(largeLoudness, smallLoudness, "落得越多越响（响度取绝对运动格数而非比例）");
@@ -123,14 +126,14 @@ namespace TapTap2026.Tests
             FloatSolidRow(atDeadZone, 5, 8, ParticleIds.Sand); // 恰好等于死区
             atDeadZone.StepMotion();
 
-            Assert.AreEqual(0f, _driver.Pump(atDeadZone), 1e-6f, "死区边界上的下落完全静音");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(atDeadZone)), 1e-6f, "死区边界上的下落完全静音");
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f);
 
             ParticleWorld aboveDeadZone = CreateWorld();
             FloatSolidRow(aboveDeadZone, 5, 9, ParticleIds.Sand);
             aboveDeadZone.StepMotion();
 
-            Assert.Greater(_driver.Pump(aboveDeadZone), 0f, "越过死区即出声");
+            Assert.Greater(_driver.Pump(_frames.Publish(aboveDeadZone)), 0f, "越过死区即出声");
         }
 
         /// <summary><c>_volume</c> 是总音量缩放：目标响度 = 映射值 × 它，满量程那一帧恰好被缩到它。</summary>
@@ -152,14 +155,14 @@ namespace TapTap2026.Tests
 
             Assert.GreaterOrEqual(world.SolidMotion.MovingCount, 40L, "铺够 48 格下落，映射值应当满格");
 
-            float loudness = _driver.Pump(world);
+            float loudness = _driver.Pump(_frames.Publish(world));
 
             Assert.AreEqual(0.5f, loudness, 1e-2f, "满量程映射 × 0.5 = 0.5");
         }
 
-        /// <summary>关掉或没有世界即收声：把目标归零（交给控制器淡出），并返回 0。</summary>
+        /// <summary>关掉或没有帧即收声：把目标归零（交给控制器淡出），并返回 0。</summary>
         [Test]
-        public void Pump_IsSilentWhenDisabledOrWorldIsNull()
+        public void Pump_IsSilentWhenDisabledOrFrameIsNull()
         {
             ParticleWorld world = CreateWorld();
             FloatSolidRow(world, 5, W, ParticleIds.Sand);
@@ -171,13 +174,13 @@ namespace TapTap2026.Tests
 
             _sound.SetAmbience("falling_sand", 0.8f);
 
-            Assert.AreEqual(0f, _driver.Pump(world), 1e-6f, "关掉即返回 0");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world)), 1e-6f, "关掉即返回 0");
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f, "关掉即收声");
 
             _sound.SetAmbience("falling_sand", 0.8f);
 
-            Assert.AreEqual(0f, _driver.Pump(null), 1e-6f, "world = null 即返回 0");
-            Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f, "world = null 即收声");
+            Assert.AreEqual(0f, _driver.Pump(null), 1e-6f, "帧为 null 即返回 0");
+            Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f, "帧为 null 即收声");
         }
 
         /// <summary>关闭期间也必须每帧清账：否则重新打开时会把积压的运动当作「此刻在落」补发出去。</summary>
@@ -194,7 +197,7 @@ namespace TapTap2026.Tests
             for (int i = 0; i < 3; i++)
             {
                 world.StepMotion();
-                _driver.Pump(world);
+                _driver.Pump(_frames.Publish(world));
 
                 Assert.AreEqual(0L, world.SolidMotion.MovingCount, "关闭期间每帧读掉了本轮记账");
             }
@@ -203,14 +206,14 @@ namespace TapTap2026.Tests
             for (int i = 0; i < 20; i++)
             {
                 world.StepMotion();
-                _driver.Pump(world);
+                _driver.Pump(_frames.Publish(world));
             }
 
             serialized.FindProperty("_enabled").boolValue = true;
             serialized.ApplyModifiedPropertiesWithoutUndo();
             _sound.SetAmbience("falling_sand", 0.8f);
 
-            Assert.AreEqual(0f, _driver.Pump(world), 1e-6f, "重新打开时不补发关闭期间积压的运动");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world)), 1e-6f, "重新打开时不补发关闭期间积压的运动");
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f);
         }
 
@@ -225,7 +228,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(0, 5).typeId, "树木种子确实下落了一格");
             Assert.AreEqual(ParticleIds.TreeSeed, world.GetCell(0, 4).typeId);
             Assert.AreEqual(0L, world.SolidMotion.MovingCount, "树木种子带 Organic，不计入落沙声的运动格数");
-            Assert.AreEqual(0f, _driver.Pump(world), 1e-6f, "有机固体下落不触发落沙声");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world)), 1e-6f, "有机固体下落不触发落沙声");
             Assert.AreEqual(0f, _sound.TargetLoudness("falling_sand"), 1e-6f);
         }
 

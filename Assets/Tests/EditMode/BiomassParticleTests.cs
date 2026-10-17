@@ -464,12 +464,15 @@ namespace TapTap2026.Tests
                 Assert.IsTrue(world.SetWithShade(shade, 1, Biomass, (byte)shade));
             }
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             for (int shade = 0; shade < info.Palette.Length; shade++)
             {
-                Assert.AreEqual(info.Palette[shade], pixels[world.Index(shade, 1)], $"shade {shade} 的像素色应等于调色板对应档");
+                Assert.AreEqual(
+                    RenderColorConversion.FromColor32(info.Palette[shade]),
+                    pixels[world.Index(shade, 1)],
+                    $"shade {shade} 的像素色应等于调色板对应档");
             }
         }
     }

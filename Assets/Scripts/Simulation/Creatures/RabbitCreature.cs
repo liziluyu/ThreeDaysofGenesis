@@ -110,6 +110,12 @@ namespace TapTap2026.Simulation
             get { return "兔子"; }
         }
 
+        /// <summary>物种标识（渲染按它选兔子 idle 帧序列）。</summary>
+        public override CreatureSpecies Species
+        {
+            get { return CreatureSpecies.Rabbit; }
+        }
+
         /// <summary>占位色：棕。</summary>
         public override Color32 PlaceholderColor
         {

@@ -29,9 +29,8 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(
                 4, 4, 7u, TestTables.Build(new TestGrainParticle(), new AtmosphereParticle()));
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 100);
-            session.Enter(speed);
+            session.Enter();
 
             world.Set(1, 1, grain);                                   // 空气 → 固体
             Assert.AreEqual(1L, session.GetBirths(grain));
@@ -58,7 +57,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0L, session.GetBirths(999), "越界 typeId 返回 0");
             Assert.AreEqual(0L, session.GetDeaths(999));
 
-            session.Exit(speed);
+            session.Exit();
             Assert.AreEqual(0L, session.GetBirths(grain), "Exit 清计数");
             Assert.AreEqual(0L, session.GetDeaths(grain));
         }
@@ -75,9 +74,8 @@ namespace TapTap2026.Tests
             world.Set(0, 0, grain);
             world.Set(0, 1, atmosphere);
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 100);
-            session.Enter(speed);
+            session.Enter();
 
             long grainBirths = session.GetBirths(grain);
             long grainDeaths = session.GetDeaths(grain);
@@ -91,7 +89,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(airBirths, session.GetBirths(ParticleRegistry.AirTypeId));
             Assert.AreEqual(airDeaths, session.GetDeaths(ParticleRegistry.AirTypeId));
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         // ============================== 采样节拍与最新值 ==============================
@@ -100,9 +98,8 @@ namespace TapTap2026.Tests
         public void Sampling_HappensEveryTenTicksAndLatestValuesStartNaN()
         {
             ParticleWorld world = new ParticleWorld(2, 2, 3u, TestTables.Build(new TestStaticParticle()));
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 30);
-            session.Enter(speed);
+            session.Enter();
 
             Assert.IsNaN(session.LatestSurfaceTemperature, "未采样时地表温度是 NaN");
             Assert.IsNaN(session.LatestAverageHumidity, "未采样时平均湿度是 NaN");
@@ -131,7 +128,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(2, session.SurfaceTemperatureSamples.Count);
             Assert.AreEqual(2, session.AverageHumiditySamples.Count);
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         // ============================== 地表高度 ==============================
@@ -155,9 +152,8 @@ namespace TapTap2026.Tests
             world.Set(0, 1, atmosphere);                 // 气体不算地表
             world.Heat.SetHeat(0, 0, groundTemperature); // 热容 1 ⇒ T = Q
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 1000);
-            session.Enter(speed);
+            session.Enter();
 
             SampleOnce(session);
             Assert.AreEqual(groundTemperature, session.LatestSurfaceTemperature, 1e-4f, "地表在 y = 0（气体不算）");
@@ -175,7 +171,7 @@ namespace TapTap2026.Tests
             SampleOnce(session);
             Assert.AreEqual(0f, session.LatestSurfaceTemperature, 1e-4f, "整列皆气体时贡献 0");
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         // ============================== 湿度总量 ==============================
@@ -201,9 +197,8 @@ namespace TapTap2026.Tests
             world.Humidity.AddAt(world.Humidity.Index(3, 3), 0.75f);
             world.Heat.SetHeat(1, 1, 50f);          // 给温度定向项一点梯度
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 1000);
-            session.Enter(speed);
+            session.Enter();
 
             SampleOnce(session);
             Assert.AreEqual(
@@ -227,7 +222,7 @@ namespace TapTap2026.Tests
                 world.Humidity.Sum(), session.LatestAverageHumidity * world.CellCount, 1e-3f,
                 "输送之后仍一致（只差浮点 ulp 级漂移）");
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         // ============================== 完成与倍速状态 ==============================
@@ -236,9 +231,8 @@ namespace TapTap2026.Tests
         public void Completed_FlipsExactlyAtDuration()
         {
             ParticleWorld world = new ParticleWorld(2, 2, 17u, TestTables.Build(new TestStaticParticle()));
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 30);
-            session.Enter(speed);
+            session.Enter();
 
             Assert.IsFalse(session.Completed);
             Assert.AreEqual(0, session.ElapsedLogicTicks);
@@ -265,7 +259,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(30, session.ElapsedLogicTicks, "完成后不再计数");
             Assert.AreEqual(3, session.SampleCount, "满程样本数 = 时长 / 10");
 
-            session.Exit(speed);
+            session.Exit();
             Assert.IsFalse(session.Active);
             Assert.IsFalse(session.Completed);
             Assert.AreEqual(0, session.ElapsedLogicTicks, "Exit 清计时");
@@ -273,41 +267,37 @@ namespace TapTap2026.Tests
             Assert.IsNaN(session.LatestSurfaceTemperature);
         }
 
-        /// <summary>进入即钉满档 16× 手动；退出钉回 1×（普通编辑模式不允许调速度，恒 1×）；Enter/Exit 幂等。</summary>
+        /// <summary>
+        /// 会话自己的生命周期契约：<c>Enter</c> / <c>Exit</c> 幂等，<c>Exit</c> 清计时 / 样本 / 统计。
+        /// 倍速钉满档 / 钉回 1× **不再是本类的职责**（阶段 3 起倍速计划在主线程，由驱动按帧里的
+        /// <see cref="HighSpeedFrame.Active"/> 钉档），因此这里不再断言任何 <c>SpeedController</c> 状态。
+        /// </summary>
         [Test]
-        public void EnterPinsMaxSpeedAndExitReturnsToOneTimes()
+        public void EnterAndExit_AreIdempotentAndClearSessionState()
         {
             ParticleWorld world = new ParticleWorld(2, 2, 19u, TestTables.Build(new TestStaticParticle()));
             var session = new HighSpeedSession(world, 10);
 
-            var speed = new SpeedController();
-            session.Enter(speed);
+            session.Enter();
             Assert.IsTrue(session.Active);
-            Assert.AreEqual(SpeedController.MaxSpeed, speed.Speed, "进入即钉满档 16×");
-            Assert.IsFalse(speed.Adaptive, "满档是手动钉死，不走自适应");
-
-            session.Exit(speed);
-            Assert.IsFalse(session.Active);
-            Assert.AreEqual(SpeedController.MinSpeed, speed.Speed, "退出钉回 1×");
-            Assert.IsFalse(speed.Adaptive);
-
-            // 不记旧档：无论从什么状态进入，退出都回 1×。
-            speed.SetSpeed(4f);
-            speed.SetAdaptive(true);
-            session.Enter(speed);
-            Assert.AreEqual(SpeedController.MaxSpeed, speed.Speed);
-            session.Exit(speed);
-            Assert.AreEqual(SpeedController.MinSpeed, speed.Speed, "退出不恢复进入前的 4× 自适应，钉回 1×");
-            Assert.IsFalse(speed.Adaptive);
+            Assert.IsFalse(session.Completed);
 
             // Enter 幂等：重复进入是空操作，计时与统计不重置。
-            session.Enter(speed);
             session.OnLogicTick();
-            session.Enter(speed);
+            session.Enter();
             Assert.AreEqual(1, session.ElapsedLogicTicks, "重复 Enter 不重置计时");
-            session.Exit(speed);
-            session.Exit(speed);
-            Assert.AreEqual(SpeedController.MinSpeed, speed.Speed);
+
+            session.Exit();
+            Assert.IsFalse(session.Active);
+            Assert.IsFalse(session.Completed);
+            Assert.AreEqual(0, session.ElapsedLogicTicks, "Exit 清计时");
+            Assert.AreEqual(0, session.SampleCount, "Exit 清样本");
+            Assert.IsNaN(session.LatestSurfaceTemperature);
+
+            // Exit 幂等：未激活时再退出是空操作。
+            session.Exit();
+            Assert.IsFalse(session.Active);
+            Assert.AreEqual(0, session.ElapsedLogicTicks);
         }
 
         // ============================== 确定性回归 ==============================
@@ -324,9 +314,8 @@ namespace TapTap2026.Tests
             ParticleWorld reference = BuildDeterminismWorld();
             ParticleWorld monitored = BuildDeterminismWorld();
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(monitored, 600);
-            session.Enter(speed);
+            session.Enter();
 
             for (int i = 0; i < frames; i++)
             {
@@ -350,7 +339,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(reference.NextUInt(), monitored.NextUInt(), "监视器不得消耗随机流");
             Assert.AreEqual(reference.NextUInt(), monitored.NextUInt());
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         // ============================== 终态存量扫描 ==============================
@@ -379,9 +368,8 @@ namespace TapTap2026.Tests
             world.Set(1, 1, water);
             world.Set(2, 1, soil);                 // 1 格土；其余 5 格是空气
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 3);
-            session.Enter(speed);
+            session.Enter();
 
             Assert.AreEqual(0L, session.GetFinalCount(stone), "未跑满时长前不扫描");
 
@@ -405,7 +393,7 @@ namespace TapTap2026.Tests
 
             Assert.AreEqual(0L, session.GetFinalCount(999), "越界 typeId 返回 0");
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         /// <summary>未跑满时长（未结算）时 <c>GetFinalCount</c> 恒为 0。</summary>
@@ -415,9 +403,8 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(2, 2, 29u, TestTables.Build(new TestStaticParticle()));
             world.Set(0, 0, 1);
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 5);
-            session.Enter(speed);
+            session.Enter();
 
             Assert.AreEqual(0L, session.GetFinalCount(0));
             Assert.AreEqual(0L, session.GetFinalCount(1));
@@ -430,7 +417,7 @@ namespace TapTap2026.Tests
             Assert.IsFalse(session.Completed);
             Assert.AreEqual(0L, session.GetFinalCount(1), "第 duration − 1 帧仍未结算 ⇒ 0");
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         /// <summary>Exit 之后存量归零（会话结束后不再可读）。</summary>
@@ -440,16 +427,15 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(2, 2, 31u, TestTables.Build(new TestStaticParticle()));
             world.Set(0, 0, 1);
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 2);
-            session.Enter(speed);
+            session.Enter();
             session.OnLogicTick();
             session.OnLogicTick();
 
             Assert.IsTrue(session.Completed);
             Assert.AreEqual(1L, session.GetFinalCount(1));
 
-            session.Exit(speed);
+            session.Exit();
             Assert.AreEqual(0L, session.GetFinalCount(1), "Exit 清终态存量");
             Assert.AreEqual(0L, session.GetFinalCount(ParticleRegistry.AirTypeId));
         }
@@ -464,9 +450,8 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(3, 3, 37u, TestTables.Build(new TestStaticParticle()));
             world.Set(0, 0, 1);
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(world, 2);
-            session.Enter(speed);
+            session.Enter();
             session.OnLogicTick();
             session.OnLogicTick();
 
@@ -484,7 +469,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(8L, session.GetFinalCount(ParticleRegistry.AirTypeId));
             Assert.AreEqual(2, session.ElapsedLogicTicks, "完成后计时不再增长");
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         /// <summary>
@@ -499,9 +484,8 @@ namespace TapTap2026.Tests
             ParticleWorld reference = BuildDeterminismWorld();
             ParticleWorld monitored = BuildDeterminismWorld();
 
-            var speed = new SpeedController();
             var session = new HighSpeedSession(monitored, frames);
-            session.Enter(speed);
+            session.Enter();
 
             for (int i = 0; i < frames; i++)
             {
@@ -532,7 +516,7 @@ namespace TapTap2026.Tests
                     $"typeId {typeId} 的存量与逐格真源一致");
             }
 
-            session.Exit(speed);
+            session.Exit();
         }
 
         // ============================== 辅助 ==============================

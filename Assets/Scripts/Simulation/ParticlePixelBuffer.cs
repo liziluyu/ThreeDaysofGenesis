@@ -1,19 +1,27 @@
 using System;
-using UnityEngine;
 
 namespace TapTap2026.Simulation
 {
     /// <summary>
-    /// 网格 → 像素缓冲的 CPU 侧映射。纯数据转换，不认识 Unity 渲染对象，因此可以脱离引擎单独测试。
-    /// 唯一真源始终是 <see cref="ParticleWorld.Cells"/>，本缓冲只是只读派生物。
+    /// 网格 → 像素缓冲的 CPU 侧映射（**worker-safe 光栅化器**）：纯数据转换，
+    /// 不引用任何 Unity 类型或 API（连 <c>using UnityEngine</c> 都没有），只消费 worker 自己持有的
+    /// <see cref="ParticleWorld.Cells"/> / 热图 / 湿度场与 <see cref="ParticleType.RenderPalette"/> 纯值调色板，
+    /// 输出写进项目自有的 <see cref="RenderColor"/> 缓冲。因此它可以在没有引擎的线程（乃至 .NET harness）上运行，
+    /// 也可以脱离引擎单独测试。唯一真源始终是 <see cref="ParticleWorld.Cells"/>，本缓冲只是只读派生物。
     /// </summary>
+    /// <remarks>
+    /// <para><b>零分配稳态</b>：像素缓冲由帧槽持有、跨帧复用；逐格循环里没有任何堆分配
+    /// （类型标志表按类型表引用缓存，只在换表那一次重建；调色板是注册时就镜像好的纯值数组）。</para>
+    /// <para><b>Unity 边界</b>：本文件不出现 Unity 类型——调色板镜像（<see cref="RenderColorConversion"/>）
+    /// 发生在类型注册时，像素转 <c>Color32</c> 发生在主线程上屏时。</para>
+    /// </remarks>
     public static class ParticlePixelBuffer
     {
         /// <summary>调试热力叠加的最热色（满量程时的纯红）。</summary>
-        private static readonly Color32 HotColor = new Color32(255, 0, 0, 255);
+        private static readonly RenderColor HotColor = new RenderColor(255, 0, 0, 255);
 
         /// <summary>云滴的染色（凝结物浓度 0..1 在背景色与该色之间插值）。</summary>
-        private static readonly Color32 CloudColor = new Color32(244, 248, 252, 255);
+        private static readonly RenderColor CloudColor = new RenderColor(244, 248, 252, 255);
 
         /// <summary>
         /// 描边调暗系数：带 <see cref="ParticleTypeInfo.HasOutline"/> 的格，四邻中有「显示为背景」的格
@@ -25,7 +33,7 @@ namespace TapTap2026.Simulation
         /// 液面高光色：带 <see cref="ParticleTypeInfo.HasSurfaceHighlight"/> 的格、正上方不是液体时，
         /// 基底色向它插值（<see cref="SurfaceHighlightFactor"/>）。非常浅的淡蓝白。纯表现层，无逐类型配置。
         /// </summary>
-        public static readonly Color32 SurfaceHighlightColor = new Color32(200, 228, 245, 255);
+        public static readonly RenderColor SurfaceHighlightColor = new RenderColor(200, 228, 245, 255);
 
         /// <summary>液面高光的插值比例（0 = 原样，1 = 纯高光色）。</summary>
         public const float SurfaceHighlightFactor = 0.6f;
@@ -36,10 +44,10 @@ namespace TapTap2026.Simulation
         /// 云不是一种粒子，而是"很湿的空气"，因此它的显示由湿度场给出（见 <see cref="HumidityField"/>）。
         /// 若 <see cref="HeatMap.DebugHeatOverlay"/> 打开，再按温度叠一层热力色（越热越红）。
         /// </summary>
-        /// <param name="world">源网格。</param>
+        /// <param name="world">源网格（worker 私有；本方法只读它）。</param>
         /// <param name="pixels">目标缓冲，长度必须等于 <see cref="ParticleWorld.CellCount"/>。</param>
         /// <param name="background">空气格的显示颜色。</param>
-        public static void Fill(ParticleWorld world, Color32[] pixels, Color32 background)
+        public static void Fill(ParticleWorld world, RenderColor[] pixels, RenderColor background)
         {
             Fill(world, pixels, background, 1f);
         }
@@ -53,7 +61,7 @@ namespace TapTap2026.Simulation
         /// **不缩 <paramref name="background"/>**：天空色由调用方按昼夜直接给定（夜晚本身就是深色），
         /// 再乘一遍亮度就不是作者指定的那个颜色了。云与粒子画在天空之上，照常参与明暗。
         /// </remarks>
-        public static void Fill(ParticleWorld world, Color32[] pixels, Color32 background, float brightness)
+        public static void Fill(ParticleWorld world, RenderColor[] pixels, RenderColor background, float brightness)
         {
             if (world == null)
             {
@@ -99,7 +107,7 @@ namespace TapTap2026.Simulation
             int y = 0;
             for (int i = 0; i < cells.Length; i++)
             {
-                Color32 color = BaseColor(cells[i], types, background, out bool painted);
+                RenderColor color = BaseColor(cells[i], types, background, out bool painted);
 
                 // 描边：带 HasOutline 的格，四邻中有「显示为背景」的格（含越界）或是液体（固液交界）时
                 // 按 OutlineFactor 调暗。在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
@@ -114,23 +122,19 @@ namespace TapTap2026.Simulation
                     if (flag.HasOutline
                         && NeighbourTriggersOutline(cells, flags, width, height, x, y, i))
                     {
-                        color = new Color32(
-                            (byte)(color.r * OutlineFactor),
-                            (byte)(color.g * OutlineFactor),
-                            (byte)(color.b * OutlineFactor),
-                            color.a);
+                        color = RenderColorMath.ScaleRgb(color, OutlineFactor);
                     }
                     else if (flag.HasSurfaceHighlight
                         && IsOpenSurface(cells, flags, width, height, y, i))
                     {
-                        color = Color32.Lerp(color, SurfaceHighlightColor, SurfaceHighlightFactor);
+                        color = RenderColorMath.Lerp(color, SurfaceHighlightColor, SurfaceHighlightFactor);
                     }
                 }
 
                 float cloud = (humidity.GetAt(i) - HumidityField.VisibleThreshold) / visibleSpan;
                 if (cloud > 0f)
                 {
-                    color = Color32.Lerp(color, CloudColor, cloud >= 1f ? 1f : cloud);
+                    color = RenderColorMath.Lerp(color, CloudColor, cloud >= 1f ? 1f : cloud);
                     painted = true;
                 }
 
@@ -139,18 +143,14 @@ namespace TapTap2026.Simulation
                     float t = heat.GetTemperatureAt(i) * inverseScale;
                     if (t > 0f)
                     {
-                        color = Color32.Lerp(color, HotColor, t >= 1f ? 1f : t);
+                        color = RenderColorMath.Lerp(color, HotColor, t >= 1f ? 1f : t);
                     }
                 }
 
                 // 只有真正画了东西（粒子 / 云）的像素才随昼夜变暗；裸天空走调用方给的颜色。
                 if (dim && painted)
                 {
-                    color = new Color32(
-                        (byte)(color.r * brightness),
-                        (byte)(color.g * brightness),
-                        (byte)(color.b * brightness),
-                        color.a);
+                    color = RenderColorMath.ScaleRgb(color, brightness);
                 }
 
                 pixels[i] = color;
@@ -181,8 +181,8 @@ namespace TapTap2026.Simulation
             /// <summary>作为邻居是否触发描边：<see cref="TriggerNever"/> / <see cref="TriggerByShade"/> / <see cref="TriggerAlways"/>。</summary>
             public byte TriggerKind;
 
-            /// <summary>调色板。只有 <see cref="TriggerByShade"/> 会读到（其余两种取值已提前判定完）。</summary>
-            public Color32[] Palette;
+            /// <summary>纯值调色板（<see cref="ParticleType.RenderPalette"/>）。只有 <see cref="TriggerByShade"/> 会读到（其余两种取值已提前判定完）。</summary>
+            public RenderColor[] Palette;
         }
 
         /// <summary>触发描边判定 · 恒不触发：调色板整条不透明（绝大多数实物）。</summary>
@@ -228,7 +228,7 @@ namespace TapTap2026.Simulation
                 flags[id].HasSurfaceHighlight = info.HasSurfaceHighlight;
                 flags[id].BlocksSurface = (info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0;
 
-                Color32[] palette = info.Palette;
+                RenderColor[] palette = type.RenderPalette;
                 flags[id].Palette = palette;
 
                 if ((info.Tags & ParticleTags.Liquid) != 0)
@@ -311,7 +311,7 @@ namespace TapTap2026.Simulation
             }
 
             // 半透明调色板：按 shade 查色，与 BaseColor 同一套语义（越界 shade 取第 0 档）。
-            Color32[] palette = flags[id].Palette;
+            RenderColor[] palette = flags[id].Palette;
             int shade = cells[index].shade;
             return (shade < palette.Length ? palette[shade] : palette[0]).a == 0;
         }
@@ -342,7 +342,7 @@ namespace TapTap2026.Simulation
         /// 调色板颜色 alpha == 0 视为「透明粒子」→ 也显示背景色（运行期材质不做 alpha 混合，
         /// 透明只能在映射层表达；热力叠加仍会在此基础上把热格染红——隐形大气因此能当风的可视化层）。
         /// <paramref name="painted"/> 为 true 表示这一格画了实物（后面要参与昼夜变暗）。</summary>
-        private static Color32 BaseColor(Cell cell, ParticleType[] types, Color32 background, out bool painted)
+        private static RenderColor BaseColor(Cell cell, ParticleType[] types, RenderColor background, out bool painted)
         {
             painted = false;
 
@@ -358,9 +358,9 @@ namespace TapTap2026.Simulation
                 return background;
             }
 
-            Color32[] palette = type.Info.Palette;
+            RenderColor[] palette = type.RenderPalette;
             int shade = cell.shade;
-            Color32 color = shade < palette.Length ? palette[shade] : palette[0];
+            RenderColor color = shade < palette.Length ? palette[shade] : palette[0];
             if (color.a == 0)
             {
                 return background;

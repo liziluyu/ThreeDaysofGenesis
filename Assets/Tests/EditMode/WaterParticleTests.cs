@@ -749,15 +749,18 @@ namespace TapTap2026.Tests
             world.Set(2, 0, WaterId);
             world.Set(2, 1, WaterId);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
-            Color32 expected = Color32.Lerp(
+            RenderColor expected = RenderColorConversion.FromColor32(Color32.Lerp(
                 WaterBaseColorAt(world, 2, 1),
-                ParticlePixelBuffer.SurfaceHighlightColor,
-                ParticlePixelBuffer.SurfaceHighlightFactor);
+                RenderColorConversion.ToColor32(ParticlePixelBuffer.SurfaceHighlightColor),
+                ParticlePixelBuffer.SurfaceHighlightFactor));
             Assert.AreEqual(expected, pixels[world.Index(2, 1)], "液面水格应向浅蓝白插值");
-            Assert.AreEqual(WaterBaseColorAt(world, 2, 0), pixels[world.Index(2, 0)], "被水压住的格不是液面，保持基色");
+            Assert.AreEqual(
+                RenderColorConversion.FromColor32(WaterBaseColorAt(world, 2, 0)),
+                pixels[world.Index(2, 0)],
+                "被水压住的格不是液面，保持基色");
         }
 
         /// <summary>正上方是固体的水不是液面（被岩石盖住的水不高光）。</summary>
@@ -768,10 +771,13 @@ namespace TapTap2026.Tests
             world.Set(2, 0, WaterId);
             world.Set(2, 1, StoneId);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
-            Assert.AreEqual(WaterBaseColorAt(world, 2, 0), pixels[world.Index(2, 0)], "正上方是固体的水不是液面");
+            Assert.AreEqual(
+                RenderColorConversion.FromColor32(WaterBaseColorAt(world, 2, 0)),
+                pixels[world.Index(2, 0)],
+                "正上方是固体的水不是液面");
         }
 
         // ============================== 穿冠（雨水穿冠） ==============================

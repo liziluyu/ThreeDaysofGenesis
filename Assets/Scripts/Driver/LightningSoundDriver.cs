@@ -4,7 +4,7 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 闪电的一次性音效：读 <see cref="ParticleWorld.Counts"/> 里「自上次读取以来新写入的雷电格数」，
+    /// 闪电的一次性音效：读帧里的 <see cref="AudioFrame.LightningCreated"/>（「自上次发布以来新写入的雷电格数」），
     /// 只要 &gt; 0 就让 <see cref="SoundController.PlayOneShot"/> 响一声——**一帧最多一声**，
     /// 绝不循环、绝不取模、绝不锁相位。
     /// </summary>
@@ -17,11 +17,13 @@ namespace TapTap2026.Game
     /// <para><b>为什么不走循环声床</b>：闪电音频很短、只在事件当帧响一下。循环声床会锁相位、要取模
     /// （每次劈听起来都像同一段被剪断的循环），也不该为一次性事件常驻。<see cref="SoundController.PlayOneShot"/>
     /// 走独立 <c>loop = false</c> 声源，连续劈下由原生混音自然叠放。</para>
-    /// <para><b>为什么先清账再判开关</b>：关闭期间也必须把监视器的「新格」读掉——否则重新打开的那一帧会把
-    /// 关闭期间积压的起爆当作「此刻在劈」补发出去（照抄水流声的既有口径）。</para>
+    /// <para><b>为什么先清账再判开关</b>：抽干监视器的「新格」归帧发布侧
+    /// （<see cref="SimulationFrameCollector.CollectAudio"/>），因此关闭期间的新格同样每帧被读掉——
+    /// 重新打开那一帧不会把关闭期间积压的起爆当作「此刻在劈」补发出去。
+    /// 本组件按帧**身份 + 序号**共同去重：同一帧读第二次不重复响（一次性事件绝不能因为多读一次而多响一声）。</para>
     /// <para><b>未注册防御</b>：<see cref="ParticleIds.Lightning"/> 由
     /// <see cref="ParticleRegistration.RegisterAll"/> 回填，从未跑过时等于
-    /// <see cref="ParticleRegistry.AirTypeId"/>（0 = 空气）。这种情况按「无法解析」处理：不响 + 只警告一次。</para>
+    /// <see cref="ParticleRegistry.AirTypeId"/>（0 = 空气）。空气槽永不计数，采集侧因此写 0，本组件自动不响。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class LightningSoundDriver : MonoBehaviour
@@ -41,8 +43,11 @@ namespace TapTap2026.Game
         [Tooltip("关掉即不发声，但仍然每帧清账：重新打开不会补发关闭期间积压的起爆。")]
         [SerializeField] private bool _enabled = true;
 
-        /// <summary>是否已经为「类型 id 未注册」报过警告（每帧都会走到这里，不能刷屏）。</summary>
-        private bool _warnedUnregistered;
+        /// <summary>上一次读过的帧（对象身份 + 序号一起判定：一次性事件绝不重复响）。</summary>
+        private SimulationFrame _lastFrame;
+
+        /// <summary>上一次读过的帧序号（配合 <see cref="_lastFrame"/> 识别读过的帧）。</summary>
+        private long _lastSequence;
 
         private void Awake()
         {
@@ -69,53 +74,35 @@ namespace TapTap2026.Game
 
         private void Update()
         {
-            Pump(_driver != null ? _driver.World : null);
+            Pump(_driver != null ? _driver.CurrentFrame : null);
         }
 
         /// <summary>
-        /// 读掉本轮「新写入的雷电格数」并据此决定要不要响：格数 &gt; 0 且启用、音频可用时
+        /// 读本帧「新写入的雷电格数」并据此决定要不要响：格数 &gt; 0 且启用、音频可用时
         /// <see cref="SoundController.PlayOneShot"/> 响一声并返回 true。由 <see cref="Update"/> 每帧调一次；
         /// 公开是为了让测试能脱离帧循环确定性地驱动它。
         /// </summary>
-        /// <param name="world">要观察的世界；null（驱动未就绪）时无账可读，直接不响。</param>
+        /// <param name="frame">已发布的完整帧；null（驱动未就绪）时无账可读，直接不响。</param>
         /// <returns>本帧是否响了一次。</returns>
-        public bool Pump(ParticleWorld world)
+        public bool Pump(SimulationFrame frame)
         {
-            if (world == null)
+            if (frame == null || (ReferenceEquals(frame, _lastFrame) && frame.Sequence == _lastSequence))
             {
+                // 没有新帧（暂停中反复读同一帧）＝没有新的起爆：一次性事件绝不重复响。
                 return false;
             }
 
-            // **先清账再判开关**：关闭期间也必须把监视器读掉，否则重新打开的那一帧会把关闭期间积压的
-            // 起爆当作「此刻在劈」补发出去（响一下）。
-            int created = world.Counts.ConsumeCreated(ParticleIds.Lightning);
+            // 槽位会回收复用：单看序号会把「另一个发布者的第 1 帧」误判成读过的帧，故身份与序号都记。
+            _lastFrame = frame;
+            _lastSequence = frame.Sequence;
 
-            if (ParticleIds.Lightning == ParticleRegistry.AirTypeId)
-            {
-                // id 0 是「空」：那是未注册的占位值，不是「雷电劈了 0 格」。
-                WarnUnregistered();
-                return false;
-            }
-
-            if (created <= 0 || !_enabled || _sound == null)
+            if (!_enabled || _sound == null || frame.Audio.LightningCreated <= 0)
             {
                 return false;
             }
 
             _sound.PlayOneShot(_soundFile, _volume);
             return true;
-        }
-
-        /// <summary>「类型 id 未注册」只报一次（<see cref="Pump"/> 每帧都会走到这条分支）。</summary>
-        private void WarnUnregistered()
-        {
-            if (_warnedUnregistered)
-            {
-                return;
-            }
-
-            _warnedUnregistered = true;
-            Debug.LogWarning("[LightningSoundDriver] 雷电类型 id 尚未注册（ParticleIds.Lightning == 空气），本驱动静音。");
         }
     }
 }

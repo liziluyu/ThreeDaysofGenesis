@@ -1,6 +1,7 @@
 using System.Reflection;
 using NUnit.Framework;
 using TapTap2026.Game;
+using TapTap2026.Simulation;
 using UnityEditor;
 using UnityEngine;
 
@@ -50,6 +51,28 @@ namespace TapTap2026.Tests
             Object.DestroyImmediate(_controllerObject);
             Object.DestroyImmediate(_water);
             Object.DestroyImmediate(_rain);
+        }
+
+        /// <summary>
+        /// 泵驱动直到发布帧里的高速状态达到 <paramref name="expectedActive"/> 为止。
+        /// worker 是异步的：<c>Advance</c> 只采样 + 非阻塞排一批请求 + 消费上一批成果，因此测试必须泵到状态落地。
+        /// </summary>
+        private static void PumpUntilHighSpeed(ParticleSimulationDriver driver, bool expectedActive)
+        {
+            for (int i = 0; i < 4000; i++)
+            {
+                driver.Advance(0.016f);
+
+                SimulationFrame frame = driver.CurrentFrame;
+                if (frame != null && frame.HighSpeed.Active == expectedActive)
+                {
+                    return;
+                }
+
+                System.Threading.Thread.Sleep(1);
+            }
+
+            Assert.Fail($"worker 未在预期时间内把高速状态推进到 Active={expectedActive}");
         }
 
         /// <summary>查音频：资产名、带扩展名的文件名、带目录的路径都指向同一个片段，且不区分大小写。</summary>
@@ -213,7 +236,8 @@ namespace TapTap2026.Tests
         /// <summary>
         /// 高速模式整层静音：会话 Active 期间声床不起播、正在响的声源当帧被硬停、一次性音效被丢弃（也不计数），
         /// 但**目标响度照记**；玩家确认退出（<c>Exit</c>）后一切照常，且被记下的目标立刻重新淡入。
-        /// 判定者是驱动上的 <c>HighSpeedActive</c>——这里是生产里的同一个 `ParticleSimulationDriver`（`Awake` 建好世界后进入模式）。
+        /// 判定者是驱动**已发布帧**里的高速状态——这里是生产里的同一个 `ParticleSimulationDriver`
+        /// （`Awake` 建好世界后，提交进入命令并推进一帧把它发布出来）。
         /// </summary>
         [Test]
         public void HighSpeedMode_SilencesEverySourceAndResumesAfterExit()
@@ -250,7 +274,11 @@ namespace TapTap2026.Tests
                 _controller.SetAmbience("water", 0.6f);
                 Assert.IsTrue(_controller.IsPlaying("water"), "未静音时声床照常起播");
 
-                driver.EnterHighSpeed();
+                // 进入 / 退出都是命令：提交后泵到「帧里的高速状态真的变了」为止（worker 是异步的，
+                // 单次 Advance 只负责采样 + 非阻塞排一批请求 + 消费上一批成果）。
+                driver.Submit(SimulationCommand.EnterHighSpeed());
+                PumpUntilHighSpeed(driver, expectedActive: true);
+
                 Assert.IsTrue(_controller.HighSpeedSilenced, "进入高速模式即静音");
 
                 _controller.Tick(0.016f); // 静音中的那一帧：硬停正在响的声部
@@ -264,7 +292,9 @@ namespace TapTap2026.Tests
                 _controller.PlayOneShot("rain", 0.7f);
                 Assert.AreEqual(0, _controller.OneShotPlayCount, "静音期间丢弃一次性音效，也不计数");
 
-                driver.HighSpeed.Exit(driver.Speed);
+                driver.Submit(SimulationCommand.ExitHighSpeed());
+                PumpUntilHighSpeed(driver, expectedActive: false);
+
                 Assert.IsFalse(_controller.HighSpeedSilenced, "确认退出后不再静音");
 
                 _controller.Tick(0.016f);

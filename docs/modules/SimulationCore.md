@@ -18,7 +18,7 @@
 - 水沸腾时把水汽集中成一小片（可见白汽）；平时慢蒸发只把水汽摊薄进空气（不可见，只在液面）——可见水蒸气只在沸腾时出现；低温饱和处凝结成雨。
 - 两个 O(W·H) 浮点 pass（`HeatMap.Step`、`HumidityField.Step`）跑在 Burst（`[BurstCompile(FloatMode = FloatMode.Strict)]` 指针内核，类级 `[BurstCompile]` + 直调（DirectCall）；`#if UNITY_2022_3_OR_NEWER` / `#else` 走同一内核的 managed 分支）。**不要用 `CompileFunctionPointer`**——本机编辑器 entry point 发现不可靠。热传导 job 化已实测否决（~0.2ms/帧，调度开销吃掉全部收益），刻意保持串行直调；湿度因 budget 读改写 + pair 顺序即语义同样串行。
 - `HeatMap.Step` 有不动点跳过（热场收敛且输入未变时整趟跳过，逐位等价，默认开；收益只在完全静止且已收敛的场；`Swap` 只在两端 typeId 不同时推进格子写入版本）。
-- 热力学系数（`_conductivity`/`_voidHeatLoss`/`_radiativeLoss`/`_adiabaticLapse`/`_airThermalConductivity`/`_airThermalEmissivity`）在 `ParticleSimulationSettings` 资产，驱动每帧写回 `world.Heat`。
+- 热力学系数（`_conductivity`/`_voidHeatLoss`/`_radiativeLoss`/`_adiabaticLapse`/`_airThermalConductivity`/`_airThermalEmissivity`）在 `ParticleSimulationSettings` 资产；驱动把它们（连同随机刻与热力调试叠加）采成 `SimulationTickSettings`，**变化时**才作为命令交给模拟侧应用（`light` 同理走 `LightSettings`）。
 
 ## 随机刻（Minecraft 式）
 
@@ -51,7 +51,45 @@
 - 每个类型必须声明 `Info.MotionReadReach`（`OnMotion` 对 `_cells` 的轴对齐阅读盒，默认 `(1,1,1)`，宁大勿小；读温度不计入——由温度脏路径覆盖），且 `OnMotion` 不得读湿度/光照等非写入即变的状态、单步位移 ≤ 1 格。
 - `OnLogic` 严格空体的类型声明 `Info.HasLogic = false`（构造参数 `hasLogic: false`，默认 `true` 保守）。
 
+## 常驻模拟 worker（阶段 3，2026-10-17 完成）
+
+`SimulationWorker`（`Assets/Scripts/Simulation/SimulationWorker.cs`，纯 C#）是一条**私有 `Thread`**，串行拥有 `ParticleWorld` / `CreatureWorld` / `HighSpeedSession` / 帧环，是这些东西**唯一**的写者与读者：
+
+- **为什么单线程**：`StepMotion` / `StepLogic` 的扫描顺序、世界 RNG 消耗与 `OnLogic` / `OnMotion` 调用次序都是确定性契约，因此**绝不**把同一个 world 的一个 tick 拆给多条线程——结果与在主线程同步推进逐位一致（回归见 `SimulationWorkerTests.ThreadedAndInlineBatches_ProduceIdenticalFrames`：两条路径同一命令日志 ⇒ 像素帧逐位相同）。
+- **两个单向无锁通道**：请求环（主线程 → worker，2 槽）与回执环（worker → 主线程，2 槽），各自「待处理 / 空闲」两个 `SemaphoreSlim` 做所有权移交，下标分属各自线程。主线程用 `TryAcquireRequestSlot` **非阻塞**取槽（满载即放弃本次请求，绝不为模拟排队），`RequestBatch` 把待发命令整批搬进该槽并带上有界的运动 tick 数（`MaxBatchTicks = 255`）；worker 每处理完一批写一条 `SimulationBatchResult`（实测耗时 / 是否发布 / 帧序号 / 世代 / 应用命令数 / 是否暂停）。
+- **命令边界**：命令在**该批第一个运动 tick 之前**按序全部应用（`DrainCommands` → `Apply`），应用过命令的批次一定发布一帧；`Resize` / `PresentNow` 因此即使在暂停中也有效。
+- **至多一帧 / 批**：批次末累计够 `StepsPerPresent` 或应用过命令时发布一帧（五段一次性写完才对外可见）；发布走 `SimulationFramePublisher` 的 release / acquire 语义，主线程要么看到上一帧、要么看到完整新帧。世界重建换新发布器（`Generation + 1`）并立即发布。
+- **故障通道**：任一批抛出的异常被捕获 → `Fault`（首个胜出）+ `FaultCount++` + 就地停摆（暂停推进、丢弃其后命令、仍照常回执）；worker **不碰任何 Unity API**，主线程读回执后 `Debug.LogError` 一次。世界的诊断消息（未注册类型 / shade 越界）经 `ParticleWorld.MessageSink` 进队列，同样由主线程记录。
+- **生命周期**：构造时在**调用线程**建好世界并发布第一帧（消费方不必等第一次 `Update`）；`Start()` 起线程，`Stop()` 置停止标志 + 唤醒 + `Join` 并复位两环（可再次 `Start()` 沿用同一个世界）。**必须在 Unity 对象销毁前 Join**（驱动在 `OnDisable` / `OnDestroy` 做）。
+- **确定性重放口**：`RunBatchInline()` 在调用线程上跑**同一段** `Service` 路径（绕开线程），供测试做「分线程 vs 同步」逐位比对；生产路径永不调它。
+
+## 命令与输出帧（阶段 1 边界，见 `docs/design-threaded-simulation-rendering.md`）
+
+`SimulationCommand`（值类型 + 有序队列 `SimulationCommandQueue`：`Sequence` 单调递增、入队顺序即应用顺序）+ `SimulationFrame` 一族**纯数据 DTO**（全部可脱离 Unity 对象存在）：
+
+- `RenderFrame`：`RenderColor[] Pixels`（**项目自有纯值 RGBA8**，帧槽持有、跨帧复用；不含任何 Unity 类型，见下「worker 安全光栅化」）+ 尺寸 + `Tick`/`Daylight`/`Brightness`，渲染真源；
+- `WorldFrame`：尺寸、`Tick`、`Daylight`、`Paused`、`CellProbe Probe`（坐标 / typeId / 温度 / 热量 / 湿度的值拷贝，不含 `Cell` 引用）。探针**在 `ProbeCell` 命令被应用的那一刻采一份**（命令边界；先于同批之后的命令与下一个 tick 的网格写入），此后不再重采——因此读数看到的是该命令**之前**那些命令的结果；世界重建时清空（`Valid = false`）；
+- `CreatureFrame`：`CreatureRenderData` 数组（`Id`/`Species`/插值位置/碰撞盒/朝向/动画倍率/占位色）+ 逻辑帧读数。`Id` 由 `CreatureWorld.Spawn` 赋值、同一世界内从 **1** 起单调递增：**0 是「未赋值」哨兵**（DTO 默认值），渲染层据此区分空槽；
+- `AudioFrame`：液体运动比例、固体运动格数、火格存量、自上次发布以来新写入的雷电格数；
+- `HighSpeedFrame`：高速会话状态 / 进度 / 采样 + 每类型产生 / 死亡 / 终态存量。
+
+`SimulationFramePublisher` 是 3 槽轮换（写 / 显示 / 空闲）：只写 `BeginWrite()` 的槽，`Publish()` 才对外可见；**已发布帧在两次后续发布之内保持不变**，写指针前进一格 ⇒ 正在写的槽永远不是当前显示的槽。像素数组按尺寸分配、绝不跨尺寸复用；世界重建 = 换一个发布器 + `Generation` +1。
+
+`SimulationFrameCollector` 是**生产侧采集**（只有 world 的唯一写者可以调）：世界 → 像素（`ParticlePixelBuffer.Fill`，**worker 安全**：纯值类型 + 纯数学，不引用 Unity，见下）、世界面向数据 / 探针、实体 DTO、音频观察（**抽干** `MotionMonitor` / `Counts` 的记账）、高速统计。消费侧（渲染 / UI / 音频 / 流程）只读帧。
+
+### worker 安全光栅化（阶段 2a，2026-10-16 完成）
+
+- **项目自有纯值像素**：`RenderColor`（`r/g/b/a` 字节，与 `Color32` 同布局同字节，实现 `IEquatable`）替代像素路径上的 Unity `Color32`；`RenderFrame.Pixels`、`ParticleType.RenderPalette`、`LightSettings.Day/NightBackground` 都是它。
+- **纯数学**：`RenderColorMath` 提供 `Clamp01` / `Lerp(float,…)` / `Lerp(in RenderColor,…)` / `ScaleRgb`——**逐位复刻** `Mathf.Clamp01` / `Mathf.Lerp` / `Color32.Lerp`（浮点乘后**截断**）与旧算式 `(byte)(通道 × 系数)`。光栅化输出因此与 Unity 路径逐位相同。
+- **Unity 只在两个边界出现**（`RenderColorConversion`，本切片唯一 `using UnityEngine` 的文件）：
+  1. **注册 / 建表时**把 Unity 授权的 `Info.Palette`（`Color32[]`，粒子授权面不变）镜像成 `ParticleType.RenderPalette`（`RenderColor[]`）；
+  2. **主线程上屏时**把一帧像素整块拷进 `ParticleRenderer` 复用的 `Color32[]` 上传缓冲（`CopyToColor32`）再 `SetPixels32` / `Apply`。
+- **`ParticlePixelBuffer` 已无 `using UnityEngine`**：`Fill(ParticleWorld, RenderColor[], RenderColor background[, float brightness])` 只读网格 / 热图 / 湿度场与纯值派生表（类型标志表按类型表引用缓存，只镜像 `RenderPalette`），描边 / 液面高光 / 云 / 热力叠加 / 昼夜明暗全部走 `RenderColorMath`。邻居规则与判定顺序逐字未动。
+- **零分配稳态**：像素缓冲归帧槽、上传缓冲与纹理同生共死，逐帧只做循环拷贝。
+- **仍未做完**：阶段 4 的性能 / 压力实测（Thread Profiler 上量化主线程与 worker 的耗时分摊、真实窗口 resize / 高速结算 / 反复进出 Play 的压力矩阵）尚未执行——阶段 3 的 worker 只做过功能与确定性验证（`SimulationWorkerTests` + 分线程/同步逐位比对）。
+- **帧载荷已全纯值**：`CreatureRenderData.PlaceholderColor` 也已是 `RenderColor`（物种授权的 `Color32` 在采集边界转换），因此 `SimulationFrame` 里没有任何 Unity 类型。
+
 ## 世界常驻观察者（零 RNG / 零写入，读数不改模拟）
 
-- `MotionMonitor`（按标签掩码的通用运动量观察者，世界持两实例）：`world.LiquidMotion`（带 `Liquid`）导出 `MovingRatio` 供水流动声；`world.SolidMotion`（`Solid` 且非 `Organic`）供落沙声读**绝对** `MovingCount`。O(1) 增量维护 `TrackedCount`（Set/SetPhase 差分）与 `MovingCount`（Swap 按换位匹配端数），掩码构造时对 `world.Types` 摊表。
+- `MotionMonitor`（按标签掩码的通用运动量观察者，世界持两实例）：`world.LiquidMotion`（带 `Liquid`）导出 `MovingRatio` 供水流动声；`world.SolidMotion`（`Solid` 且非 `Organic`）供落沙声读**绝对** `MovingCount`。**两者的 `Reset()` 由帧采集侧每发布一次调一次**（不再由消费方清账），读数随 `AudioFrame` 发布给所有消费者。O(1) 增量维护 `TrackedCount`（Set/SetPhase 差分）与 `MovingCount`（Swap 按换位匹配端数），掩码构造时对 `world.Types` 摊表。
 - `ParticleCountMonitor`（`world.Counts`）：按类型 O(1) 维护存量 `Count(typeId)` 与新增格数 `ConsumeCreated(typeId)`（读后清零）。`Clear` 走 `Set`、`Swap` 不参与、空气与越界 id 恒 0 不抛。

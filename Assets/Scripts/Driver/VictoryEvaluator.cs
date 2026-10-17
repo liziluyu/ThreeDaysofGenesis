@@ -18,7 +18,7 @@ namespace TapTap2026.Game
         /// <summary>本次高速模式内该类型的死亡次数。</summary>
         public long deaths;
 
-        /// <summary>高速结束那一刻该类型的存量格数（<c>HighSpeedSession.GetFinalCount</c>）；无会话 / 未结算 = 0。</summary>
+        /// <summary>高速结束那一刻该类型的存量格数（帧里的 <c>HighSpeedFrame.GetFinalCount</c>）；无会话 / 未结算 = 0。</summary>
         public long finalCount;
     }
 

@@ -1,4 +1,5 @@
 using System;
+using TapTap2026.Simulation;
 using UnityEngine;
 
 namespace TapTap2026.Game
@@ -22,7 +23,7 @@ namespace TapTap2026.Game
     /// 时间轴用 <see cref="Time.unscaledDeltaTime"/>（不随 <c>Time.timeScale</c> 变）。</para>
     /// <para><b>淡出后停止</b>：目标为 0 时音量平滑降到听不见（<see cref="SilentVolume"/>）才真正 <c>Stop()</c>；
     /// 目标重新为正会重新 <c>Play()</c>（从静音淡入）。声源与 clip 都保留，重新推目标即可再次淡入。</para>
-    /// <para><b>高速模式整层静音</b>：<see cref="ParticleSimulationDriver.HighSpeedActive"/> 期间（进入后到玩家确认退出前）
+    /// <para><b>高速模式整层静音</b>：帧里的 <see cref="HighSpeedFrame.Active"/> 期间（进入后到玩家确认退出前）
     /// <see cref="HighSpeedSilenced"/> 恒为 true——所有声音都从本类过，因此这里一刀压掉就覆盖全部声源：
     /// <see cref="Update"/> **硬停**全部声床与一次性源（不淡出：淡出那段尾巴也还是在出声）、
     /// <see cref="SetAmbience"/> 不起播、<see cref="PlayOneShot"/> 直接丢弃。理由：高速模式一帧跑上百个逻辑帧
@@ -51,7 +52,7 @@ namespace TapTap2026.Game
         [Tooltip("声床响度平滑速度：每秒把音量朝目标推进的幅度（1 = 满量程约 1 秒）。0 = 立即跳变（会有台阶声）。")]
         [SerializeField, Min(0f)] private float _loudnessPerSecond = 3f;
 
-        [Tooltip("高速模式的判定者：留空则回退到同物体 / 场景里的 ParticleSimulationDriver（只为读 HighSpeedActive）。" +
+        [Tooltip("高速模式的判定者：留空则回退到同物体 / 场景里的 ParticleSimulationDriver（只为读已发布帧里的高速状态）。" +
                  "留空且找不到驱动 = 永不静音。")]
         [SerializeField] private ParticleSimulationDriver _driver;
 
@@ -83,7 +84,11 @@ namespace TapTap2026.Game
         /// </summary>
         public bool HighSpeedSilenced
         {
-            get { return _driver != null && _driver.HighSpeedActive; }
+            get
+            {
+                SimulationFrame frame = _driver != null ? _driver.CurrentFrame : null;
+                return frame != null && frame.HighSpeed.Active;
+            }
         }
 
         private void Awake()

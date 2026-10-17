@@ -98,6 +98,12 @@ namespace TapTap2026.Simulation
             get { return "鱼"; }
         }
 
+        /// <summary>物种标识（渲染按它选鱼 idle 帧序列）。</summary>
+        public override CreatureSpecies Species
+        {
+            get { return CreatureSpecies.Fish; }
+        }
+
         /// <summary>占位色：蓝（真 sprite 接线前的调试色块；鱼对蓝色水面背景的辨识度比灰色高）。</summary>
         public override Color32 PlaceholderColor
         {

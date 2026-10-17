@@ -335,12 +335,13 @@ namespace TapTap2026.Tests
                 "换形态水账不变（湿腐殖土与湿土同样计入水账）");
         }
 
-        /// <summary>把世界映射成像素缓冲并读回 (x,y) 的单格颜色（纯 CPU，不需要 GPU）。</summary>
+        /// <summary>把世界映射成像素缓冲并读回 (x,y) 的单格颜色（纯 CPU，不需要 GPU；像素是纯值类型，
+        /// 这里转回 Unity 颜色以便与源调色板直接比对）。</summary>
         private static Color32 Render(ParticleWorld world, int x, int y)
         {
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, default(Color32));
-            return pixels[world.Index(x, y)];
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, default(RenderColor));
+            return RenderColorConversion.ToColor32(pixels[world.Index(x, y)]);
         }
 
         private static void RandomTick(ParticleWorld world, ushort typeId, int x, int y)

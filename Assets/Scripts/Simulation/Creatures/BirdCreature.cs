@@ -128,6 +128,12 @@ namespace TapTap2026.Simulation
             get { return "鸟"; }
         }
 
+        /// <summary>物种标识（渲染按它选鸟 idle 帧序列）。</summary>
+        public override CreatureSpecies Species
+        {
+            get { return CreatureSpecies.Bird; }
+        }
+
         /// <summary>占位色：金黄（与兔棕、鱼蓝区分开；真 sprite 接线前的调试色块）。</summary>
         public override Color32 PlaceholderColor
         {

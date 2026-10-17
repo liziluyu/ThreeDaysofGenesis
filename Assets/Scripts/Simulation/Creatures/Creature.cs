@@ -3,6 +3,27 @@ using UnityEngine;
 namespace TapTap2026.Simulation
 {
     /// <summary>
+    /// 物种标识（渲染 DTO 的载荷）：渲染层按它选美术帧序列，模拟侧按它算动画倍率。
+    /// 物种全集是闭集（兔 / 鱼 / 鸟），新增物种时在这里补一项。
+    /// </summary>
+    /// <remarks><see cref="None"/> = 没有登记物种的实体（测试探针、将来未接线的物种）：渲染层退回占位块，
+    /// 与「未接线真 sprite」的旧行为一致。</remarks>
+    public enum CreatureSpecies : byte
+    {
+        /// <summary>未登记物种（渲染退化为占位块）。</summary>
+        None = 0,
+
+        /// <summary>兔子。</summary>
+        Rabbit = 1,
+
+        /// <summary>鱼。</summary>
+        Fish = 2,
+
+        /// <summary>鸟。</summary>
+        Bird = 3,
+    }
+
+    /// <summary>
     /// 动物实体基类：连续浮点位置 + 贴地 AABB 碰撞体，随逻辑帧（20 Hz）推进。
     /// 相当于粒子体系里 <see cref="IParticleType"/> 的地位——物种差异全部由派生类的虚属性表达，
     /// <see cref="CreatureWorld"/> 只认识本基类，不认识具体物种。
@@ -297,6 +318,22 @@ namespace TapTap2026.Simulation
 
         /// <summary>物种调试名（中文，日志 / 编辑器用）。</summary>
         public abstract string DebugName { get; }
+
+        /// <summary>
+        /// 渲染标识符：由 <see cref="CreatureWorld.Spawn"/> 赋值的单调递增值（从 1 起），同一世界实例内唯一且稳定。
+        /// 渲染层用它（而不是对象引用）对账视图——帧里传的是值拷贝，因此帧可以脱离活实体存在。
+        /// 真实实体恒 &gt; 0；0 是「未赋值」哨兵（<see cref="CreatureRenderData"/> 的默认 <c>Id</c>）。
+        /// </summary>
+        public int Id { get; internal set; }
+
+        /// <summary>
+        /// 物种标识：渲染 DTO 按它选美术帧序列。默认 <see cref="CreatureSpecies.None"/>（退回占位块），
+        /// 已接线的物种各自覆盖。
+        /// </summary>
+        public virtual CreatureSpecies Species
+        {
+            get { return CreatureSpecies.None; }
+        }
 
         /// <summary>渲染占位色（本阶段没有美术资源，渲染层用纯色方块表示）。</summary>
         public abstract Color32 PlaceholderColor { get; }

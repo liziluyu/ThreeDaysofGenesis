@@ -168,20 +168,21 @@ namespace TapTap2026.Tests
 
         // ============================== 渲染描边（HasOutline → ParticlePixelBuffer 调暗） ==============================
 
-        /// <summary>该格按调色板与 shade 应显示的基底色（未描边、未变暗）。</summary>
+        /// <summary>该格按调色板与 shade 应显示的基底色（Unity 授权的源调色板，未经调制）。</summary>
         private static Color32 BaseColorAt(ParticleWorld world, int x, int y)
         {
             Cell cell = world.GetCell(x, y);
             return ParticleRegistry.Types[cell.typeId].Info.Palette[cell.shade];
         }
 
-        private static Color32 Darkened(Color32 color)
+        /// <summary>亲笔按旧算式（源调色板色 × 描边系数、alpha 不动）算出的描边像素——光栅化输出必须与它逐位相同。</summary>
+        private static RenderColor Darkened(Color32 color)
         {
-            return new Color32(
+            return RenderColorConversion.FromColor32(new Color32(
                 (byte)(color.r * ParticlePixelBuffer.OutlineFactor),
                 (byte)(color.g * ParticlePixelBuffer.OutlineFactor),
                 (byte)(color.b * ParticlePixelBuffer.OutlineFactor),
-                color.a);
+                color.a));
         }
 
         /// <summary>
@@ -200,10 +201,10 @@ namespace TapTap2026.Tests
                 }
             }
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
-            Assert.AreEqual(BaseColorAt(world, 2, 2), pixels[world.Index(2, 2)], "中心格四邻全是沙，不应描边");
+            Assert.AreEqual(RenderColorConversion.FromColor32(BaseColorAt(world, 2, 2)), pixels[world.Index(2, 2)], "中心格四邻全是沙，不应描边");
             Assert.AreEqual(Darkened(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "角格与空气交界，应调暗");
         }
 
@@ -216,8 +217,8 @@ namespace TapTap2026.Tests
             world.Set(2, 1, Sand);
             world.Set(3, 1, Soil);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             for (int x = 1; x <= 3; x++)
             {
@@ -232,10 +233,10 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(3, 3, 7u);
             world.Set(1, 1, ParticleIds.Grass);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
-            Assert.AreEqual(BaseColorAt(world, 1, 1), pixels[world.Index(1, 1)], "草没有任何渲染标志，与空气交界也不应改色");
+            Assert.AreEqual(RenderColorConversion.FromColor32(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "草没有任何渲染标志，与空气交界也不应改色");
         }
 
         /// <summary>网格越界视同空气：贴在世界边缘的粒子是暴露面，照样描边。</summary>
@@ -245,8 +246,8 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(4, 3, 7u);
             world.Set(0, 0, Sand);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             Assert.AreEqual(Darkened(BaseColorAt(world, 0, 0)), pixels[world.Index(0, 0)], "贴世界边缘的沙应描边");
         }
@@ -266,8 +267,8 @@ namespace TapTap2026.Tests
 
             world.Set(1, 1, Sand);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             Assert.AreEqual(Darkened(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "被隐形大气包围等同被空气包围，应描边");
         }
@@ -279,12 +280,12 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(3, 3, 7u);
             world.Set(1, 1, Sand);
 
-            var day = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, day, new Color32(9, 8, 7, 255));
-            Color32 dayEdge = day[world.Index(1, 1)]; // 已是描边色
+            var day = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, day, new RenderColor(9, 8, 7, 255));
+            RenderColor dayEdge = day[world.Index(1, 1)]; // 已是描边色
 
-            var night = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, night, new Color32(9, 8, 7, 255), 0.5f);
+            var night = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, night, new RenderColor(9, 8, 7, 255), 0.5f);
 
             Assert.AreEqual((byte)(dayEdge.r / 2), night[world.Index(1, 1)].r, "夜晚：描边色也要减半");
             Assert.AreEqual((byte)(dayEdge.g / 2), night[world.Index(1, 1)].g);
@@ -302,8 +303,8 @@ namespace TapTap2026.Tests
             world.Set(1, 0, Stone);
             world.Set(1, 2, Stone);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             Assert.AreEqual(Darkened(BaseColorAt(world, 1, 1)), pixels[world.Index(1, 1)], "沙与水交界，应调暗");
         }

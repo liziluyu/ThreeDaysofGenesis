@@ -30,6 +30,9 @@ namespace TapTap2026.Tests
         private LiquidFlowSoundDriver _driver;
         private AudioClip _water;
 
+        /// <summary>帧采集装置：把世界采成已发布的帧（本驱动只读帧，不读世界）。</summary>
+        private readonly FramePump _frames = new FramePump();
+
         [SetUp]
         public void SetUp()
         {
@@ -81,7 +84,7 @@ namespace TapTap2026.Tests
             FillFloor(calm);
             calm.Set(1, 1, WaterId); // 已经躺在石板上：没有运动
 
-            Assert.AreEqual(0f, _driver.Pump(calm, Frame), 1e-6f, "静水在死区内");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(calm), Frame), 1e-6f, "静水在死区内");
             Assert.AreEqual(0f, _sound.TargetLoudness("water"), 1e-6f);
 
             ParticleWorld flowing = CreateWorld();
@@ -90,7 +93,7 @@ namespace TapTap2026.Tests
             flowing.Set(1, 5, WaterId);
             flowing.StepMotion();
 
-            float loudness = _driver.Pump(flowing, Frame);
+            float loudness = _driver.Pump(_frames.Publish(flowing), Frame);
             Assert.Greater(loudness, 0f, "水在动就该有声");
             Assert.AreEqual(loudness, _sound.TargetLoudness("water"), 1e-6f, "目标响度推给了声音控制器");
 
@@ -99,7 +102,7 @@ namespace TapTap2026.Tests
             float previous = loudness;
             for (int i = 0; i < 120; i++)
             {
-                float next = _driver.Pump(flowing, Frame);
+                float next = _driver.Pump(_frames.Publish(flowing), Frame);
                 Assert.LessOrEqual(next, previous, "流动停止后单调衰减");
                 previous = next;
             }
@@ -124,7 +127,7 @@ namespace TapTap2026.Tests
             flowing.Set(1, 5, WaterId);
             flowing.StepMotion();
 
-            Assert.AreEqual(0f, _driver.Pump(flowing, Frame), 1e-6f);
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(flowing), Frame), 1e-6f);
             Assert.AreEqual(0f, _sound.TargetLoudness("water"), 1e-6f, "关掉即把目标归零，交给控制器淡出");
         }
 
@@ -145,7 +148,7 @@ namespace TapTap2026.Tests
             for (int i = 0; i < 3; i++)
             {
                 world.StepMotion();
-                _driver.Pump(world, Frame);
+                _driver.Pump(_frames.Publish(world), Frame);
 
                 Assert.AreEqual(0L, world.LiquidMotion.MovingCount, "关闭期间每帧读掉了本轮记账");
             }

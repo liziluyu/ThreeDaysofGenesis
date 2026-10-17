@@ -1530,7 +1530,7 @@ GameObject:
   - component: {fileID: 206781946}
   - component: {fileID: 206781945}
   m_Layer: 0
-  m_Name: LitTicksLabel (1)
+  m_Name: DarkTicksLabel
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -1580,7 +1580,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: "\u767D\u5929"
+  m_text: "\u591C\u665A"
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 79f51c32e9dc32b4c894e6affa9018c2, type: 2}
   m_sharedMaterial: {fileID: 1118628018020105129, guid: 79f51c32e9dc32b4c894e6affa9018c2, type: 2}
@@ -2716,7 +2716,7 @@ RectTransform:
   m_Father: {fileID: 88855552}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
-  m_AnchorMax: {x: 0, y: 0}
+  m_AnchorMax: {x: 0.33333334, y: 1}
   m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 0, y: 0}
   m_Pivot: {x: 0.5, y: 0.5}
@@ -2852,7 +2852,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &450441821
 RectTransform:
   m_ObjectHideFlags: 0
@@ -3894,11 +3894,11 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 665702533}
         m_TargetAssemblyTypeName: TapTap2026.Game.SandboxHud, TapTap2026.Game
-        m_MethodName: AddLitSeconds
+        m_MethodName: AddDarkSeconds
         m_Mode: 3
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
-          m_ObjectArgumentAssemblyTypeName: 
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 5
           m_FloatArgument: 0
           m_StringArgument: 
@@ -4526,8 +4526,8 @@ RectTransform:
   m_Children: []
   m_Father: {fileID: 1273515517}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 0, y: 0}
-  m_AnchorMax: {x: 0, y: 0}
+  m_AnchorMin: {x: 0.33333334, y: 0}
+  m_AnchorMax: {x: 0.33333334, y: 1}
   m_AnchoredPosition: {x: -0.000015258789, y: -0.0000009536743}
   m_SizeDelta: {x: 23.5637, y: 10.963}
   m_Pivot: {x: 0.5, y: 0.5}
@@ -8742,7 +8742,7 @@ GameObject:
   - component: {fileID: 1449040408}
   - component: {fileID: 1449040407}
   m_Layer: 0
-  m_Name: LitTicks
+  m_Name: DarkTicks
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -9394,11 +9394,11 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 665702533}
         m_TargetAssemblyTypeName: TapTap2026.Game.SandboxHud, TapTap2026.Game
-        m_MethodName: AddLitSeconds
+        m_MethodName: AddDarkSeconds
         m_Mode: 3
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
-          m_ObjectArgumentAssemblyTypeName: 
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: -5
           m_FloatArgument: 0
           m_StringArgument: 
@@ -10787,11 +10787,11 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 665702533}
         m_TargetAssemblyTypeName: TapTap2026.Game.SandboxHud, TapTap2026.Game
-        m_MethodName: AddLitSeconds
+        m_MethodName: AddDarkSeconds
         m_Mode: 3
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
-          m_ObjectArgumentAssemblyTypeName: 
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 1
           m_FloatArgument: 0
           m_StringArgument: 
@@ -10997,7 +10997,7 @@ MonoBehaviour:
   m_MinValue: 0
   m_MaxValue: 30
   m_WholeNumbers: 1
-  m_Value: 10
+  m_Value: 15
   m_OnValueChanged:
     m_PersistentCalls:
       m_Calls: []
@@ -11364,9 +11364,9 @@ MonoBehaviour:
   _driver: {fileID: 1926363750}
   _renderer: {fileID: 1926363751}
   _enabled: 1
-  _litTicks: 600
-  _darkTicks: 600
-  _intensity: 10
+  _litTicks: 300
+  _darkTicks: 300
+  _intensity: 15
   _cloudExtinction: 0.05
   _dayBackground:
     serializedVersion: 2
@@ -12042,11 +12042,11 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 665702533}
         m_TargetAssemblyTypeName: TapTap2026.Game.SandboxHud, TapTap2026.Game
-        m_MethodName: AddLitSeconds
+        m_MethodName: AddDarkSeconds
         m_Mode: 3
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
-          m_ObjectArgumentAssemblyTypeName: 
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: -1
           m_FloatArgument: 0
           m_StringArgument: 

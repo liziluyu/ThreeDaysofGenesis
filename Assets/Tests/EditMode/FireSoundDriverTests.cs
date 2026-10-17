@@ -12,9 +12,10 @@ namespace TapTap2026.Tests
     /// </summary>
     /// <remarks>
     /// <para>火格用生产注册表（<see cref="ParticleRegistration.RegisterAll"/>）里的
-    /// <see cref="ParticleIds.Fire"/> 直接写进网格——本驱动只读存量，不推进世界，因此「写几格就是几格」。
+    /// <see cref="ParticleIds.Fire"/> 直接写进网格，再由 <see cref="FramePump"/> 按生产路径采成一帧——
+    /// 本驱动只读帧快照里的火格存量，不推进世界，因此「写几格就是几格」。
     /// 声音控制器用现建现销的零数据片段，经 <see cref="SerializedObject"/> 接线。驱动器的
-    /// <c>Pump(world, deltaTime)</c> 带显式 dt，管线测试不需要帧循环、也不依赖
+    /// <c>Pump(frame, deltaTime)</c> 带显式 dt，管线测试不需要帧循环、也不依赖
     /// <see cref="Time.unscaledDeltaTime"/>。</para>
     /// <para>映射与 EMA 的数学契约已随 <see cref="SoundController.MapLoudness"/> /
     /// <see cref="SoundController.Ema"/> 迁到 <see cref="SoundControllerTests"/>，这里只覆盖管线的接线与缩放。</para>
@@ -31,6 +32,9 @@ namespace TapTap2026.Tests
         private SoundController _sound;
         private FireSoundDriver _driver;
         private AudioClip _fire;
+
+        /// <summary>帧采集装置：把世界采成已发布的帧（本驱动只读帧，不读世界）。</summary>
+        private readonly FramePump _frames = new FramePump();
 
         [SetUp]
         public void SetUp()
@@ -68,7 +72,7 @@ namespace TapTap2026.Tests
         {
             ParticleWorld world = CreateWorld();
 
-            Assert.AreEqual(0f, _driver.Pump(world, Frame), 1e-6f, "没有火格 → 目标响度 0");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world), Frame), 1e-6f, "没有火格 → 目标响度 0");
             Assert.AreEqual(0f, _sound.TargetLoudness("fire"), 1e-6f);
         }
 
@@ -83,7 +87,7 @@ namespace TapTap2026.Tests
             float loudness;
             for (int i = 0; i < 120; i++)
             {
-                loudness = _driver.Pump(world, Frame);
+                loudness = _driver.Pump(_frames.Publish(world), Frame);
                 Assert.GreaterOrEqual(loudness, previous, "EMA 单调逼近目标");
                 Assert.LessOrEqual(loudness, 1f, "响度不超过 _volume");
                 previous = loudness;
@@ -121,13 +125,13 @@ namespace TapTap2026.Tests
             ParticleWorld atDeadZone = CreateWorld();
             FillFire(atDeadZone, 8); // 恰好等于死区
 
-            Assert.AreEqual(0f, _driver.Pump(atDeadZone, Frame), 1e-6f, "死区边界上的火完全静音");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(atDeadZone), Frame), 1e-6f, "死区边界上的火完全静音");
             Assert.AreEqual(0f, _sound.TargetLoudness("fire"), 1e-6f);
 
             ParticleWorld aboveDeadZone = CreateWorld();
             FillFire(aboveDeadZone, 9);
 
-            Assert.Greater(_driver.Pump(aboveDeadZone, Frame), 0f, "越过死区即出声");
+            Assert.Greater(_driver.Pump(_frames.Publish(aboveDeadZone), Frame), 0f, "越过死区即出声");
         }
 
         /// <summary><c>_volume</c> 是总音量缩放：目标响度 = 映射值 × 它，稳定值随之等比缩小。</summary>
@@ -144,7 +148,7 @@ namespace TapTap2026.Tests
             float loudness = 0f;
             for (int i = 0; i < 120; i++)
             {
-                loudness = _driver.Pump(world, Frame);
+                loudness = _driver.Pump(_frames.Publish(world), Frame);
                 Assert.LessOrEqual(loudness, 0.5f, "缩放后任何一帧都不得超过 _volume");
             }
 
@@ -159,18 +163,18 @@ namespace TapTap2026.Tests
             ParticleWorld world = CreateWorld();
             FillFire(world, 40); // 目标 = 满响度
 
-            Assert.AreEqual(0f, _driver.Pump(world, 0f), 1e-6f, "dt = 0 时冻结在当前响度");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world), 0f), 1e-6f, "dt = 0 时冻结在当前响度");
 
-            float stepped = _driver.Pump(world, 1000f);
+            float stepped = _driver.Pump(_frames.Publish(world), 1000f);
             float expected = SoundController.Ema(0f, 1f, 0.25f, SoundController.MaxDeltaTime);
 
             Assert.AreEqual(expected, stepped, 1e-6f, "秒级 dt 只按 ClampDeltaTime 的上界推进一步");
             Assert.Less(stepped, 1f, "绝不在一帧里跳满量程");
         }
 
-        /// <summary>关掉或没有世界即收声：清掉平滑记忆、把目标归零（交给控制器淡出），并返回 0。</summary>
+        /// <summary>关掉或没有帧即收声：清掉平滑记忆、把目标归零（交给控制器淡出），并返回 0。</summary>
         [Test]
-        public void Pump_IsSilentWhenDisabledOrWorldIsNull()
+        public void Pump_IsSilentWhenDisabledOrFrameIsNull()
         {
             ParticleWorld world = CreateWorld();
             FillFire(world, 40);
@@ -181,7 +185,7 @@ namespace TapTap2026.Tests
             serialized.FindProperty("_enabled").boolValue = false;
             serialized.ApplyModifiedPropertiesWithoutUndo();
 
-            Assert.AreEqual(0f, _driver.Pump(world, Frame), 1e-6f, "关掉即返回 0");
+            Assert.AreEqual(0f, _driver.Pump(_frames.Publish(world), Frame), 1e-6f, "关掉即返回 0");
             Assert.AreEqual(0f, _sound.TargetLoudness("fire"), 1e-6f, "关掉即收声");
 
             serialized.FindProperty("_enabled").boolValue = true;
@@ -189,11 +193,11 @@ namespace TapTap2026.Tests
 
             _sound.SetAmbience("fire", 0.8f);
 
-            Assert.AreEqual(0f, _driver.Pump(null, Frame), 1e-6f, "world = null 即返回 0");
-            Assert.AreEqual(0f, _sound.TargetLoudness("fire"), 1e-6f, "world = null 即收声");
+            Assert.AreEqual(0f, _driver.Pump(null, Frame), 1e-6f, "帧为 null 即返回 0");
+            Assert.AreEqual(0f, _sound.TargetLoudness("fire"), 1e-6f, "帧为 null 即收声");
         }
 
-        /// <summary>12×12 的生产表世界；本驱动只读存量，不推进世界。</summary>
+        /// <summary>12×12 的生产表世界；本驱动只读帧快照，不推进世界。</summary>
         private static ParticleWorld CreateWorld()
         {
             return new ParticleWorld(W, H, 2026u);
@@ -208,13 +212,13 @@ namespace TapTap2026.Tests
             }
         }
 
-        /// <summary>连续推若干帧，返回稳定后的目标响度。</summary>
+        /// <summary>连续推若干帧（每帧按生产路径重采一次），返回稳定后的目标响度。</summary>
         private float Settle(ParticleWorld world)
         {
             float loudness = 0f;
             for (int i = 0; i < 200; i++)
             {
-                loudness = _driver.Pump(world, Frame);
+                loudness = _driver.Pump(_frames.Publish(world), Frame);
             }
 
             return loudness;

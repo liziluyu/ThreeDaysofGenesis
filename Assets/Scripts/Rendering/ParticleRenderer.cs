@@ -9,8 +9,9 @@ namespace TapTap2026.Rendering
     /// 不创建任何 per-particle 的 GameObject / SpriteRenderer / Transform。
     /// </summary>
     /// <remarks>
-    /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步。
-    /// 上屏时机完全由调用方（<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
+    /// 本组件只做「把 CPU 缓冲推上 GPU」，不关心模拟跑了几步，也**拿不到活网格**：
+    /// 它消费的是帧发布侧已完成的一帧像素（<see cref="Present"/>），上屏时机由调用方
+    /// （<c>ParticleSimulationDriver</c>）决定——这是渲染与模拟解耦的接缝。
     /// <para><b>quad 与笔刷叠层都是场景对象</b>（<see cref="_meshFilter"/> / <see cref="_meshRenderer"/> /
     /// <see cref="_brushRenderer"/> 三个字段在 Inspector 里接线）：它们在编辑模式可见、可选中、可调参数，
     /// 方便直接看取景与叠层位置。只有编辑器里没接线时才在运行期自建（<see cref="CreateQuad"/> /
@@ -18,12 +19,9 @@ namespace TapTap2026.Rendering
     /// 建出来的对象一律 <see cref="HideFlags.DontSave"/>，绝不落进 .unity 文件。</para>
     /// <para>除网格 quad 外，本组件还持有**笔刷轮廓叠层**（<see cref="SetBrushOutline"/>，编辑器驱动）：
     /// 一层与格子逐格对齐的白像素圆 sprite，压在所有像素之上。</para>
-    /// <para>上屏前按 <see cref="LightController.Daylight"/> 做昼夜表现：天空色在
-    /// <see cref="NightBackground"/> / <see cref="DayBackground"/> 之间取色，粒子与云按
-    /// <c>Lerp(NightBrightness, 1, Daylight)</c> 整体变暗。过渡长度由光照周期自动给出（下一时段长度的 1/10）。</para>
-    /// <para>这三个昼夜参数**不在本组件上配置**：它们的唯一配置面是 <c>ParticleLightDriver</c>，
-    /// 由它每帧推送过来（同 <c>ParticleSimulationDriver</c> 把热力学参数写回世界）。这里只保留代码默认值，
-    /// 好在没有光源驱动器时也能正常上屏。</para>
+    /// <para><b>昼夜表现不在本组件里</b>：天空色与整体明暗在生成像素时按 <see cref="LightController.Daylight"/>
+    /// 算好（见 <c>SimulationFrameCollector.CollectRender</c>），本组件只上传结果——
+    /// 因此昼夜参数的配置面（<c>ParticleLightDriver</c>）与本组件完全无关。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class ParticleRenderer : MonoBehaviour
@@ -33,19 +31,6 @@ namespace TapTap2026.Rendering
             "Universal Render Pipeline/2D/Sprite-Unlit-Default",
             "Sprites/Default",
         };
-
-        /// <summary>白天天空色的代码默认值（配置面在 <c>ParticleLightDriver</c>）。</summary>
-        public static readonly Color32 DefaultDayBackground = new Color32(0xCC, 0xE5, 0xFF, 255);
-
-        /// <summary>夜晚天空色的代码默认值（配置面在 <c>ParticleLightDriver</c>）。</summary>
-        public static readonly Color32 DefaultNightBackground = new Color32(0x2A, 0x22, 0x3A, 255);
-
-        /// <summary>夜晚亮度倍率的代码默认值（配置面在 <c>ParticleLightDriver</c>）。</summary>
-        public const float DefaultNightBrightness = 0.5f;
-
-        private Color32 _dayBackground = DefaultDayBackground;
-        private Color32 _nightBackground = DefaultNightBackground;
-        private float _nightBrightness = DefaultNightBrightness;
 
         [Tooltip("留空则运行时用 URP 2D 的无光照 sprite 着色器创建。运行期一律实例化副本，不会改写本资产。")]
         [SerializeField] private Material _material;
@@ -62,7 +47,6 @@ namespace TapTap2026.Rendering
         /// </summary>
         private const float BrushOverlayZ = -2f;
 
-        private Color32[] _pixels;
         private Texture2D _texture;
         private Mesh _mesh;
         private Material _runtimeMaterial;
@@ -85,6 +69,13 @@ namespace TapTap2026.Rendering
         /// <summary>叠层的像素缓冲（行主序，与 <see cref="Texture2D.SetPixels32"/> 一致）。</summary>
         private Color32[] _brushPixels;
 
+        /// <summary>
+        /// **主线程**复用的上传缓冲：帧里的纯值像素（<see cref="RenderColor"/>）在这里整块转成
+        /// Unity <c>Color32[]</c> 再交给 <see cref="Texture2D.SetPixels32"/>。
+        /// 只在重建目标（尺寸变化 / 首次上屏）时分配，逐帧上传零分配。
+        /// </summary>
+        private Color32[] _uploadPixels;
+
         /// <summary>叠层缓冲当前撑开的半径（= sprite 覆盖的半宽格数）。0 = 还没建。</summary>
         private int _brushCapacity;
 
@@ -97,27 +88,6 @@ namespace TapTap2026.Rendering
             get { return _texture; }
         }
 
-        /// <summary>白天天空色（背景）。配置面在 <c>ParticleLightDriver</c>，由它推送。</summary>
-        public Color32 DayBackground
-        {
-            get { return _dayBackground; }
-            set { _dayBackground = value; }
-        }
-
-        /// <summary>夜晚天空色（背景）。配置面在 <c>ParticleLightDriver</c>，由它推送。</summary>
-        public Color32 NightBackground
-        {
-            get { return _nightBackground; }
-            set { _nightBackground = value; }
-        }
-
-        /// <summary>夜晚亮度倍率，夹在 [0, 1]；1 = 不随昼夜变暗。配置面在 <c>ParticleLightDriver</c>，由它推送。</summary>
-        public float NightBrightness
-        {
-            get { return _nightBrightness; }
-            set { _nightBrightness = Mathf.Clamp01(value); }
-        }
-
         /// <summary>场景接线时套一遍 quad 的渲染设置（未接线的那条路在 <see cref="CreateQuad"/> 里套）。</summary>
         private void Awake()
         {
@@ -127,27 +97,31 @@ namespace TapTap2026.Rendering
             }
         }
 
-        /// <summary>把 <paramref name="world"/> 的当前状态填进像素缓冲并上传一次。同一帧调用多次即上传多次。</summary>
-        public void Present(ParticleWorld world)
+        /// <summary>
+        /// 把**已完成的像素帧**上传一次（同一帧调用多次即上传多次）。像素的生成不在这里：
+        /// 世界 → 像素的映射发生在帧发布侧（<see cref="SimulationFrameCollector.CollectRender"/>），
+        /// 本组件只做「纯值像素 → Unity <c>Color32</c> 缓冲 → GPU 纹理」这一段，因此不持有、也读不到活网格。
+        /// </summary>
+        /// <param name="frame">帧环上的完整像素帧；null（世界还没发布过帧）时空操作。</param>
+        /// <remarks>
+        /// 转换发生在**上传那一刻**（<see cref="RenderColorConversion.CopyToColor32"/>）：帧里的像素是项目自有的
+        /// 纯值类型，只有这里才变成 Unity 类型——模拟 worker 因此不必碰 Unity，而 Unity 纹理操作全在主线程。
+        /// 上传缓冲按帧尺寸复用（见 <see cref="EnsureTarget"/>），稳态逐帧零分配。
+        /// </remarks>
+        public void Present(RenderFrame frame)
         {
-            if (world == null)
+            if (frame == null)
             {
                 return;
             }
 
-            if (!EnsureTarget(world))
+            if (!EnsureTarget(frame))
             {
                 return;
             }
 
-            // 昼夜：天空色在夜 / 昼两色之间按日照度取色，粒子与云按同一进度整体变暗。
-            // 过渡长度由 LightController.Daylight 自动给出（= 下一时段长度的 1/10）。
-            float daylight = world.Light.Daylight;
-            float brightness = Mathf.Lerp(_nightBrightness, 1f, daylight);
-            Color32 background = Color32.Lerp(_nightBackground, _dayBackground, daylight);
-            ParticlePixelBuffer.Fill(world, _pixels, background, brightness);
-
-            _texture.SetPixels32(_pixels);
+            RenderColorConversion.CopyToColor32(frame.Pixels, _uploadPixels);
+            _texture.SetPixels32(_uploadPixels);
             _texture.Apply(false, false);
         }
 
@@ -272,7 +246,6 @@ namespace TapTap2026.Rendering
         private void OnDestroy()
         {
             // 这里不碰 _meshRenderer / _brushRenderer：销毁顺序不确定，子物体可能已被销毁。
-            _pixels = null;
 
             // 纹理与 sprite 由本类在运行期创建，必须自己释放（子物体随宿主一起销毁）。
             if (_brushSprite != null)
@@ -310,19 +283,19 @@ namespace TapTap2026.Rendering
         }
 
         /// <summary>纹理尺寸匹配、且网格与材质都已挂上，才算可以上屏。</summary>
-        private bool IsTargetReady(ParticleWorld world)
+        private bool IsTargetReady(RenderFrame frame)
         {
             return _texture != null
                 && _mesh != null
                 && _meshRenderer != null
                 && _meshRenderer.sharedMaterial != null
-                && _texture.width == world.Width
-                && _texture.height == world.Height;
+                && _texture.width == frame.Width
+                && _texture.height == frame.Height;
         }
 
-        private bool EnsureTarget(ParticleWorld world)
+        private bool EnsureTarget(RenderFrame frame)
         {
-            if (IsTargetReady(world))
+            if (IsTargetReady(frame))
             {
                 return true;
             }
@@ -336,14 +309,16 @@ namespace TapTap2026.Rendering
 
             ReleaseTarget();
 
-            _pixels = new Color32[world.CellCount];
-            _texture = new Texture2D(world.Width, world.Height, TextureFormat.RGBA32, false, false)
+            _texture = new Texture2D(frame.Width, frame.Height, TextureFormat.RGBA32, false, false)
             {
                 name = "ParticleGrid",
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp,
                 hideFlags = HideFlags.DontSave,
             };
+
+            // 上传缓冲与纹理同生共死：尺寸恒定，因此逐帧上传只做整块拷贝、不再分配。
+            _uploadPixels = new Color32[frame.Width * frame.Height];
 
             // 运行期材质永远是我们自己的副本：_material 是可能被多个对象共用的资产，绝不能被改写。
             Material material = _material != null ? new Material(_material) : CreateRuntimeMaterial();
@@ -361,14 +336,14 @@ namespace TapTap2026.Rendering
                 CreateQuad();
             }
 
-            _mesh = BuildQuadMesh(world.Width, world.Height);
+            _mesh = BuildQuadMesh(frame.Width, frame.Height);
             _meshFilter.sharedMesh = _mesh;
             _meshRenderer.sharedMaterial = material;
             material.mainTexture = _texture;
 
             if (_fitCameraOnInitialize)
             {
-                FitCamera(world);
+                FitCamera(frame.Width, frame.Height);
             }
 
             return true;
@@ -377,7 +352,8 @@ namespace TapTap2026.Rendering
         /// <summary>释放所有运行期渲染资源，保留 <see cref="_meshRenderer"/><see cref="_meshFilter"/> 以便复用。</summary>
         private void ReleaseTarget()
         {
-            _pixels = null;
+            // 上传缓冲与纹理同生共死（尺寸随纹理走）。
+            _uploadPixels = null;
 
             if (_texture != null)
             {
@@ -492,7 +468,7 @@ namespace TapTap2026.Rendering
             return mesh;
         }
 
-        private void FitCamera(ParticleWorld world)
+        private void FitCamera(int worldWidth, int worldHeight)
         {
             Camera cam = _camera != null ? _camera : Camera.main;
             if (cam == null)
@@ -501,8 +477,8 @@ namespace TapTap2026.Rendering
             }
 
             cam.orthographic = true;
-            cam.orthographicSize = world.Height * 0.5f;
-            cam.transform.position = new Vector3(world.Width * 0.5f, world.Height * 0.5f, -10f);
+            cam.orthographicSize = worldHeight * 0.5f;
+            cam.transform.position = new Vector3(worldWidth * 0.5f, worldHeight * 0.5f, -10f);
         }
 
         /// <summary>
@@ -512,14 +488,15 @@ namespace TapTap2026.Rendering
         /// 与本类的取景约定一致（<see cref="FitCamera"/>）：网格局部坐标即世界坐标。
         /// </summary>
         /// <remarks>
+        /// 只要**网格宽度**（取自已发布帧的 <see cref="WorldFrame.Width"/>），不需要活网格：
         /// 只改 x——相机的竖直框取（由 <see cref="FitCamera"/> 定的 orthographicSize 与位置 y / z）不动，
         /// 也不会触碰 <c>Cell[]</c> 或重建纹理（相机移动与模拟、上传完全解耦）。
         /// <para>无输入时也照常调（<paramref name="deltaCells"/> = 0）：Game 视图宽高比变化会让原本在界内的相机
         /// 落在界外，靠这一次夹取把它拉回沙箱内。相机缺失或不是正交相机时什么都不做。</para>
         /// </remarks>
-        public void PanCamera(ParticleWorld world, float deltaCells)
+        public void PanCamera(int worldWidth, float deltaCells)
         {
-            if (world == null)
+            if (worldWidth < 1)
             {
                 return;
             }
@@ -535,11 +512,11 @@ namespace TapTap2026.Rendering
 
             float halfView = cam.orthographicSize * cam.aspect;
             float minX = halfView;
-            float maxX = world.Width - halfView;
+            float maxX = worldWidth - halfView;
 
             Vector3 position = cam.transform.position;
             position.x = minX > maxX
-                ? world.Width * 0.5f
+                ? worldWidth * 0.5f
                 : Mathf.Clamp(position.x + deltaCells, minX, maxX);
             cam.transform.position = position;
         }

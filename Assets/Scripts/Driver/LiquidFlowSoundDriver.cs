@@ -4,7 +4,7 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 水的流动声：把 <see cref="ParticleWorld.LiquidMotion"/>（液体**运动比例** = 本帧动的液体 ÷ 液体总数）
+    /// 水的流动声：把帧里的 <see cref="AudioFrame.LiquidMovingRatio"/>（液体**运动比例** = 本帧动的液体 ÷ 液体总数）
     /// 折算成一条**连续**循环声床的目标响度——动的比例越大越响，低于死区就淡出静音。
     /// </summary>
     /// <remarks>
@@ -12,10 +12,14 @@ namespace TapTap2026.Game
     /// 用它当响度会让大水塘无端更响；位置 / 方向都不行，因为当前流体算法在平静水面上也会逐格穿行。
     /// 比例与尺寸无关：静止水洼只有一薄层液面在动、比例低；瀑布整片在动、比例高
     /// （见 <see cref="MotionMonitor"/>）。</para>
-    /// <para><b>不重播</b>：本组件只做「读比例 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
+    /// <para><b>不重播</b>：本组件只做「读快照 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
     /// 每帧都推、推几次都一样。起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里水那条循环声床
     /// （控制器**每条音频各有一条独立声床**，故水与火能同时响），因此根本没有「续声」——旧版按一个持续秒数周期
     /// <c>Play/Stop</c> 重播的那套（续声边界、相位跳变、声部叠加、抢占）已整体删除。</para>
+    /// <para><b>不读世界、也不清账</b>：运动记账由 world 的唯一写者在发布帧之前抽干一次
+    /// （<see cref="SimulationFrameCollector.CollectAudio"/>），本组件只读 <see cref="AudioFrame"/>。
+    /// 陈旧帧（同一帧且序号没变，例如暂停中）按「运动比例 0」处理——与旧版每帧清账后读到 0 完全同义，
+    /// 因此滞回与 EMA 的既有行为逐帧不变。</para>
     /// <para><b>防抖</b>：运动比例每帧都在水面抖动下小幅起伏，直接当响度会让音量持续颤抖。两道闸门：
     /// **滞回**（<see cref="_hysteresis"/>：进入流动要 <c>ratio ≥ MinRatio + 滞回</c>，退出要
     /// <c>ratio &lt; MinRatio</c>，避免在死区边界来回开合）与 **EMA**（<see cref="_smoothingSeconds"/> 的一阶低通，
@@ -59,6 +63,12 @@ namespace TapTap2026.Game
         /// <summary>当前是否判定为「有流动」（滞回门的记忆）。</summary>
         private bool _flowing;
 
+        /// <summary>上一次读到的帧（对象身份 + 序号一起判定新鲜度）。</summary>
+        private SimulationFrame _lastFrame;
+
+        /// <summary>上一次读到的帧序号（配合 <see cref="_lastFrame"/> 识别陈旧帧）。</summary>
+        private long _lastSequence;
+
         /// <summary>进入流动的比例阈值 = 死区 + 滞回。</summary>
         private float FlowEnterRatio
         {
@@ -96,30 +106,31 @@ namespace TapTap2026.Game
 
         private void Update()
         {
-            Pump(_driver != null ? _driver.World : null, Time.unscaledDeltaTime);
+            Pump(_driver != null ? _driver.CurrentFrame : null, Time.unscaledDeltaTime);
         }
 
         /// <summary>
-        /// 把 <paramref name="world"/> **本轮**（自上次调用以来）累积的液体运动比例折算成声床目标响度：
-        /// 读监视器 → 清账 → 目标推给 <see cref="SoundController.SetAmbience"/>。由 <see cref="Update"/> 每帧调一次；
+        /// 把帧快照里**本帧**（自该帧发布以来）的液体运动比例折算成声床目标响度：
+        /// 读快照 → 映射 → EMA → 推给 <see cref="SoundController.SetAmbience"/>。由 <see cref="Update"/> 每帧调一次；
         /// 公开（含显式 <paramref name="deltaTime"/>）是为了让测试能脱离帧循环确定性地驱动它。
         /// </summary>
-        /// <param name="world">要观察的世界；null（驱动未就绪）时静音。</param>
+        /// <param name="frame">已发布的完整帧；null（驱动未就绪）时静音。陈旧帧按比例 0 处理。</param>
         /// <param name="deltaTime">本帧真实时长（秒），只用于 EMA；经
         /// <see cref="SoundController.ClampDeltaTime"/> 钳制。</param>
         /// <returns>本帧推给声音控制器的目标响度（<c>[0, 1]</c>）。</returns>
-        public float Pump(ParticleWorld world, float deltaTime)
+        public float Pump(SimulationFrame frame, float deltaTime)
         {
-            if (world == null)
+            if (frame == null)
             {
                 return Silence();
             }
 
-            // **先清账再判开关**：关闭期间也必须把监视器的本轮计数读掉，否则重新打开的那一帧会把
-            // 关闭期间积压的流动当作「此刻在流」补发出去（响一下）。
-            MotionMonitor motion = world.LiquidMotion;
-            float ratio = motion.MovingRatio;
-            motion.Reset();
+            // 新鲜 = 换了帧对象，或同一帧里序号又推进了：槽位会回收复用，单看序号会把
+            // 「另一个发布者的第 1 帧」误判成陈旧（各发布者序号都从 1 开始），故身份与序号都必须记。
+            bool fresh = !ReferenceEquals(frame, _lastFrame) || frame.Sequence != _lastSequence;
+            _lastFrame = frame;
+            _lastSequence = frame.Sequence;
+            float ratio = fresh ? frame.Audio.LiquidMovingRatio : 0f;
 
             if (!_enabled || _sound == null)
             {

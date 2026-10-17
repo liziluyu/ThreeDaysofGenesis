@@ -19,7 +19,6 @@ namespace TapTap2026.Tests
     {
         private const int WorldWidth = 200;
         private const int WorldHeight = 100;
-        private const int SeedValue = 24681357;
 
         /// <summary>相机距离。只做平移的参照物：它不该被平移改动。</summary>
         private const float CameraZ = -10f;
@@ -34,7 +33,6 @@ namespace TapTap2026.Tests
         private GameObject _rendererObject;
         private Camera _camera;
         private ParticleRenderer _renderer;
-        private ParticleWorld _world;
 
         [SetUp]
         public void SetUp()
@@ -52,8 +50,6 @@ namespace TapTap2026.Tests
             var serializedRenderer = new SerializedObject(_renderer);
             serializedRenderer.FindProperty("_camera").objectReferenceValue = _camera;
             serializedRenderer.ApplyModifiedPropertiesWithoutUndo();
-
-            _world = new ParticleWorld(WorldWidth, WorldHeight, SeedValue);
         }
 
         [TearDown]
@@ -67,13 +63,13 @@ namespace TapTap2026.Tests
         [Test]
         public void CameraPan_MovesByTheGivenCellsInBothDirections()
         {
-            _renderer.PanCamera(_world, 25f);
+            _renderer.PanCamera(WorldWidth, 25f);
             Vector3 afterRight = _camera.transform.position;
             Assert.AreEqual(WorldWidth * 0.5f + 25f, afterRight.x, 1e-4f, "向右平移 25 格");
             Assert.AreEqual(WorldHeight * 0.5f, afterRight.y, 1e-4f, "平移不该改竖直框取");
             Assert.AreEqual(CameraZ, afterRight.z, 1e-4f, "平移不该改相机距离");
 
-            _renderer.PanCamera(_world, -10f);
+            _renderer.PanCamera(WorldWidth, -10f);
             Assert.AreEqual(WorldWidth * 0.5f + 25f - 10f, _camera.transform.position.x, 1e-4f, "向左平移 10 格");
         }
 
@@ -81,10 +77,10 @@ namespace TapTap2026.Tests
         [Test]
         public void CameraPan_ClampsToTheGridEdges()
         {
-            _renderer.PanCamera(_world, 1000f);
+            _renderer.PanCamera(WorldWidth, 1000f);
             Assert.AreEqual(WorldWidth - HalfViewAtAspectOne, _camera.transform.position.x, 1e-4f, "右端夹在 Width − 半视宽");
 
-            _renderer.PanCamera(_world, -1000f);
+            _renderer.PanCamera(WorldWidth, -1000f);
             Assert.AreEqual(HalfViewAtAspectOne, _camera.transform.position.x, 1e-4f, "左端夹在半视宽");
         }
 
@@ -94,10 +90,10 @@ namespace TapTap2026.Tests
         {
             _camera.aspect = 4f; // 半视宽 200 = 沙箱宽，可动范围为空
 
-            _renderer.PanCamera(_world, 500f);
+            _renderer.PanCamera(WorldWidth, 500f);
             Assert.AreEqual(WorldWidth * 0.5f, _camera.transform.position.x, 1e-4f);
 
-            _renderer.PanCamera(_world, -500f);
+            _renderer.PanCamera(WorldWidth, -500f);
             Assert.AreEqual(WorldWidth * 0.5f, _camera.transform.position.x, 1e-4f);
         }
 
@@ -105,10 +101,10 @@ namespace TapTap2026.Tests
         [Test]
         public void CameraPan_ReclampsToTheGridWithoutInput()
         {
-            _renderer.PanCamera(_world, 1000f); // 顶到右端：x = 150
+            _renderer.PanCamera(WorldWidth, 1000f); // 顶到右端：x = 150
             _camera.aspect = 1.5f;              // 半视宽 75 → 可动范围 [75, 125]，150 已在界外
 
-            _renderer.PanCamera(_world, 0f);
+            _renderer.PanCamera(WorldWidth, 0f);
             Assert.AreEqual(WorldWidth - 75f, _camera.transform.position.x, 1e-4f);
         }
 
@@ -119,7 +115,7 @@ namespace TapTap2026.Tests
             _camera.orthographic = false;
             Vector3 before = _camera.transform.position;
 
-            _renderer.PanCamera(_world, 500f);
+            _renderer.PanCamera(WorldWidth, 500f);
 
             Assert.AreEqual(before, _camera.transform.position, "非正交相机不该被平移碰");
         }

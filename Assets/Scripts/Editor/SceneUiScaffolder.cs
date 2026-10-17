@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using TMPro;
 using TapTap2026.Game;
 using TapTap2026.Rendering;
+using TapTap2026.Simulation;
 using UnityEditor;
 using UnityEditor.Events;
 using UnityEditor.SceneManagement;
@@ -85,10 +86,10 @@ namespace TapTap2026.EditorTools
         private static readonly Color LightLabelColor = new Color(0.275f, 0.275f, 0.275f, 1f);
 
         /// <summary>强度面板的范围与默认值：**0..30（整数档）**——负数制冷只能在 Inspector 上设，面板不给负档；
-        /// 默认 10。只作用于**新建**的滑块（值只在首次创建时套用，范围与整数档是面板契约、每次都套）。</summary>
+        /// 默认 15。只作用于**新建**的滑块（值只在首次创建时套用，范围与整数档是面板契约、每次都套）。</summary>
         private const float LightIntensityMin = 0f;
         private const float LightIntensityMax = 30f;
-        private const float LightIntensityDefault = 10f;
+        private const float LightIntensityDefault = 15f;
 
         /// <summary>强度滑块三条轨道的平色（与面板里其它控件的平色风格一致：背景深、填充亮、滑块近白）。</summary>
         private static readonly Color SliderBackgroundColor = new Color(0.10f, 0.12f, 0.18f, 0.9f);
@@ -318,7 +319,7 @@ namespace TapTap2026.EditorTools
             var material = new Material(shader) { name = "SandboxPreview" };
             if (material.HasProperty("_Color"))
             {
-                material.color = ParticleRenderer.DefaultDayBackground;
+                material.color = RenderColorConversion.ToColor32(LightSettings.DefaultDayBackground);
             }
 
             AssetDatabase.CreateAsset(material, PreviewMaterialPath);

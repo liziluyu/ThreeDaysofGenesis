@@ -410,8 +410,8 @@ namespace TapTap2026.Tests
             ParticleWorld world = new ParticleWorld(4, 4, 7u);
             world.Set(1, 1, ParticleIds.Atmosphere);
 
-            var background = new Color32(9, 8, 7, 255);
-            var pixels = new Color32[world.CellCount];
+            var background = new RenderColor(9, 8, 7, 255);
+            var pixels = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, background);
 
             Assert.AreEqual(background, pixels[world.Index(1, 1)], "透明大气格应显示背景色");
@@ -429,8 +429,8 @@ namespace TapTap2026.Tests
             world.Humidity.Set(1, 0, HumidityField.RainThreshold);              // 满湿 → 纯白
             world.Humidity.Set(2, 0, HumidityField.VisibleThreshold * 1.5f);    // 淡云
 
-            var background = new Color32(9, 8, 7, 255);
-            var pixels = new Color32[world.CellCount];
+            var background = new RenderColor(9, 8, 7, 255);
+            var pixels = new RenderColor[world.CellCount];
             ParticlePixelBuffer.Fill(world, pixels, background);
 
             Assert.AreEqual(background, pixels[0], "干燥空气仍是背景色");
@@ -932,6 +932,7 @@ namespace TapTap2026.Tests
             heat.VoidHeatLoss = 0f;
             heat.RadiativeLoss = 0f;
             heat.AirThermalConductivity = 0f;
+            heat.AdiabaticLapse = 0f; // 气体竖直换位的绝热直减也是一条热输运路径：要单独看光照就必须关掉。
             world.Humidity.Diffusion = 0f;
             world.Humidity.HorizontalBias = 0f;
             world.Humidity.RiseBias = 0f;

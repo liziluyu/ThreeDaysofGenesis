@@ -4,7 +4,7 @@ using UnityEngine;
 namespace TapTap2026.Game
 {
     /// <summary>
-    /// 火焰的持续声：把 <see cref="ParticleWorld.Counts"/> 里的**火格数**折算成一条**连续**循环声床的目标响度
+    /// 火焰的持续声：把帧里的 <see cref="AudioFrame.FireCount"/>（**火格数**存量）折算成一条**连续**循环声床的目标响度
     /// ——火越旺越响，低于死区就淡出静音。
     /// </summary>
     /// <remarks>
@@ -15,15 +15,18 @@ namespace TapTap2026.Game
     /// 直接当响度会让音量持续颤抖。<see cref="_smoothingSeconds"/> 的一阶低通
     /// （<see cref="SoundController.Ema"/>）抹平抖动；dt 经
     /// <see cref="SoundController.ClampDeltaTime"/> 钳过，编辑器大卡顿不会让平滑一步跳完。</para>
-    /// <para><b>不重播</b>：本组件只做「读存量 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
+    /// <para><b>不重播</b>：本组件只做「读快照 → 算目标响度 → 推给 <see cref="SoundController.SetAmbience"/>」，
     /// 每帧都推、推几次都一样。起播 / 淡入 / 淡出 / 停止全归 <see cref="SoundController"/> 里火那条循环声床
     /// （控制器**每条音频各有一条独立声床**，故水与火能同时响）。</para>
+    /// <para><b>不读世界</b>：火格存量由 world 的唯一写者在发布帧之前读进 <see cref="AudioFrame"/>。
+    /// 火是**存量**口径（不是本帧新增），因此陈旧帧（同一帧且序号没变，例如暂停中）沿用上一次读到的存量——
+    /// 与旧版「暂停时仍每帧读 world.Counts」同义。</para>
     /// <para><b>为什么读存量而不清账</b>：火焰是**持续**现象，「当前烧着几格」才是响度；火格数不取模、
     /// 不消费任何「新增」记账——那是闪电那种一次性事件的口径
     /// （见 <see cref="ParticleCountMonitor.ConsumeCreated"/> 与 <see cref="LightningSoundDriver"/>）。</para>
     /// <para><b>未注册防御</b>：<see cref="ParticleIds.Fire"/> 由 <see cref="ParticleRegistration.RegisterAll"/>
-    /// 回填，从未跑过时它等于 <see cref="ParticleRegistry.AirTypeId"/>（0 = 空气）。读 0 号槽只会得到恒 0，
-    /// 更糟的是会让人误以为「整张空网格的空气都是火」。因此这种情况按「无法解析」处理：静音 + 只警告一次。</para>
+    /// 回填，从未跑过时它等于 <see cref="ParticleRegistry.AirTypeId"/>（0 = 空气）。采集侧对这种情形写 0
+    /// （<see cref="SimulationFrameCollector.CollectAudio"/>），本组件因此读到「没有火」而不是「整张空网格的空气都是火」。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class FireSoundDriver : MonoBehaviour
@@ -55,8 +58,14 @@ namespace TapTap2026.Game
         /// <summary>已经平滑过的目标响度（EMA 的记忆）。</summary>
         private float _smoothed;
 
-        /// <summary>是否已经为「类型 id 未注册」报过警告（每帧都会走到这里，不能刷屏）。</summary>
-        private bool _warnedUnregistered;
+        /// <summary>上一次读到的帧（对象身份 + 序号一起判定新鲜度）。</summary>
+        private SimulationFrame _lastFrame;
+
+        /// <summary>上一次读到的帧序号（配合 <see cref="_lastFrame"/> 识别陈旧帧）。</summary>
+        private long _lastSequence;
+
+        /// <summary>最近一次读到的火格存量（陈旧帧沿用它：火是存量口径，不是本帧新增）。</summary>
+        private int _fireCount;
 
         private void Awake()
         {
@@ -89,35 +98,35 @@ namespace TapTap2026.Game
 
         private void Update()
         {
-            Pump(_driver != null ? _driver.World : null, Time.unscaledDeltaTime);
+            Pump(_driver != null ? _driver.CurrentFrame : null, Time.unscaledDeltaTime);
         }
 
         /// <summary>
-        /// 把 <paramref name="world"/> 里当前的**火格数**折算成声床目标响度：读存量 → 映射 → EMA → 推给
+        /// 把帧快照里的**火格存量**折算成声床目标响度：读快照 → 映射 → EMA → 推给
         /// <see cref="SoundController.SetAmbience"/>。由 <see cref="Update"/> 每帧调一次；
         /// 公开（含显式 <paramref name="deltaTime"/>）是为了让测试能脱离帧循环确定性地驱动它。
         /// </summary>
-        /// <param name="world">要观察的世界；null（驱动未就绪）时静音。</param>
+        /// <param name="frame">已发布的完整帧；null（驱动未就绪）时静音。陈旧帧沿用上次读到的存量。</param>
         /// <param name="deltaTime">本帧真实时长（秒），只用于 EMA；经
         /// <see cref="SoundController.ClampDeltaTime"/> 钳制。</param>
         /// <returns>本帧推给声音控制器的目标响度（<c>[0, _volume]</c>）。</returns>
-        public float Pump(ParticleWorld world, float deltaTime)
+        public float Pump(SimulationFrame frame, float deltaTime)
         {
-            if (world == null || !_enabled || _sound == null)
+            if (frame == null || !_enabled || _sound == null)
             {
                 return Silence();
             }
 
-            ushort fireId = ParticleIds.Fire;
-            if (fireId == ParticleRegistry.AirTypeId)
+            // 新鲜 = 换了帧对象，或同一帧里序号又推进了：槽位会回收复用，单看序号会把
+            // 「另一个发布者的第 1 帧」误判成陈旧（各发布者序号都从 1 开始），故身份与序号都必须记。
+            if (!ReferenceEquals(frame, _lastFrame) || frame.Sequence != _lastSequence)
             {
-                // id 0 是「空」：读它只会恒为 0，绝不能当成火（否则整张空网格的空气都会被算成火）。
-                WarnUnregistered();
-                return Silence();
+                _lastFrame = frame;
+                _lastSequence = frame.Sequence;
+                _fireCount = frame.Audio.FireCount;
             }
 
-            int count = world.Counts.Count(fireId);
-            float target = SoundController.MapLoudness(count, _minFireCount, _fullVolumeCount) * _volume;
+            float target = SoundController.MapLoudness(_fireCount, _minFireCount, _fullVolumeCount) * _volume;
             _smoothed = SoundController.Ema(_smoothed, target, _smoothingSeconds, deltaTime);
 
             _sound.SetAmbience(_soundFile, _smoothed);
@@ -138,16 +147,5 @@ namespace TapTap2026.Game
             return 0f;
         }
 
-        /// <summary>「类型 id 未注册」只报一次（<see cref="Pump"/> 每帧都会走到这条分支）。</summary>
-        private void WarnUnregistered()
-        {
-            if (_warnedUnregistered)
-            {
-                return;
-            }
-
-            _warnedUnregistered = true;
-            Debug.LogWarning("[FireSoundDriver] 火类型 id 尚未注册（ParticleIds.Fire == 空气），本驱动静音。");
-        }
     }
 }

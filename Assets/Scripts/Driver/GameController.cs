@@ -9,8 +9,9 @@ namespace TapTap2026.Game
     /// <summary>
     /// 游戏流程控制器：按阶段 JSON 编排「对话 → 沙箱 → 高速模式结算 → 过关 / 重来」。
     /// 本类只做**流程编排**——对话显示与推进在 <see cref="DialogueController"/>、沙箱重建与推进在
-    /// <see cref="ParticleSimulationDriver"/>、投放白名单在 <see cref="ParticleEditor"/>、
-    /// 高速模式的计时与统计在 <see cref="HighSpeedSession"/>、胜利判定在 <see cref="VictoryEvaluator"/>。
+    /// <see cref="ParticleSimulationDriver"/>（本类只提交命令、只读已发布的帧）、投放白名单在 <see cref="ParticleEditor"/>、
+    /// 高速模式的计时与统计在内核 <see cref="HighSpeedSession"/>（经帧里的 <see cref="HighSpeedFrame"/> 观察）、
+    /// 胜利判定在 <see cref="VictoryEvaluator"/>。
     /// 本类**不修改模拟内核的任何东西**，也不关心对话内容与粒子行为。
     /// </summary>
     /// <remarks>
@@ -27,8 +28,8 @@ namespace TapTap2026.Game
     /// （<c>persistentDataPath</c> + 存档文件名）——刻意只存进度与解锁，不存世界状态。</para>
     /// </remarks>
     [DisallowMultipleComponent]
-    // 必须先于 ParticleEditor 的 Update 观察 HighSpeedSession.Completed：
-    // 同帧先被 ParticleEditor 确认退出（Exit 会清空统计）就永远评不了胜负，流程卡死。
+    // 必须先于 ParticleEditor 的 Update 观察「高速会话已结算」那一帧：
+    // 同帧先被 ParticleEditor 确认退出（驱动应用的退出命令会清空统计）就永远评不了胜负，流程卡死。
     [DefaultExecutionOrder(-100)]
     public sealed class GameController : MonoBehaviour
     {
@@ -75,7 +76,7 @@ namespace TapTap2026.Game
         /// <summary>本帧高速会话是否 Active（用于识别「上一帧还在高速、本帧退出了」这一跳变）。</summary>
         private bool _sessionWasActive;
 
-        /// <summary>是否已经见过本会话的结算（<see cref="HighSpeedSession.Completed"/>）。</summary>
+        /// <summary>是否已经见过本会话的结算（帧里的 <see cref="HighSpeedFrame.Completed"/>）。</summary>
         private bool _sessionCompletedSeen;
 
         /// <summary>本次结算是否真的求过胜利条件（沙盒阶段没有 victory，跳过判定时为 false）。</summary>
@@ -96,7 +97,7 @@ namespace TapTap2026.Game
         /// <summary>当前阶段 id；尚未成功启动任何阶段时为空串。</summary>
         public string CurrentPhaseId { get; private set; } = string.Empty;
 
-        /// <summary>本次结算是否已出结论（高速会话进过 <see cref="HighSpeedSession.Completed"/>、本类已求值一次）；
+        /// <summary>本次结算是否已出结论（高速会话进过 <see cref="HighSpeedFrame.Completed"/>、本类已求值一次）；
         /// 沙盒阶段（无 victory）恒为 false。结算面板据此决定是否显示胜负行。</summary>
         public bool HasVerdict => _sessionCompletedSeen && _sessionHadVerdict;
 
@@ -212,9 +213,9 @@ namespace TapTap2026.Game
                 return;
             }
 
-            // 懒建属性：世界建好即非 null（不访问它反而不会建会话）。
-            HighSpeedSession session = _driver.HighSpeed;
-            if (session == null)
+            // 只读最新已发布的帧：世界尚未发布过帧（Awake 之前）就无事可做。
+            SimulationFrame frame = _driver.CurrentFrame;
+            if (frame == null)
             {
                 return;
             }
@@ -232,6 +233,7 @@ namespace TapTap2026.Game
                 return;
             }
 
+            HighSpeedFrame session = frame.HighSpeed;
             bool active = session.Active;
 
             // 结算那一刻：会话仍 Active（等玩家确认退出），评估一次胜利条件并**缓存**结论与理由。
@@ -284,7 +286,7 @@ namespace TapTap2026.Game
         /// ② 按 <c>isRepeat</c>（阶段是否已在解锁集合中）经 <see cref="GamePhaseData.ResolveOpeningDialogueId"/>
         ///    选开场对话——首次进入用 <c>dialogueId</c>、重复进入用 <c>repeatDialogueId</c>，非空才交给
         ///    <see cref="DialogueController"/> 播（启动失败只警告，流程继续）；
-        /// ③ <see cref="ParticleSimulationDriver.Resize"/> 重建沙箱（宽高相同也调——重来要的是空世界）；
+        /// ③ 提交 <see cref="SimulationCommandKind.Resize"/> 重建沙箱（宽高相同也重建——重来要的是空世界）；
         /// ④ <see cref="ParticleEditor.SetPlacementFilter"/> 套用本阶段可投放粒子；
         /// ⑤ 把本阶段加入解锁集合、写存档，最后更新 <see cref="CurrentPhaseId"/> 与当前阶段缓存。
         /// </summary>
@@ -327,7 +329,8 @@ namespace TapTap2026.Game
                 }
             }
 
-            _driver.Resize(phase.sandboxWidth, phase.sandboxHeight);
+            // 命令在下一个 tick 边界生效（尺寸相同也重建——重来要的是空世界）。
+            _driver.Submit(SimulationCommand.Resize(phase.sandboxWidth, phase.sandboxHeight));
 
             if (_editor == null)
             {
@@ -469,15 +472,15 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 从当前高速会话构建判定快照：温度 / 湿度取会话的最新采样（可能为 <see cref="float.NaN"/> = 未采样），
+        /// 从当前高速模式帧构建判定快照：温度 / 湿度取最新采样（可能为 <see cref="float.NaN"/> = 未采样），
         /// 计数取**全部已注册类型**（id 从 1 起、跳过注册表尾部的 null 槽、不含空气），含计数为 0 的类型；
-        /// 存量取 <see cref="HighSpeedSession.GetFinalCount"/>（会话跑满时的一次全网格盘点）。
+        /// 存量取帧里的终态盘点（<see cref="HighSpeedFrame.GetFinalCount"/>，会话跑满那一刻的一次全网格扫描）。
         /// </summary>
         /// <remarks>
-        /// 调用时机固定在会话 <see cref="HighSpeedSession.Completed"/> 那一帧（会话仍 Active、尚未 <see cref="HighSpeedSession.Exit"/>），
-        /// 因此 <c>GetFinalCount</c> 拿得到真实存量——它一旦 Exit 就清空、返回 0。
+        /// 调用时机固定在帧里 <see cref="HighSpeedFrame.Completed"/> 为真的那一刻（会话仍 Active、尚未退出），
+        /// 因此终态存量拿得到真实值——退出之后驱动不再采它，帧里也归零。
         /// </remarks>
-        private static HighSpeedSnapshot BuildSnapshot(HighSpeedSession session)
+        private static HighSpeedSnapshot BuildSnapshot(HighSpeedFrame session)
         {
             ParticleType[] types = ParticleRegistry.Types;
             var counts = new List<ParticleTypeCount>();

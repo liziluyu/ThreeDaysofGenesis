@@ -6,22 +6,26 @@ using UnityEngine;
 namespace TapTap2026.Rendering
 {
     /// <summary>
-    /// 动物实体层渲染：每只 <see cref="Creature"/> 一个子 GameObject + <see cref="SpriteRenderer"/>。
+    /// 动物实体层渲染：每只实体一个子 GameObject + <see cref="SpriteRenderer"/>。
     /// 已接线的物种（兔子 / 鱼 / 鸟，见 <see cref="ResolveIdleFrames"/>）播真 sprite 帧序列；未接线的退回运行时生成的 1×1 白色占位块（染占位色、拉成碰撞盒）。
     /// </summary>
     /// <remarks>
     /// <para>与 <see cref="ParticleRenderer"/>「整张网格一个 quad」不同：实体数量少、位置是连续浮点，
-    /// 只能一实体一物体。本组件只读 <see cref="CreatureWorld"/> 的公开状态，不推进任何逻辑帧。</para>
-    /// <para>对账方式：每帧**轮询** <see cref="ParticleSimulationDriver.Creatures"/>（不订阅事件）——
-    /// 世界重建会整只换掉 <see cref="CreatureWorld"/> 实例，按引用比对天然免疫，不会留下悬挂视图；
-    /// 已死亡 / 已被清扫移除的实体也在同一次对账里销掉视图。</para>
+    /// 只能一实体一物体。本组件只读**已发布的帧快照**（<see cref="SimulationFrame.Creatures"/>），
+    /// 不推进任何逻辑帧，也拿不到活的 <see cref="CreatureWorld"/>。</para>
+    /// <para>对账方式：每帧轮询最新帧里的一串 <see cref="CreatureRenderData"/>，按稳定 <see cref="CreatureRenderData.Id"/> 与
+    /// 视图一一对应（不订阅事件、不用对象引用）。世界重建会换掉世代号
+    /// （<see cref="SimulationFrame.Generation"/>），据此整批清视图；已死亡 / 已被清扫的实体在新帧里不存在，
+    /// 也在同一次对账里销掉视图。</para>
     /// <para>插值：逻辑帧只有 <see cref="ParticleSimulationSettings.LogicRate"/> Hz（当前 20 Hz），渲染帧远高于它，
-    /// 用 <see cref="Creature.PrevX"/>/<see cref="Creature.PrevY"/> 与当前位置按本逻辑帧已流逝的时间比例插值，
-    /// 否则动起来是一格一格跳。逻辑帧停住（暂停）时 alpha 饱和到 1，实体稳定停在落点，不需要额外分支。</para>
+    /// 用 <see cref="CreatureRenderData.PrevX"/>/<see cref="CreatureRenderData.PrevY"/> 与当前位置按本逻辑帧已流逝的
+    /// 时间比例插值，否则动起来是一格一格跳。逻辑帧停住（暂停）时 alpha 饱和到 1，实体稳定停在落点。</para>
     /// <para>z = −1：世界 quad 在 z = 0、相机在 z = −10，实体画在世界之上（取景约定见 <see cref="ParticleRenderer"/>）。</para>
     /// <para>美术朝向：兔 / 鱼的源 sprite 都是**头朝左**（<see cref="SpriteFacesLeft"/>，序列化可配置），
-    /// 因此 <see cref="Creature.Facing"/> 为 +1（朝右）时镜像翻转、−1（朝左）时保持原样；
+    /// 因此 <see cref="CreatureRenderData.Facing"/> 为 +1（朝右）时镜像翻转、−1（朝左）时保持原样；
     /// 这条「美术 ↔ 运动」的映射只由 <see cref="ResolveFlipX"/> 一处定义，换美术时改那个字段即可。</para>
+    /// <para>动画帧速倍率不在这里算（它要读 AI 状态，那是 world 私有的）：帧里带
+    /// <see cref="CreatureRenderData.AnimationSpeedFactor"/>，本组件只做「帧索引 × 倍率」。</para>
     /// <para>所有运行期资源（纹理 / sprite / 子物体）都带 <see cref="HideFlags.DontSave"/>，绝不随场景落盘——
     /// 与 <see cref="ParticleRenderer"/> 的网格链同一约定。</para>
     /// </remarks>
@@ -70,16 +74,17 @@ namespace TapTap2026.Rendering
             get { return _spriteFacesLeft; }
         }
 
-        private ParticleRenderer _particles;
-
         private ParticleSimulationDriver _driver;
-        private CreatureWorld _trackedWorld;
+
+        /// <summary>已对账的帧世代（<see cref="SimulationFrame.Generation"/>）：换了就整批清视图。</summary>
+        private int _trackedGeneration = -1;
 
         private Sprite _placeholderSprite;
         private Texture2D _placeholderTexture;
 
-        private readonly Dictionary<Creature, View> _views = new Dictionary<Creature, View>();
-        private readonly List<Creature> _stale = new List<Creature>();
+        /// <summary>实体渲染标识符 → 视图（用稳定 id 而不是对象引用对账，帧里传的就是 id）。</summary>
+        private readonly Dictionary<int, View> _views = new Dictionary<int, View>();
+        private readonly List<int> _stale = new List<int>();
 
         private int _frame;
         private int _trackedLogicTicks = -1;
@@ -90,7 +95,6 @@ namespace TapTap2026.Rendering
         private void Awake()
         {
             _driver = GetComponent<ParticleSimulationDriver>();
-            _particles = GetComponent<ParticleRenderer>();
         }
 
         private void Update()
@@ -100,54 +104,51 @@ namespace TapTap2026.Rendering
                 return;
             }
 
-            CreatureWorld world = _driver.Creatures;
-            if (world == null)
+            SimulationFrame frame = _driver.CurrentFrame;
+            if (frame == null)
             {
                 return;
             }
 
-            // 世界重建会整个换掉 CreatureWorld 实例：旧实例上的实体全部作废，连视图一起清掉。
-            if (!ReferenceEquals(world, _trackedWorld))
+            // 世界重建会换世代：旧世代上的实体全部作废，连视图一起清掉。
+            if (frame.Generation != _trackedGeneration)
             {
                 DestroyAllViews();
-                _trackedWorld = world;
+                _trackedGeneration = frame.Generation;
                 _trackedLogicTicks = -1;
                 _animTime = 0f;
             }
 
+            CreatureFrame creatures = frame.Creatures;
+
             // 逻辑帧计数变化即一个新逻辑帧落定，重置插值计时。暂停时不变化，alpha 因此饱和到 1。
-            int logicTicks = world.LogicTicks;
-            if (logicTicks != _trackedLogicTicks)
+            if (creatures.LogicTicks != _trackedLogicTicks)
             {
-                _trackedLogicTicks = logicTicks;
+                _trackedLogicTicks = creatures.LogicTicks;
                 _stepTime = Time.time;
             }
 
             // 动画时钟只随未暂停的真实时间走：暂停时帧索引冻结，与插值饱和同一语义。
-            if (!_driver.Paused)
+            if (!frame.World.Paused)
             {
                 _animTime += Time.deltaTime;
             }
 
-            float alpha = Mathf.Clamp01((Time.time - _stepTime) * _driver.LogicRate);
+            float alpha = Mathf.Clamp01((Time.time - _stepTime) * creatures.LogicRate);
 
-            // 昼夜调光：与 ParticleRenderer 同一公式同一配置面（NightBrightness 由 ParticleLightDriver 推到 ParticleRenderer，
-            // 这里直接读它的当前值），实体与粒子/云一起按 Lerp(夜晚亮度, 1, Daylight) 变暗。粒子世界缺失时按全亮。
-            ParticleWorld particleWorld = _driver.World;
-            float brightness = particleWorld != null && _particles != null
-                ? Mathf.Lerp(_particles.NightBrightness, 1f, particleWorld.Light.Daylight)
-                : 1f;
+            // 昼夜调光：与粒子 / 云同一份亮度（帧发布侧按日照度与光照配置算好的整场倍率），
+            // 因此实体与像素永远同步变暗，不在这里重算公式。
+            float brightness = frame.Render.Brightness;
 
             _frame++;
-            IReadOnlyList<Creature> creatures = world.Creatures;
             int count = creatures.Count;
             for (int i = 0; i < count; i++)
             {
-                Creature creature = creatures[i];
-                if (!_views.TryGetValue(creature, out View view))
+                CreatureRenderData creature = creatures.Creature(i);
+                if (!_views.TryGetValue(creature.Id, out View view))
                 {
                     view = CreateView(creature);
-                    _views.Add(creature, view);
+                    _views.Add(creature.Id, view);
                 }
 
                 view.SeenFrame = _frame;
@@ -161,9 +162,8 @@ namespace TapTap2026.Rendering
 
                 if (view.Frames != null)
                 {
-                    // §8：帧播放速度随状态缩放（不换帧图）。倍速直接乘在帧索引推进上，不新建时钟。
-                    float speedFactor = ResolveAnimSpeedFactor(creature);
-                    view.Renderer.sprite = view.Frames[(int)(_animTime * _idleFps * speedFactor) % view.Frames.Length];
+                    // §8：帧播放速度随状态缩放（不换帧图）。倍率由帧发布侧按 AI 状态算好，这里只乘。
+                    view.Renderer.sprite = view.Frames[(int)(_animTime * _idleFps * creature.AnimationSpeedFactor) % view.Frames.Length];
                     // 朝向由 ResolveFlipX 统一决定（美术头朝左 ⇒ 朝右才翻），此处不写第二份分支。
                     view.Renderer.flipX = ResolveFlipX(creature.Facing, _spriteFacesLeft);
                 }
@@ -172,11 +172,11 @@ namespace TapTap2026.Rendering
                 view.Renderer.color = new Color(baseColor.r * brightness, baseColor.g * brightness, baseColor.b * brightness, baseColor.a);
             }
 
-            // 销视图：本帧没扫到（已被 CreatureWorld 清扫移除）或已死亡的实体。先收集再删，避免边遍历边改字典。
+            // 销视图：本帧没扫到（已被清扫移除）的实体。先收集再删，避免边遍历边改字典。
             _stale.Clear();
-            foreach (KeyValuePair<Creature, View> pair in _views)
+            foreach (KeyValuePair<int, View> pair in _views)
             {
-                if (pair.Value.SeenFrame != _frame || !pair.Key.Alive)
+                if (pair.Value.SeenFrame != _frame)
                 {
                     _stale.Add(pair.Key);
                 }
@@ -207,8 +207,8 @@ namespace TapTap2026.Rendering
         }
 
         /// <summary>新建一只实体的视图：DontSave 的子物体 + SpriteRenderer。
-        /// 兔子且 idle 帧已接线时用真 sprite（原生像素尺寸、pivot 底边）；否则退回占位白块（染占位色、拉成碰撞盒）。</summary>
-        private View CreateView(Creature creature)
+        /// 该物种 idle 帧已接线时用真 sprite（原生像素尺寸、pivot 底边）；否则退回占位白块（染占位色、拉成碰撞盒）。</summary>
+        private View CreateView(in CreatureRenderData creature)
         {
             // 子物体整条渲染链都是运行期生成的、不被任何序列化字段引用：必须 DontSave，
             // 否则保存场景会把这个空壳烘进 .unity 文件（同 ParticleRenderer.CreateQuad）。
@@ -217,7 +217,7 @@ namespace TapTap2026.Rendering
 
             var renderer = child.AddComponent<SpriteRenderer>();
 
-            Sprite[] frames = ResolveIdleFrames(creature);
+            Sprite[] frames = ResolveIdleFrames(creature.Species);
             if (frames != null)
             {
                 // 真 sprite：切片 pivot 已对齐脚底（见 Assets/Images/Animals/*/1/*.png 的导入设置），
@@ -229,14 +229,17 @@ namespace TapTap2026.Rendering
 
             child.transform.localScale = new Vector3(creature.Width, creature.Height, 1f);
             renderer.sprite = EnsurePlaceholderSprite();
-            renderer.color = creature.PlaceholderColor;
 
-            return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f, BaseColor = creature.PlaceholderColor };
+            // 帧载荷是项目自有的纯值颜色（worker 可生产），Unity 上屏前在这里换成 Color32 —— 与像素上传同一接缝。
+            Color placeholder = RenderColorConversion.ToColor32(creature.PlaceholderColor);
+            renderer.color = placeholder;
+
+            return new View { Renderer = renderer, PivotLift = creature.Height * 0.5f, BaseColor = placeholder };
         }
 
         /// <summary>
         /// 「美术朝向 ↔ 运动朝向」的唯一映射点：给定运动朝向 <paramref name="facing"/>（+1 = 朝右、−1 = 朝左，
-        /// 见 <see cref="Creature.Facing"/>）与美术约定 <paramref name="spriteFacesLeft"/>（true = 源 sprite 头朝左），
+        /// 见 <see cref="CreatureRenderData.Facing"/>）与美术约定 <paramref name="spriteFacesLeft"/>（true = 源 sprite 头朝左），
         /// 返回该实体该用的 <see cref="SpriteRenderer.flipX"/>。
         /// </summary>
         /// <remarks>
@@ -250,45 +253,32 @@ namespace TapTap2026.Rendering
         }
 
         /// <summary>
-        /// 动画帧速倍率（§8）：兔子逃命 ×3（最高优先）、否则在动 ×2（<c>|Vx| &gt; 0.01</c>）、静止 ×1。
-        /// </summary>
-        /// <remarks>v1 只有 4 帧 idle，物种 / 状态差异全靠播放速度 + 程序动作表达，因此这里只调速度、不换帧图。</remarks>
-        private static float ResolveAnimSpeedFactor(Creature creature)
-        {
-            if (creature is RabbitCreature && creature.AiState == RabbitBrain.StateFlee)
-            {
-                return 3f;
-            }
-
-            return Mathf.Abs(creature.VelocityX) > 0.01f ? 2f : 1f;
-        }
-
-        /// <summary>
-        /// 物种 → idle 帧序列：按物种类型取序列化字段，**未接线的物种返回 null**（调用方退回占位块）。
+        /// 物种 → idle 帧序列：按 <see cref="CreatureSpecies"/> 取序列化字段，**未接线的物种返回 null**（调用方退回占位块）。
         /// </summary>
         /// <remarks>
-        /// 用类型判断而不是字符串匹配：物种全集是闭集（兔 / 鸟 / 鱼，见 AGENTS.md），
+        /// 用物种枚举而不是类型判断：物种全集是闭集（兔 / 鸟 / 鱼，见 <see cref="CreatureSpawns"/>），
         /// 新增物种时编译器会逼着这里补一行，而不是在运行期静默匹配失败。
         /// 帧序列为空或首帧缺失也视为未接线（手改 YAML 留下的半接线状态不该让渲染炸掉）。
         /// </remarks>
-        private Sprite[] ResolveIdleFrames(Creature creature)
+        private Sprite[] ResolveIdleFrames(CreatureSpecies species)
         {
             Sprite[] frames;
-            if (creature is RabbitCreature)
+            switch (species)
             {
-                frames = _rabbitIdleFrames;
-            }
-            else if (creature is FishCreature)
-            {
-                frames = _fishIdleFrames;
-            }
-            else if (creature is BirdCreature)
-            {
-                frames = _birdIdleFrames;
-            }
-            else
-            {
-                return null;
+                case CreatureSpecies.Rabbit:
+                    frames = _rabbitIdleFrames;
+                    break;
+
+                case CreatureSpecies.Fish:
+                    frames = _fishIdleFrames;
+                    break;
+
+                case CreatureSpecies.Bird:
+                    frames = _birdIdleFrames;
+                    break;
+
+                default:
+                    return null;
             }
 
             return frames != null && frames.Length > 0 && frames[0] != null ? frames : null;
@@ -320,14 +310,14 @@ namespace TapTap2026.Rendering
             return _placeholderSprite;
         }
 
-        private void DestroyView(Creature creature)
+        private void DestroyView(int creatureId)
         {
-            if (!_views.TryGetValue(creature, out View view))
+            if (!_views.TryGetValue(creatureId, out View view))
             {
                 return;
             }
 
-            _views.Remove(creature);
+            _views.Remove(creatureId);
             if (view.Renderer != null)
             {
                 Destroy(view.Renderer.gameObject);
@@ -337,7 +327,7 @@ namespace TapTap2026.Rendering
         /// <summary>销毁全部视图。子物体可能已被销毁（销毁顺序不确定），逐个判空。</summary>
         private void DestroyAllViews()
         {
-            foreach (KeyValuePair<Creature, View> pair in _views)
+            foreach (KeyValuePair<int, View> pair in _views)
             {
                 if (pair.Value.Renderer != null)
                 {

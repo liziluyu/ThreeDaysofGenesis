@@ -38,6 +38,10 @@ namespace TapTap2026.Simulation
         /// 使同批个体的思考帧错开。只增不减——移除个体不会让后来者复用旧相位（相位一旦钉死就终身不变）。</summary>
         private int _spawnCounter;
 
+        /// <summary>下一个渲染标识符（<see cref="Creature.Id"/>）：同一世界内单调递增，只增不减。
+        /// 从 1 起：0 是「未赋值」哨兵（<c>CreatureRenderData</c> 的默认 <c>Id</c>），真实实体绝不占用。</summary>
+        private int _nextId = 1;
+
         /// <summary>用 seed 建立动物世界（与世界随机流分离：驱动层传 <c>settings.Seed ^ 0x9E3779B9u</c>）。</summary>
         /// <param name="seed">随机种子；为 0 时替换为 <c>0x9E3779B9</c>。</param>
         public CreatureWorld(uint seed)
@@ -120,6 +124,9 @@ namespace TapTap2026.Simulation
 
             // 思考相位按生成序号钉死：同批个体因此错峰（最坏同相位 = 同批 30 只同帧思考，仍远低于一个世界 pass）。
             creature.SensePhase = (byte)(_spawnCounter++ % Creature.ThinkEvery);
+
+            // 渲染标识符：渲染层用它（而不是对象引用）对账视图，帧里传值拷贝。
+            creature.Id = _nextId++;
 
             _creatures.Add(creature);
             creature.OnSpawn(this, world);

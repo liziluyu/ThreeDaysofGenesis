@@ -10,12 +10,13 @@ namespace TapTap2026.Simulation
     /// </summary>
     /// <remarks>
     /// <para>一次高速模式的生命周期：<see cref="Enter"/> → 每逻辑帧 <see cref="OnLogicTick"/> →
-    /// 达到 <see cref="DurationLogicTicks"/> 置 <see cref="Completed"/> → 驱动自动暂停 →
-    /// 玩家确认后 <see cref="Exit"/>（倍速钉回 1×，仍保持暂停）。</para>
-    /// <para>期间做四件事：①挂 <see cref="HighSpeedMonitor"/> 增量统计每种粒子的产生 / 死亡（O(1)，不重扫网格）；
-    /// ②把倍速钉到满档（该控制器实例的 <see cref="SpeedController.MaxSpeedLimit"/>，退出时回 <see cref="SpeedController.MinSpeedLimit"/>——普通编辑模式不允许调速度）；
-    /// ③每 <see cref="SampleInterval"/> 逻辑帧采一次地表平均温度与世界平均湿度（O(W) / O(1)）；
-    /// ④跑满时长那一刻做**一次**全网格存量扫描（<see cref="GetFinalCount"/>，一次性 O(W·H)）。</para>
+    /// 达到 <see cref="DurationLogicTicks"/> 置 <see cref="Completed"/> → 模拟 worker 就地暂停 →
+    /// 玩家确认后 <see cref="Exit"/>（主线程据帧状态把倍速钉回 1×，仍保持暂停）。</para>
+    /// <para>期间做三件事：①挂 <see cref="HighSpeedMonitor"/> 增量统计每种粒子的产生 / 死亡（O(1)，不重扫网格）；
+    /// ②每 <see cref="SampleInterval"/> 逻辑帧采一次地表平均温度与世界平均湿度（O(W) / O(1)）；
+    /// ③跑满时长那一刻做**一次**全网格存量扫描（<see cref="GetFinalCount"/>，一次性 O(W·H)）。
+    /// 倍速钉满档 / 钉回 1× **不在本类**：倍速计划在主线程（阶段 3 起），主线程读帧里的 <see cref="HighSpeedFrame.Active"/>
+    /// 自己钉档——会话因此可以整段跑在模拟 worker 上，不碰任何主线程独占的状态。</para>
     /// <para><b>确定性</b>：监视器与终态存量扫描都是纯观察者——零 RNG 消耗、零格子写入，
     /// 挂 / 摘它或是否扫描都不改变世界的推进结果。</para>
     /// <para>热路径零分配：采样缓冲在 <see cref="Enter"/> 时按 <c>时长 / 采样间隔</c> 一次预留；
@@ -110,19 +111,19 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 进入高速模式：挂上监视器、把 <paramref name="speed"/> 直接钉到**满档 <see cref="SpeedController.MaxSpeedLimit"/>×**
-        /// （手动档；跑不满由预算封顶，实测吞吐看 <see cref="SpeedController.EffectiveSpeed"/>），并从零开始计时。
+        /// 进入高速模式：挂上监视器、记录满档请求，并从零开始计时。
         /// **幂等**：已 <see cref="Active"/> 时什么都不做。
         /// </summary>
-        /// <param name="speed">驱动持有的倍速控制器；进入即钉满档，<see cref="Exit"/> 时回 1×。</param>
-        public void Enter(SpeedController speed)
+        /// <remarks>
+        /// 会话**不再持有倍速控制器**（阶段 3 起倍速计划在主线程，见 docs/design-threaded-simulation-rendering.md）：
+        /// 进入 / 退出只改会话自己的状态，主线程按帧里的 <see cref="HighSpeedFrame.Active"/> 把倍速钉到满档 / 钉回 1×。
+        /// </remarks>
+        public void Enter()
         {
             if (_active)
             {
                 return;
             }
-
-            speed.SetSpeed(speed.MaxSpeedLimit);
 
             _elapsed = 0;
             _completed = false;
@@ -139,11 +140,10 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 退出高速模式：摘掉监视器、把倍速钉回 1×（普通编辑模式恒为 1×），并清空统计、计时与终态存量。
+        /// 退出高速模式：摘掉监视器，并清空统计、计时与终态存量。倍速钉回 1× 由主线程按帧状态完成（见 <see cref="Enter"/>）。
         /// **幂等**：未 <see cref="Active"/> 时什么都不做。
         /// </summary>
-        /// <param name="speed">与 <see cref="Enter"/> 同一个倍速控制器。</param>
-        public void Exit(SpeedController speed)
+        public void Exit()
         {
             if (!_active)
             {
@@ -153,8 +153,6 @@ namespace TapTap2026.Simulation
             _world._monitor = null;
             _monitor.ResetCounters();
             _monitor = null;
-
-            speed.SetSpeed(speed.MinSpeedLimit);
 
             _active = false;
             _completed = false;

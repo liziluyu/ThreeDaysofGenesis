@@ -78,8 +78,10 @@ namespace TapTap2026.Simulation
             sbyte[] cells = profile.Cells;
 
             // 精灵左列 → 世界列 floor(X) - Size/2；dy 0 = 精灵画布底边 ⇒ 世界行 floor(Y) - PivotRowCells。
-            int baseX = (int)Mathf.Floor(creature.X) - BiomassProfile.Size / 2;
-            int baseY = (int)Mathf.Floor(creature.Y) - profile.PivotRowCells;
+            // 向下取整走 BCL 语义的本地实现（不调 Mathf——本方法在阶段 3 起跑在模拟 worker 线程上，
+            // worker 不允许调用任何 UnityEngine 数学 API；纯整数比较与 Mathf.Floor 逐位等价）。
+            int baseX = FloorToInt(creature.X) - BiomassProfile.Size / 2;
+            int baseY = FloorToInt(creature.Y) - profile.PivotRowCells;
 
             // 第一趟：把落在轮廓格上的水挪到合格空位（dy 升序、同行 dx 升序）。挪不动的保持原样——
             // 第二趟会因它仍是水而自然跳过（水原样保留，绝不删水）。
@@ -198,6 +200,14 @@ namespace TapTap2026.Simulation
             }
 
             return cells[dy * BiomassProfile.Size + dx] >= 0;
+        }
+
+        /// <summary>有限浮点的向下取整（不引 <c>Mathf</c> / <c>Math</c>：物理路径保持零 UnityEngine 依赖，
+        /// 且与 <c>(int)Mathf.Floor(x)</c> 对一切有限输入逐位等价）。</summary>
+        private static int FloorToInt(float value)
+        {
+            int truncated = (int)value;
+            return value < truncated ? truncated - 1 : truncated;
         }
 
         /// <summary>

@@ -31,7 +31,8 @@ namespace TapTap2026.Game
     /// <see cref="GameController.CollectUnlockedPhaseIds(GameController.SaveData)"/> / <see cref="GameController.WriteSave(string, string, IList{string})"/>）。</para>
     /// <para>悬停提示：鼠标停在某颗关卡按钮上 → 把该关阶段 JSON 的 <see cref="GamePhaseData.description"/> 写到
     /// <see cref="_probeText"/>，指针移开（或按钮被显隐刷新收走）→ 隐藏。描述与点击监听一样**在 <see cref="Awake"/> 里运行期绑定**
-    /// （场景里不留持久监听、也不摆 <c>EventTrigger</c>）；文本只从 <c>_phases</c> 读出缓存，不改动任何阶段数据。</para>
+    /// （场景里不留持久监听、也不摆 <c>EventTrigger</c>）；文本只从 <c>_phases</c> 读出缓存，不改动任何阶段数据。
+    /// 悬停绑定走共用的 <see cref="UiHoverWiring"/>（与投放面板同一条路径：复用按钮上已有的悬停组件、只销毁自己加的）。</para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class LevelSelectController : MonoBehaviour
@@ -84,7 +85,8 @@ namespace TapTap2026.Game
                 entry.button.onClick.AddListener(listener);
                 _wired.Add((entry.button, listener));
 
-                WireHover(entry.button, phaseId);
+                UiHoverWiring.Attach(
+                    entry.button.gameObject, _ => ShowDescription(phaseId), _ => HideDescription(), _hoverTriggers);
             }
 
             // 悬停提示：ProbeText 未接线只降级（警告 + 保持隐藏），描述表与悬停监听照常走。
@@ -111,15 +113,7 @@ namespace TapTap2026.Game
             _wired.Clear();
 
             // 只销毁本组件加的那几个 EventTrigger（记在 _hoverTriggers 里的才是）；场景里原本就有的不动。
-            foreach (EventTrigger trigger in _hoverTriggers)
-            {
-                if (trigger != null)
-                {
-                    Destroy(trigger);
-                }
-            }
-
-            _hoverTriggers.Clear();
+            UiHoverWiring.Detach(_hoverTriggers);
         }
 
         /// <summary>进入界面时读一次存档刷新显隐。</summary>
@@ -259,45 +253,6 @@ namespace TapTap2026.Game
                     _descriptions[pair.Key] = phase.description;
                 }
             }
-        }
-
-        /// <summary>
-        /// 给一颗按钮挂悬停监听（运行期绑定，场景里不留持久监听）：指针进入显示该关描述、离开隐藏。
-        /// 按钮上没有 <see cref="EventTrigger"/> 才加一个并记进 <see cref="_hoverTriggers"/>（OnDestroy 只销毁自己加的）；
-        /// 已存在同 eventID 的条目一律跳过，因此同一实例重复 Awake 不会叠加重复监听。
-        /// </summary>
-        private void WireHover(Button button, string phaseId)
-        {
-            EventTrigger trigger = button.GetComponent<EventTrigger>();
-            if (trigger == null)
-            {
-                trigger = button.gameObject.AddComponent<EventTrigger>();
-                _hoverTriggers.Add(trigger);
-            }
-
-            AddHoverEntry(trigger, EventTriggerType.PointerEnter, _ => ShowDescription(phaseId));
-            AddHoverEntry(trigger, EventTriggerType.PointerExit, _ => HideDescription());
-        }
-
-        /// <summary>给 <paramref name="trigger"/> 补一条指定类型的空条目并挂上回调；已有同 eventID 的条目则跳过。</summary>
-        private static void AddHoverEntry(EventTrigger trigger, EventTriggerType eventId, UnityAction<BaseEventData> callback)
-        {
-            List<EventTrigger.Entry> entries = trigger.triggers;
-            for (int i = 0; i < entries.Count; i++)
-            {
-                if (entries[i].eventID == eventId)
-                {
-                    return;
-                }
-            }
-
-            EventTrigger.Entry entry = new EventTrigger.Entry
-            {
-                eventID = eventId,
-                callback = new EventTrigger.TriggerEvent(),
-            };
-            entry.callback.AddListener(callback);
-            entries.Add(entry);
         }
 
         /// <summary>可选择的阶段集合 = 解锁集合；解锁集合为空（null / 空档）时退化为「只有第一条」，与
