@@ -7,7 +7,7 @@
 - `CreatureWorld`：实体表 + **独立 xorshift32**——动物绝不消耗世界随机流；事件 `CreatureSpawned`/`CreatureDied` 为渲染/音源预留。
 - `Creature` 抽象基类（相当于粒子体系的 `IParticleType`）：物种差异走虚属性——`Gravity`/`MaxFallSpeed`/`Buoyancy`/`WaterDrag`/`FliesInAir`/`PerchesOnFoliage`/`FlyAccel`/`PlaceholderColor`；钩子 `OnSpawn`/`OnLogic`（物理之前，AI 决策入口）/`OnDeath`。
 - `CreatureTerrain` 碰撞白名单：**只有沙/石头/泥土家族（土、湿土、腐殖土、湿润腐殖土）与冰挡动物**，水是淹没/浮力介质，草花叶树种子一律穿过；鸟另有栖息面口径 `IsPerchable` = IsSolid ∪ 树叶/树干（只服务向下支撑）。冰在死亡物质化那侧是**显式例外**（尸体不得覆盖冰，见下）。
-- 实体 = 连续浮点位置（`X, Y` = 碰撞盒底边中点，单位格）+ 轴分离 AABB 物理（重力 → 竖直逐行扫 → 水平 → 边界夹取 → 刷新 `IsGrounded`/`IsSubmerged`）。物理与感知对粒子世界只读；两处写入例外：**兔子进食**（`world.Clear` 一格草）与**死亡物质化**，都走世界 API，不得直接改 `_cells`。
+- 实体 = 连续浮点位置（`X, Y` = 碰撞盒底边中点，单位格）+ 轴分离 AABB 物理（重力 → 竖直逐行扫 → 水平 → 边界夹取 → 刷新 `IsGrounded`/`IsSubmerged`）。物理与感知对粒子世界只读；两处写入例外：**兔子进食**（`world.Clear` 一格草）与**死亡物质化**，都走世界 API，不得直接改 `_cells`。**边界夹取按图案顶端**：`Creature.ArtTopOffsetCells`（鸟 10 / 鱼 3，取自生成美术数据；默认 0 = 只夹碰撞盒）⇒ 可见图案的顶行也不出世界（否则 1 源像素 = 1 格的图案会在 `Flee` 上冲等极端情况下顶出地图，见 `design-creature-ai.md` §24）。
 - 驱动在每个 `StepLogic()` 之后调 `Creatures.Step(world)`（高速会话转发之前）。
 
 ## 物种
