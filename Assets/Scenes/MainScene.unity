@@ -11411,6 +11411,7 @@ MonoBehaviour:
   _birdTakeoffFrame: {fileID: 2087005500, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
   _birdTakeoffSeconds: 0.3
   _idleFps: 2
+  _birdIdleFps: 3.3333333
   _spriteScale: 16
   _spriteFacesLeft: 1
 --- !u!114 &1926363756

@@ -74,6 +74,10 @@ namespace TapTap2026.Rendering
         /// <summary>idle 动画帧率（帧/秒）：2 = 每帧 500ms。表现层播放，不进模拟、不影响确定性。</summary>
         [SerializeField] private float _idleFps = 2f;
 
+        /// <summary>鸟的动画帧率（帧/秒）：3.3333 = 每帧 300ms。飞行 / 栖息两组共用这一基准
+        /// （栖息组仍按 <see cref="PerchSpeedFactor"/> 半速），其余物种仍用 <see cref="_idleFps"/>。</summary>
+        [SerializeField] private float _birdIdleFps = 10f / 3f;
+
         /// <summary>真 sprite 的放大倍数：16 = 1 源像素恰好渲染成 1 格（与世界纹理的 texel 网格对齐，Point 过滤下不糊）。</summary>
         [SerializeField] private float _spriteScale = 16f;
 
@@ -177,7 +181,8 @@ namespace TapTap2026.Rendering
                 {
                     // §8：帧播放速度随状态缩放（不换帧图）。倍率由帧发布侧按 AI 状态算好，这里只乘；
                     // clock 即「每秒推进的帧数 × 已流逝秒」，作为相位传给帧选择纯函数。
-                    float clock = _animTime * _idleFps * creature.AnimationSpeedFactor;
+                    float idleFps = creature.Species == CreatureSpecies.Bird ? _birdIdleFps : _idleFps;
+                    float clock = _animTime * idleFps * creature.AnimationSpeedFactor;
                     if (creature.Species == CreatureSpecies.Bird)
                     {
                         // 鸟：按 AiState 选帧组；先检出 Perched → Fly/Flee 沿，起一段展翅过渡（纯表现层计时）。
@@ -321,7 +326,9 @@ namespace TapTap2026.Rendering
         /// <summary>
         /// 鸟帧选择（纯函数，全部逻辑可 EditMode 测）：按行为状态与起飞过渡剩余选帧组并取帧。
         /// </summary>
-        /// <param name="aiState">鸟行为状态（<see cref="BirdBrain.StatePerched"/> / <see cref="BirdBrain.StateFly"/> / <see cref="BirdBrain.StateFlee"/>）。</param>
+        /// <param name="aiState">鸟行为状态（<see cref="BirdBrain.StatePerched"/> / <see cref="BirdBrain.StateFly"/> /
+        /// <see cref="BirdBrain.StateFlee"/> / <see cref="BirdBrain.StateHunt"/> / <see cref="BirdBrain.StateSeekFood"/> /
+        /// <see cref="BirdBrain.StateEat"/>；除 Perched 外都播飞行组）。</param>
         /// <param name="takeoffRemaining">起飞过渡剩余时间（秒）；&gt; 0 且非栖息时定格播展翅帧。</param>
         /// <param name="animTime">动画相位（= 已流逝秒 × 帧率 × 状态倍率）；调用方已把倍率乘进来。</param>
         /// <param name="flyFrames">飞行组（下排 bird_4/bird_5/bird_6），循环播。</param>
