@@ -139,6 +139,19 @@ namespace TapTap2026.Simulation
         /// 使同批个体的思考帧彼此错开；死亡移除不改变他者相位（生成序号只增不减）。</summary>
         public byte SensePhase;
 
+        /// <summary>性别（0 = 雌，1 = 雄）：由 <see cref="CreatureWorld.Spawn"/> 按**生成序号奇偶**钉死，不消耗随机流。
+        /// 与 <see cref="SensePhase"/> 取的是**同一个**生成序号（先写本槽位、再写相位，之后计数器才自增），
+        /// 因此同批个体天然 50/50，且性别与思考相位严格对齐。</summary>
+        public byte Sex;
+
+        /// <summary>繁殖冷却（逻辑帧）：运动层每帧减到 0；出生成功后由 <see cref="CreatureReproduction"/> 给双方写入。
+        /// 基类只存不解释——物种阈值集中在 <see cref="CreatureReproduction"/>。</summary>
+        public int BreedCooldownTicks;
+
+        /// <summary>捕食成功计数（仅鸟用）：运动层 ⑥b 命中击杀时 +1（繁殖的“进食”门槛）。
+        /// 其余物种恒 0、零行为差异。</summary>
+        public int PreyEaten;
+
         /// <summary>目标水平速度（格 / 逻辑帧），运动层以 <see cref="MoveAccel"/> 逼近的意图量。</summary>
         public float IntentVx;
 
@@ -151,6 +164,36 @@ namespace TapTap2026.Simulation
         /// 「本个体已锁潜」这一事实的门控位消费（锁潜 + 贴地 ⇒ 停住水平意图，浅水伏底）。
         /// 不写它的物种恒为 false ⇒ 零行为差异、零开销。</summary>
         public bool VerticalDiveLatched;
+
+        /// <summary>巡航高度目标（格）：相对「正下方第一个可栖面 / 水」的目标高度，**Brain 写、Brain 读**，基类只存
+        /// 不解释（语义同 <see cref="AiState"/>）。飞行物种（<see cref="BirdCreature"/>）的高度带上下巡航用
+        /// （<see cref="BirdBrain.MinAltitudeCells"/>~<see cref="BirdBrain.MaxAltitudeCells"/> 格，见
+        /// <c>docs/plan-bird-ai.md</c> §12）；其余物种恒不读、恒不写 ⇒ 零行为差异。</summary>
+        public int TargetAltitudeCells;
+
+        /// <summary>鱼的目标深度（格）：**体顶之上的连续水格数**（水面到体顶的距离），Brain 写 / 读，基类只存不解释
+        /// （语义同 <see cref="AiState"/>）。默认 0 视为无效，鱼在第一个思考帧重摇（见 <c>docs/plan-bird-ai.md</c> §15）；
+        /// 不读它的物种恒不写 ⇒ 零行为差异。</summary>
+        public int TargetDepthCells;
+
+        /// <summary>捕猎目标引用槽位：**Brain 写、Brain 读**，基类只存不解释（语义同 <see cref="AiState"/>）。
+        /// 鸟（<see cref="BirdBrain"/>）用它把当前追击的猎物（兔 / 鱼）记在这里；非空且两碰撞盒重叠时，
+        /// <see cref="ApplyLocomotion"/> 第 ⑥b 段按锁存的 <see cref="HuntKillLatched"/> 结算（命中判死
+        /// <see cref="CreatureDeathCause.Hunted"/>、未命中则该次攻击落空），两种情况都把本槽位清空。
+        /// 失去目标 / 放弃追击 / 击杀之后**必须**由 Brain 置回 null（防悬挂引用）。
+        /// 不写它的物种恒 null ⇒ 零行为差异、零开销。</summary>
+        public Creature HuntTarget;
+
+        /// <summary>本次追击的**命中结果锁存**：EnterHunt 摇一次死亡骰后写入，运动层 ⑥b 只读它决定接触时是否判死
+        /// （真 = 咬杀，假 = 扑空）。**Brain 写 / 运动层读**，基类只存不解释（语义同 <see cref="VerticalDiveLatched"/>）。
+        /// 死亡骰放在思考帧而不是接触帧，是为了守住「动物随机流只在思考帧消耗」的纪律，并且让运动层保持零随机数依赖。
+        /// 离开 Hunt 态时应由 Brain 复位为 false（防残留影响下一次追击）。</summary>
+        public bool HuntKillLatched;
+
+        /// <summary>被捕食接触时的死亡骰分母：锁定目标时摇 <c>NextInt(本值) == 0</c> 才判死，否则该次攻击落空。
+        /// **&lt;= 1 ⇒ 必杀且不摇骰**（默认 1，保持「必死」物种零行为差异、零随机流消耗）。物种在自己的构造函数里
+        /// 按各自分母写入（兔子 2 = 50%、鱼 3 ≈ 33%）；测试可改写以分别钉住命中 / 扑空两条路径。</summary>
+        public int HuntDeathDenominator = 1;
 
         /// <summary>起跳请求：运动层在 <see cref="IsGrounded"/> 时消费成 <see cref="VelocityY"/> 脉冲并清零。</summary>
         public bool WantHop;
@@ -487,6 +530,28 @@ namespace TapTap2026.Simulation
                 Kill(CreatureDeathCause.Burned);
             }
 
+            // ⑥b 捕猎接触结算（通用机制，与 ⑥「接触火即死」同层）：HuntTarget 非 null 且两碰撞盒 AABB 重叠
+            //     ⇒ 猎物被咬中一次，按**锁存**的命中结果决定死活（v5，见 docs/plan-bird-ai.md §14）。
+            //     命中与否已在 Brain 的 EnterHunt 思考帧摇好并锁存在 HuntKillLatched：这里只结算、不摇骰、
+            //     不依赖动物随机流（运动层保持零随机数依赖）。这是**反射**而不是「决策」——Brain 只负责把
+            //     追击目标与命中结果写进黑板，真正判定「咬到没咬到」放在运动层，和接触火并列（每帧零分配）。
+            //     一次接触 = 一次结算：命中即死、未命中该次攻击落空；两种情况都立刻清空 HuntTarget，
+            //     Brain 下次思考看到「身在 Hunt 态但目标已空」即走既有 ExitHunt(retreat: true) 拉升飞走。
+            //     只有鸟会写 HuntTarget ⇒ 其它物种恒 null，本条目对它们零行为差异、零开销。
+            Creature huntTarget = HuntTarget;
+            if (huntTarget != null && Overlaps(huntTarget))
+            {
+                // 命中与否已在 EnterHunt 摇好并锁存在 HuntKillLatched：这里只结算，不摇骰、不依赖动物随机流。
+                // 未命中同样清空目标 ⇒ Brain 的撤离出口让鸟飞走。
+                if (HuntKillLatched)
+                {
+                    huntTarget.Kill(CreatureDeathCause.Hunted);
+                    PreyEaten++; // 繁殖门槛：只有真正咬死的这一次才计数（扑空不算）。
+                }
+
+                HuntTarget = null; // 命中 / 扑空都算这一次攻击结束
+            }
+
             // ⑦ 掩埋致死（压死）：身体覆盖的**每一格**都是**静止**的固体（沙 / 石 / 土家族）时开始计时，
             //    连续超过 BuriedTicksLimit 帧即 Kill(Crushed)。
             //    为什么放在这里：与 ⑥ 同为「即时环境致死」——判据只依赖当前帧的环境本身，不依赖任何计时阈值；
@@ -563,6 +628,21 @@ namespace TapTap2026.Simulation
         /// <param name="cause">死因。</param>
         public virtual void OnDeath(CreatureWorld creatures, ParticleWorld world, CreatureDeathCause cause)
         {
+        }
+
+        /// <summary>两个碰撞盒的 AABB 是否重叠（半开区间：贴边不算重叠）。碰撞盒跨度
+        /// <c>[X − Width/2, X + Width/2] × [Y, Y + Height]</c>。纯四则、零分配，供
+        /// <see cref="ApplyLocomotion"/> 第 ⑥b 段的捕猎接触判定使用。</summary>
+        /// <param name="other">另一实体。</param>
+        /// <returns>两盒重叠时 true。</returns>
+        private bool Overlaps(Creature other)
+        {
+            float halfWidth = Width * 0.5f;
+            float otherHalfWidth = other.Width * 0.5f;
+            return X - halfWidth < other.X + otherHalfWidth
+                && X + halfWidth > other.X - otherHalfWidth
+                && Y < other.Y + other.Height
+                && Y + Height > other.Y;
         }
 
         /// <summary>标注死亡（幂等：重复调用只有第一次生效，死因以第一次为准）。</summary>

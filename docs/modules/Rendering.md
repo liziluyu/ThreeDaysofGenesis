@@ -15,7 +15,7 @@
 
 ## 动物渲染（CreatureRenderer）
 
-`[DefaultExecutionOrder(100)]` 排在驱动之后。每帧只读最新已发布帧的 `CreatureFrame`（一串值类型 `CreatureRenderData` DTO），按稳定 `Id` 对账视图（不订阅事件、不用对象引用；`Id` 同一世界内从 **1** 起单调递增，**0 = 未赋值哨兵**，因此 DTO 默认值不会被误认成真实实体）、一实体一 SpriteRenderer（运行时 1×1 白纹理拉成碰撞盒、占位色、z = −1 在世界 quad 之上）、按 `Prev → Cur` 逻辑帧间插值（暂停时 alpha 饱和到 1 稳定停住）。世界重建换成 `Generation` 变化 ⇒ 整批清视图。占位色 / 物种 / 动画帧速倍率都已在 DTO 里算好（要读 AI 状态的那部分留在发布侧），渲染层只做「帧索引 × 倍率」。已接线兔子/鱼/鸟三套 idle 帧——`Assets/Images/Animals/{rabbit,fish,bird}/1/*.png` 各 4 帧 16×16 切片（PPU 16、Point、不压缩、pivot 贴画底），`_spriteScale` 16 ⇒ 1 源像素 = 1 格、`_idleFps` 2 = 500ms/帧，暂停冻结；未接线物种退回占位白块。朝向：源 sprite 头朝左 ⇒ `_spriteFacesLeft` 默认 `true`，`Facing = +1` 时 `flipX = true`，映射只在 `ResolveFlipX` 一处定义。
+`[DefaultExecutionOrder(100)]` 排在驱动之后。每帧只读最新已发布帧的 `CreatureFrame`（一串值类型 `CreatureRenderData` DTO），按稳定 `Id` 对账视图（不订阅事件、不用对象引用；`Id` 同一世界内从 **1** 起单调递增，**0 = 未赋值哨兵**，因此 DTO 默认值不会被误认成真实实体）、一实体一 SpriteRenderer（运行时 1×1 白纹理拉成碰撞盒、占位色、z = −1 在世界 quad 之上）、按 `Prev → Cur` 逻辑帧间插值（暂停时 alpha 饱和到 1 稳定停住）。世界重建换成 `Generation` 变化 ⇒ 整批清视图。占位色 / 物种 / 行为状态（`AiState`）/ 动画帧速倍率都已在 DTO 里算好（要读 AI 状态的那部分留在发布侧），渲染层只做「帧索引 × 倍率」。已接线兔子 / 鱼 idle 帧（各 4 帧）与**鸟的三帧组**（`_birdFlyFrames` 下排 3 片 bird_4..6 = 飞行扑翼、`_birdPerchFrames` 上排 4 片 bird_0..3 = 站立栖息、`_birdTakeoffFrame` = bird_5 翅竖直顶点兼任起飞展翅）——`Assets/Images/Animals/{rabbit,fish,bird}/1/*.png` 16×16 切片（PPU 16、Point、不压缩、pivot 贴画底），`_spriteScale` 16 ⇒ 1 源像素 = 1 格、`_idleFps` 2 = 500ms/帧，暂停冻结；未接线物种退回占位白块。鸟按 DTO 里的 `AiState` 选帧组（纯函数 `ResolveBirdFrame` / `AdvanceBirdTakeoff`）：栖息播收翅、飞行播下排、**Perched→Fly/Flee 沿**先定格展翅帧 0.3s（`_birdTakeoffSeconds`）再进飞行循环，落回栖息立即切收翅；过渡计时是 per-view 表现层状态，不进模拟。朝向：源 sprite 头朝左 ⇒ `_spriteFacesLeft` 默认 `true`，`Facing = +1` 时 `flipX = true`，映射只在 `ResolveFlipX` 一处。
 
 ## 界面层（uGUI，全部场景可编辑）
 

@@ -1,3 +1,5 @@
+using System;
+
 namespace TapTap2026.Simulation
 {
     /// <summary>
@@ -66,6 +68,10 @@ namespace TapTap2026.Simulation
 
         /// <summary>朝向：+1 朝右、−1 朝左、0 = 未定。</summary>
         public int Facing;
+
+        /// <summary>行为状态（语义按物种解释，见各 Brain 的 <c>State*</c> 常数；鸟用它选帧组——
+        /// 渲染层按 <c>CreatureRenderer.ResolveBirdFrame</c> 换组）。基类只搬运、不解释。</summary>
+        public byte AiState;
 
         /// <summary>动画帧速倍率（逃命 ×3、移动 ×2、静止 ×1）。</summary>
         public float AnimationSpeedFactor;
@@ -184,6 +190,9 @@ namespace TapTap2026.Simulation
     /// </summary>
     public sealed class AudioFrame
     {
+        private readonly int[] _creatureSpawns = new int[CreatureWorld.SpeciesSlotCount];
+        private readonly int[] _creatureDeaths = new int[CreatureWorld.SpeciesSlotCount];
+
         /// <summary>液体运动比例（本帧动过的液体 ÷ 液体总数，夹在 [0, 1]）。</summary>
         public float LiquidMovingRatio { get; internal set; }
 
@@ -195,6 +204,38 @@ namespace TapTap2026.Simulation
 
         /// <summary>自上次发布以来新写入的雷电格数（一次性事件的判据）。</summary>
         public int LightningCreated { get; internal set; }
+
+        /// <summary>本帧该物种的出生数（自上次发布以来，折叠前的原始计数；0 = 没有出生）。
+        /// 声音驱动按「每物种每帧最多一声」折叠，因此只判 &gt; 0。</summary>
+        public int CreatureSpawnCount(CreatureSpecies species)
+        {
+            int index = (int)species;
+            return index >= 0 && index < _creatureSpawns.Length ? _creatureSpawns[index] : 0;
+        }
+
+        /// <summary>本帧该物种的死亡数（口径同 <see cref="CreatureSpawnCount"/>）。</summary>
+        public int CreatureDeathCount(CreatureSpecies species)
+        {
+            int index = (int)species;
+            return index >= 0 && index < _creatureDeaths.Length ? _creatureDeaths[index] : 0;
+        }
+
+        /// <summary>写入本帧的物种事件计数（采集侧调用；逐槽覆盖写，数组长度不足的槽按 0）。</summary>
+        internal void SetCreatureEvents(int[] spawns, int[] deaths)
+        {
+            for (int i = 0; i < _creatureSpawns.Length; i++)
+            {
+                _creatureSpawns[i] = i < spawns.Length ? spawns[i] : 0;
+                _creatureDeaths[i] = i < deaths.Length ? deaths[i] : 0;
+            }
+        }
+
+        /// <summary>把物种事件计数清零（无动物世界时）。</summary>
+        internal void ClearCreatureEvents()
+        {
+            System.Array.Clear(_creatureSpawns, 0, _creatureSpawns.Length);
+            System.Array.Clear(_creatureDeaths, 0, _creatureDeaths.Length);
+        }
     }
 
     /// <summary>

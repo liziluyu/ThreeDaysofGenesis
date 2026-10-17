@@ -218,13 +218,17 @@ namespace TapTap2026.Simulation
         /// <item><description><see cref="CreatureTerrain.IsSolid"/> 为真的地形固体（沙 / 石头 / 土家族）——
         /// 山崩压死的尸体必须可见。</description></item>
         /// </list>
-        /// 其余（火 / 树干 / 已有生物质 / 水 / 其它未列类型）一律 false。
+        /// 其余（火 / 树干 / 已有生物质 / 水 / **冰** / 其它未列类型）一律 false。
         /// </summary>
         /// <remarks>
         /// 气体与软植被按 <see cref="ParticleIds"/> 常量写死白名单（与 <see cref="CreatureTerrain"/> 同一风格）：
         /// 未来新增类型要**显式**决定能不能被尸体覆盖，而不是被某个泛化的标签规则悄悄带进来。地形固体这一档
         /// **复用 <see cref="CreatureTerrain.IsSolid"/> 的同一份白名单**，避免「挡动物的固体」与「能让尸体可见的
         /// 固体」两处清单漂移。水不走这一档：它由 <see cref="Materialize"/> 的第一趟先挪开。
+        /// <para><b>冰是显式例外</b>：它在 <see cref="CreatureTerrain.IsSolid"/> 白名单里（能站、能挡动物），
+        /// 但**不能被尸体覆盖**——冰按水账守恒（水格 + 冰格 + 湿土格 + 湿度场）算一份水，而
+        /// <see cref="TryRelocateWater"/> 只搬 <see cref="ParticleIds.Water"/>、不搬冰：让尸体盖掉冰等于
+        /// 凭空蒸发一份水。冰上的尸体格因此整格跳过（与「挪不走的水」同一档处理）。</para>
         /// </remarks>
         private static bool CanCorpseOccupy(ParticleWorld world, int x, int y)
         {
@@ -236,6 +240,11 @@ namespace TapTap2026.Simulation
                 || typeId == ParticleIds.TreeLeaf)
             {
                 return true;
+            }
+
+            if (typeId == ParticleIds.Ice)
+            {
+                return false; // 冰算地形但不可被尸体覆盖：否则水账漏一份水（见 remarks）
             }
 
             return CreatureTerrain.IsSolid(world, x, y);

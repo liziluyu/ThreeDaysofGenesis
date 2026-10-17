@@ -6,11 +6,22 @@ namespace TapTap2026.Simulation
     //
     // flags 私有位：无（bit3-7 全部空闲）
     // 邻居查询范围：正下、左下/右下、同行左右邻格、左右各 MaxFlowSpread 格（落差视野扫描）、
-    //               正下连续最多 CanopyPassMaxDepth 格（穿冠扫描，见行为第 0 段）
-    // 交互的 ParticleIds：TreeLeaf（穿冠判据——正下方连续叶柱；失活落叶同样算）——
+    //               正下连续最多 CanopyPassMaxDepth 格（穿冠扫描，见行为第 0 段）、
+    //               正上方连续最多 IceParticle.ColumnScanDepth 格（结冰的深度扫描，见冷端相变）
+    // 交互的 ParticleIds：TreeLeaf（穿冠判据——正下方连续叶柱；失活落叶同样算）、
+    //                    Ice（结冰目标形态，见随机刻的冷端相变）——
     //                    蒸发把水汽交给湿度场（HumidityField），水汽不以粒子形式存在
     //
-    // 行为：开头先查温度做相变，然后才是液体运动。相变分两条路：
+    // 行为：相变分**冷热两端**，且走**两条不同的时基**（温度区间不相交：冷端 ≤ FreezingPoint(4.0)、
+    //       热端 ≥ SlowEvaporationTemperature(20)）：
+    //       冷端——**结冰**（TryFreeze）**走随机刻**（OnRandomTick）：它是"缓慢、按概率发生"的过程，
+    //         稀有度由世界的随机刻抽取率给出（生产 48 格/逻辑帧）。水面（正上方界内气体/空、
+    //         且正下方落定）在低温下冻结成冰——挨着冰照冰点 4.0 蔓延，没有冰邻格要过冷到 3.5 成核，
+    //         正上方压着冰则按几何梯度 `4.0·0.5^d` 逐层向下加厚（越深越接近环境 0）。
+    //         整条门槛再乘**光照冷度缩放**（LightColdScale：强度 8~12 = ×1；更弱 → 最多 ×1.2「更易结冰」；
+    //         更强 → 最低 ×0.6「更难结冰」，两端都随强度连续变化）。
+    //         结冰放热（潜热 + 热容差，见 IceParticle.FusionTemperatureStep）。
+    //       热端——**蒸发**（走逻辑帧 OnLogic，下列两条路）：
     //         · 沸腾（T ≥ 沸点）：把 1 份水汽**集中**在原地一小片 → 每格浓度高 → 渲染成可见的白色汽团；
     //         · 慢蒸发（T ≥ 常温阈值、按概率、且**正上方是界内气体**）：把同样 1 份水汽**摊到 9×9 一大片**
     //           （半径 4）→ 每格低于可见阈值 → 看不见，只让湿度稳步升高。摊不够薄（接收格太少，
@@ -50,10 +61,13 @@ namespace TapTap2026.Simulation
     //       成为不动的「地下水」（土例外：干土会按既有土壤反应把正上方的水吸成湿土）；
     //       同类水互不置换但横流时可互相穿过（CanFlowThrough 对流体放行同 rank）。
     //
-    //       随机刻（OnRandomTick）：冲刷——找到半径 SandifyingRadius（2）格圆盘内的**第一个**土壤 / 湿土 /
-    //       腐殖土后，按 1/ErosionChanceDenominator（= 1/5 = 20%）的概率把它 SetPhase 成沙
-    //       （固定扫描序 y 升序、同行 x 升序；先判目标再摇骰，无土可冲时不消耗随机流）。
-    //       随机刻默认关闭，生产值由 Settings 注入。
+    //       随机刻（OnRandomTick）做两件事，按此顺序：
+    //         ① **结冰**（冷端相变，见上）：够冷的水面冻成冰，冻上了就 return；
+    //         ② **冲刷**：找到半径 SandifyingRadius（2）格圆盘内的**第一个**土壤 / 湿土 /
+    //            腐殖土后，按 1/ErosionChanceDenominator（= 1/5 = 20%）的概率把它 SetPhase 成沙
+    //            （固定扫描序 y 升序、同行 x 升序；先判目标再摇骰，无土可冲时不消耗随机流）。
+    //       随机刻默认关闭（`ParticleWorld.RandomTicksPerStep = 0`）：两条行为都只在生产的
+    //       随机刻格数注入后才发生，生产值由 Settings 注入（现配 48）。
     public sealed class WaterParticle : IParticleType
     {
         private static readonly Color32[] Palette =
@@ -63,6 +77,13 @@ namespace TapTap2026.Simulation
             new Color32(74, 136, 222, 255),
             new Color32(88, 150, 232, 255),
         };
+
+        /// <summary>
+        /// 水的热容 C = 6.5：固体（0.8）的 8 倍上下——水升温最慢、最「扛热」，海陆温差（海风）
+        /// 与水面昼夜惰性因此更明显。用命名常量而不是字面量：冰的相变结算要按**水相热容**算潜热
+        /// （见 <see cref="IceParticle.HeatCapacityDelta"/> 族的推导），两处必须是同一个数。
+        /// </summary>
+        public const float HeatCapacity = 6.5f;
 
         /// <summary>
         /// 沸点：本格温度达到它就剧烈蒸发成水汽（并把水汽集中成可见的白色汽团）。
@@ -103,10 +124,130 @@ namespace TapTap2026.Simulation
         /// </summary>
         public const float LiquidConvectionEpsilon = 0.5f;
 
+        /// <summary>
+        /// 水面结冰阈值：水面（正上方是界内气体 / 空、且正下方落定）温度降到它，冰就能沿已有冰缘蔓延过来。
+        /// 取 4.0：**实测标定**——玩家世界里水体只在刚放置那一刻是 0°，夜间稳定在 **3° 上下**
+        /// （见 `IceParticleTests.ColdPond_*` 的探针思路与文档 §13），所以「够冷」的门必须落在 3° 之上：
+        /// 4.0 让夜间水面必定进得来，而白天水面 20~30°（见 <see cref="SlowEvaporationTemperature"/>）
+        /// 永远进不来。世界本身的温度下界仍是 0（<see cref="HeatMap.AmbientHeat"/>），深度梯度因此
+        /// 只能用几何衰减逼近它（见 <see cref="FreezeDepthDecay"/>）。
+        /// </summary>
+        public const float FreezingPoint = 4f;
+
+        /// <summary>
+        /// 成核超冷：**没有**冰邻格的水面要再冷这么多才可能自己冻出第一个点
+        /// （4.0 − 0.5 = 3.5，见 <see cref="TryFreeze"/> 的成核分支）。
+        /// 现实里纯水需要过冷才自发成核，已有冰缘则只是「长大」——这条差异让结冰从零星几点开始，
+        /// 而不是整片水面在同一刻齐刷刷冻住（「从一点或一部分开始结冰」）。
+        /// 取 0.5：夜间水温在 3° 上下浮动，0.5° 的差足够让「最先凉下来的那几格」先成核，
+        /// 又不会因为门太高而整夜冻不出来；稀有度主要由随机刻的命中率把着（见 <see cref="OnRandomTick"/>）。
+        /// </summary>
+        public const float NucleationSupercooling = 0.5f;
+
+        /// <summary>
+        /// 结冰的深度梯度：每深一层（正上方多一格冰），需要的温度乘这个系数（几何衰减）。
+        /// 取 0.5：阈值 4.0 → 2.0 → 1.0 → 0.5 → …（见 <see cref="FreezeThresholdAtDepth"/>）。
+        /// 只能用几何衰减而不是线性减法——温度下界是环境 0，线性梯度几层后就穿到 0 以下、把厚度硬卡死；
+        /// 几何梯度是「越深越接近环境 0」，而冰下的水会一直被抽冷下去，因此最后一档永远够得着：
+        /// 厚度没有上限（用户要求），只是越来越慢。
+        /// </summary>
+        public const float FreezeDepthDecay = 0.5f;
+
+        /// <summary>
+        /// 冰下第 <paramref name="depth"/> 层（正上方压着 depth 格冰）的结冰阈值 =
+        /// <c>FreezingPoint · FreezeDepthDecay^depth</c>。<paramref name="depth"/> 由
+        /// <see cref="IceParticle.DepthBelowIceTop"/> 数出，上限 <see cref="IceParticle.ColumnScanDepth"/>
+        /// （超出按最后一档处理——扫描有界，梯度不无界细分）。
+        /// <para>这是**不含光照缩放**的纯梯度；运行时请用 <see cref="FreezeThresholdAt"/>。</para>
+        /// </summary>
+        public static float FreezeThresholdAtDepth(int depth)
+        {
+            float threshold = FreezingPoint;
+            for (int i = 0; i < depth; i++)
+            {
+                threshold *= FreezeDepthDecay;
+            }
+
+            return threshold;
+        }
+
+        /// <summary>光照强度的**适宜区间下沿**：玩家把强度调在 [8, 12] 内时冷度缩放 = 1（结冰 / 融化门槛取标定值）。</summary>
+        public const float LightComfortIntensityMin = 8f;
+
+        /// <summary>适宜区间上沿（与 <see cref="LightComfortIntensityMin"/> 一起构成「温度适宜」的平稳段）。</summary>
+        public const float LightComfortIntensityMax = 12f;
+
+        /// <summary>
+        /// 冷度缩放的**上限**：光照最弱（强度 0）时，冰点与融点整体乘它——更早结冰、现有冰更难化。
+        /// 取 1.2 而不是更大：迟滞带 <c>[4.0·s, 6.0·s]</c> 必须始终宽于相变造成的 ±1.0° 摆动
+        /// （4.0·1.2 + 1.0 = 5.8 &lt; 6.0·1.2 = 7.2 ✓）；再大就会让同一格反复相变。
+        /// </summary>
+        public const float LightColdScaleMax = 1.2f;
+
+        /// <summary>
+        /// 冷度缩放的**下限**：光照强到适宜上沿的 2 倍（= 24）及以上时取它——更难结冰、现有冰更快化。
+        /// 取 0.6：迟滞带缩到 2.0·0.6 = 1.2°，仍宽于 ±1.0 的摆动（融点 3.6 − 1.0 = 2.6 &gt; 冰点 2.4 ✓）。
+        /// </summary>
+        public const float LightColdScaleMin = 0.6f;
+
+        /// <summary>
+        /// 光照强度 → **冷度缩放**：整个水 ⇄ 冰相变（结冰门槛、成核门槛、加厚梯度、融化门槛）都乘它。
+        /// 强度落在适宜区间 [8, 12] 内 → 1（标定值不变）；更弱 → 线性升到 <see cref="LightColdScaleMax"/>
+        /// （「越弱越像冬天」：更早冻、更难化）；更强 → 线性降到 <see cref="LightColdScaleMin"/>，
+        /// 在 2×上沿（24）饱和（「越强越像夏天」：难冻、快化）。两侧都**随强度连续变化**。
+        /// </summary>
+        /// <remarks>
+        /// 看的是**配置强度**（光照面板上玩家设的「强度」，也就是这个世界的气候设定），
+        /// 不是瞬时亮度：夜间灯光关闭时瞬时亮度恒为 0，按瞬时值缩放会让「夜晚 = 最冷」压过昼夜循环本身。
+        /// 玩家想更冷就把强度调低、想更热就调高——这正是把气候旋钮交出去的地方。
+        /// </remarks>
+        public static float LightColdScale(float lightIntensity)
+        {
+            if (lightIntensity >= LightComfortIntensityMin && lightIntensity <= LightComfortIntensityMax)
+            {
+                return 1f; // 适宜区间：结冰 / 融化门槛取标定值
+            }
+
+            if (lightIntensity < LightComfortIntensityMin)
+            {
+                // 0 → 1（最冷），8 → 0（回到适宜）；负数（非法输入）按 0 处理。
+                float t = 1f - Mathf.Max(lightIntensity, 0f) / LightComfortIntensityMin;
+                return 1f + (LightColdScaleMax - 1f) * t;
+            }
+
+            // 12 → 0，24（= 2×上沿）→ 1 并在更热处饱和。
+            float hot = (lightIntensity - LightComfortIntensityMax) / LightComfortIntensityMax;
+            if (hot > 1f)
+            {
+                hot = 1f;
+            }
+
+            return 1f + (LightColdScaleMin - 1f) * hot;
+        }
+
+        /// <summary>
+        /// 本世界当前生效的**结冰阈值**（第 <paramref name="depth"/> 层，含光照冷度缩放）：
+        /// <c>FreezeThresholdAtDepth(depth) · LightColdScale(world.Light.Intensity)</c>。
+        /// <c>depth = 0</c> 即「沿冰缘蔓延」那一档的门槛；加厚用 depth ≥ 1。世界的实际判定与测试共用它。
+        /// </summary>
+        public static float FreezeThresholdAt(ParticleWorld world, int depth)
+        {
+            return FreezeThresholdAtDepth(depth) * LightColdScale(world.Light.Intensity);
+        }
+
+        /// <summary>
+        /// 本世界当前生效的**成核门槛**（无冰邻格时的过冷门，含光照冷度缩放）：
+        /// <c>(FreezingPoint − NucleationSupercooling) · LightColdScale(…)</c>。
+        /// </summary>
+        public static float FreezeNucleationThresholdAt(ParticleWorld world)
+        {
+            return (FreezingPoint - NucleationSupercooling) * LightColdScale(world.Light.Intensity);
+        }
+
         public ParticleTypeInfo Info => new ParticleTypeInfo(
             tags: ParticleTags.Liquid,
             density: 1.0f,
-            heatCapacity: 6.5f,   // 水：热容再调大——升温最慢、最"扛热"，海陆温差（海风）与水面昼夜惰性更明显
+            heatCapacity: HeatCapacity,   // 水：热容再调大——升温最慢、最"扛热"，海陆温差（海风）与水面昼夜惰性更明显
             thermalConductivity: 0.95f,   // 水：导热最好，水体内部接近等温
             thermalEmissivity: 1.0f,      // 水是近黑体（红外吸收极强）：水面照常向外散热
             affectedByGravity: true,
@@ -207,9 +348,14 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
-            // 相变优先于运动。蒸发会带走一份潜热（见 HumidityField.LatentHeat），
-            // 于是水面被蒸发冷却——这正是海风形成所需的冷源。
+            // 相变优先于运动。**结冰不在这里**——它走随机刻（见 OnRandomTick / TryFreeze）：
+            // 结冰是「缓慢、按概率发生」的过程，交给世界的随机刻抽取，逻辑帧只管蒸发。
+            // 于是热端（蒸发 ≥ SlowEvaporationTemperature = 20）与冷端（结冰 ≤ FreezingPoint = 4.0）
+            // 天然不打架：这里只看热端。
             float temperature = world.Heat.GetTemperature(x, y);
+
+            // 蒸发会带走一份潜热（见 HumidityField.LatentHeat），
+            // 于是水面被蒸发冷却——这正是海风形成所需的冷源。
 
             // 剧烈蒸发：达到沸点必定蒸发（沸腾是唯一会产生**可见**水汽的路径）。
             bool boiling = temperature >= BoilingPoint;
@@ -245,6 +391,97 @@ namespace TapTap2026.Simulation
                 // 时播撒返回 0、本格不相变：半封闭地形（石墙口袋）因此不会凭空冒出可见水汽（审计 B2）。
                 Evaporate(world, x, y, HumidityField.InvisibleSpreadRadius, HumidityField.InvisibleSpreadMaxShare);
             }
+        }
+
+        /// <summary>
+        /// 冷端相变：水 → 冰，**由随机刻驱动**（<see cref="OnRandomTick"/> 先调它）。
+        /// 三种情形共用同一台机器——
+        /// **成核**（水面、四邻无冰：要过冷，先冻出零星几点）、
+        /// **蔓延**（水面、四邻有冰：沿冰缘向外铺开）、
+        /// **加厚**（正上方是冰的第 d 层：越深需要的温度越接近环境 0）。
+        /// <para>稀有度**不再叠概率骰**：随机刻本身每逻辑帧只抽 <see cref="ParticleWorld.RandomTicksPerStep"/>
+        /// 格（生产 48 / 57600 格），命中本就是低频事件；条件满足即冻。</para>
+        /// <para>三条门槛都乘**光照冷度缩放** <see cref="LightColdScale"/>（玩家把光照强度调低 ⇒ 更易结冰、
+        /// 调高 ⇒ 更难结冰，8~12 之间保持标定值），见 <see cref="FreezeThresholdAt"/> /
+        /// <see cref="FreezeNucleationThresholdAt"/>。</para>
+        /// <para>水面（d = 0）另有两道几何门：正上方必须是**界内**气体 / 空（越界不算天空，
+        /// 与 <see cref="Evaporate"/> 的审计 B3 同一处理），且正下方不是气体 / 空（「落定」要求——
+        /// 否则雨滴会在空中冻成悬浮冰晶；正下方越界视作落在世界底，算落定）。</para>
+        /// <para>条件全满足才 <see cref="ParticleWorld.SetPhase"/> 换形态（保留 Q），再按
+        /// <see cref="IceParticle.FusionTemperatureStep"/> 与 <see cref="IceParticle.HeatCapacityDelta"/>
+        /// **放热**：本格升温 1°，这份热随后由传导摊给邻居（「结冰放热、影响周围温度」）。</para>
+        /// <para>世界未注册冰时（隔离类型表 / 未走生产注册）直接跳过：那种世界里不存在「冰」这种物质，
+        /// 而 <see cref="ParticleWorld.SetPhase"/> 对未注册 id 会拒绝写入并报错。</para>
+        /// <para>全程只读判定 + 一次写入：**不消耗世界随机流**（随机刻的抽取已在世界层完成），
+        /// 也不分配。</para>
+        /// </summary>
+        private static void TryFreeze(ParticleWorld world, int x, int y, float temperature)
+        {
+            if (!IceParticle.IsRegisteredIn(world))
+            {
+                return;
+            }
+
+            int depth = IceParticle.DepthBelowIceTop(world, x, y);
+            float threshold;
+
+            if (depth > 0)
+            {
+                // 加厚：正上方已经是冰（已在冰下，无需再判「落定」——水体内部必然是落定的）。
+                threshold = FreezeThresholdAt(world, depth);
+            }
+            else
+            {
+                // 水面：正上方必须看得见天（**界内**的气体 / 空），顶行的水不算（越界不当空气）。
+                if (!world.IsInBounds(x, y + 1) || !ParticleRules.IsGasOrEmpty(world, x, y + 1))
+                {
+                    return;
+                }
+
+                if (world.IsInBounds(x, y - 1) && ParticleRules.IsGasOrEmpty(world, x, y - 1))
+                {
+                    return; // 落定要求：悬空的水滴不结冰
+                }
+
+                // 挨着冰只是「长大」（照冰点），没有冰邻格才要过冷；两者都乘上光照冷度缩放。
+                threshold = HasIceNeighbor(world, x, y)
+                    ? FreezeThresholdAt(world, 0)
+                    : FreezeNucleationThresholdAt(world);
+            }
+
+            if (temperature > threshold)
+            {
+                return; // 不够冷：不改世界
+            }
+
+            // 结冰放热：同一份物质换形态（Q 保留），先把**热容差**的热量抽走让温度连续
+            // （水 6.5 → 冰 3.5 会让温度凭空跳），再按**冰相热容**补上凝固潜热
+            // （+C_冰·FusionTemperatureStep，本格升温 1°）。与 IceParticle 的融化结算严格互逆。
+            world.SetPhase(x, y, ParticleIds.Ice);
+            world.Heat.AddHeat(
+                x, y, IceParticle.HeatCapacity * IceParticle.FusionTemperatureStep
+                    - IceParticle.HeatCapacityDelta * temperature);
+        }
+
+        /// <summary>
+        /// 四邻里的左 / 右 / 正下是否有冰（正上方有冰的情形已被
+        /// <see cref="IceParticle.DepthBelowIceTop"/> 归进 depth &gt; 0）。
+        /// 越界与未注册的冰 id（隔离类型表里 <see cref="ParticleIds.Ice"/> 是 0 = 空气）一律 false。
+        /// </summary>
+        private static bool HasIceNeighbor(ParticleWorld world, int x, int y)
+        {
+            return IsIce(world, x - 1, y) || IsIce(world, x + 1, y) || IsIce(world, x, y - 1);
+        }
+
+        private static bool IsIce(ParticleWorld world, int x, int y)
+        {
+            if (!world.IsInBounds(x, y))
+            {
+                return false;
+            }
+
+            ushort iceId = ParticleIds.Ice;
+            return iceId != ParticleRegistry.AirTypeId && world.GetCell(x, y).typeId == iceId;
         }
 
         public void OnMotion(ParticleWorld world, int x, int y)
@@ -374,7 +611,21 @@ namespace TapTap2026.Simulation
 
         public void OnRandomTick(ParticleWorld world, int x, int y)
         {
-            // 先找目标（不消耗随机数）：半径 SandifyingRadius 格圆盘内的**第一个**土壤 / 湿土 / 腐殖土。
+            // ① 冷端相变优先：够冷的水面冻结成冰（TryFreeze 自己做完全部判定，
+            //    没冻成也不消耗随机流）；冻上了就 return——刚冻出来的冰不该在同一帧再走冲刷。
+            //    结冰走随机刻而不是逻辑帧：它是「缓慢、按概率发生」的过程，稀有度交给世界的抽取率
+            //    （RandomTicksPerStep，生产 48/57600 格 ≈ 每格每 ~60 秒被点到一次）。
+            float temperature = world.Heat.GetTemperature(x, y);
+            if (temperature <= FreezeThresholdAt(world, 0))
+            {
+                TryFreeze(world, x, y, temperature);
+                if (world.GetCell(x, y).typeId == ParticleIds.Ice)
+                {
+                    return; // 本格刚冻上：不再走冲刷
+                }
+            }
+
+            // ② 冲刷：先找目标（不消耗随机数）：半径 SandifyingRadius 格圆盘内的**第一个**土壤 / 湿土 / 腐殖土。
             // 固定扫描序（y 升序、同一行 x 升序）保证确定性（同种子逐格可复现）。
             for (int dy = -SandifyingRadius; dy <= SandifyingRadius; dy++)
             {

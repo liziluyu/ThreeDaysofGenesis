@@ -127,9 +127,16 @@ namespace TapTap2026.Simulation
         /// 是否在渲染时给本类型的连片区域描边（默认 <c>false</c>）。纯表现层标志：
         /// 只被 <c>ParticlePixelBuffer.Fill</c> 读取——本格四邻中有「显示为背景」的格
         /// （空气 / 未注册 / 透明调色板类型，越界视同空气）**或带 Liquid 标签的格**（固液交界）时，
-        /// 本格颜色按描边系数调暗。不参与模拟、不影响确定性，描边色 = 基底色 × 固定系数，无逐类型配置。
+        /// 本格颜色按描边系数处理（默认调暗；<see cref="OutlineLighten"/> 为真时改为提亮）。
+        /// 不参与模拟、不影响确定性。
         /// </summary>
         public readonly bool HasOutline;
+
+        /// <summary>
+        /// 描边**提亮**而非调暗（默认 <c>false</c> = 调暗）。纯表现层标志，只在 <see cref="HasOutline"/>
+        /// 为真时有意义：冰面反光，用浅色边更像覆着一层霜（见 <c>ParticlePixelBuffer.OutlineLightColor</c>）。
+        /// </summary>
+        public readonly bool OutlineLighten;
 
         /// <summary>
         /// 是否在渲染时提亮液面（默认 <c>false</c>）。纯表现层标志：只被 <c>ParticlePixelBuffer.Fill</c>
@@ -156,7 +163,8 @@ namespace TapTap2026.Simulation
             MotionReadBox motionReadReach = default,
             bool hasLogic = true,
             bool hasOutline = false,
-            bool hasSurfaceHighlight = false)
+            bool hasSurfaceHighlight = false,
+            bool outlineLighten = false)
         {
             Tags = tags;
             Density = density;
@@ -175,6 +183,7 @@ namespace TapTap2026.Simulation
             HasLogic = hasLogic;
             HasOutline = hasOutline;
             HasSurfaceHighlight = hasSurfaceHighlight;
+            OutlineLighten = outlineLighten;
         }
     }
 }

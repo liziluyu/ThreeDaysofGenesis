@@ -75,7 +75,7 @@ worker -> completed WorldFrame ring -> main
 - `RenderFrame`：`RenderColor[] pixels`（项目自有纯值 RGBA8，见「阶段 2」）、width、height、tick、daylight；worker 在世界 tick 批次结束后把世界映射为像素；
 - `WorldFrame`：probe 所需的只读格值、尺寸、tick、daylight、暂停/高速状态、HUD 计数；不暴露 `Cell[]`；
 - `CreatureFrame`：连续的 creature render DTO 数组；
-- `AudioFrame`：液体/固体运动计数、火存量、雷电新建数；
+- `AudioFrame`：液体/固体运动计数、火存量、雷电新建数、各物种出生/死亡计数（动物声音驱动因此不再订阅活世界事件）；
 - `HighSpeedFrame`：状态、进度、样本、完成快照 / 结论输入。
 
 worker 只写 `Writing` 槽；写完用 release publication 标记为 `Ready`。主线程用 acquire 取得最新完整帧；允许丢弃旧 ready 帧，绝不阻塞渲染等待模拟。主线程显示中的槽位到下一次替换后才归还。resize 创建新 frame-ring，在主线程确认旧 ring 不再显示后释放；不得跨尺寸复用像素数组。

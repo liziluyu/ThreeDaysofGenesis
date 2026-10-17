@@ -675,7 +675,7 @@ namespace TapTap2026.Simulation
             SimulationFrameCollector.CollectRender(_world, _lightSettings, frame.Render);
             SimulationFrameCollector.CollectWorld(_world, _paused, _probe, frame.World);
             SimulationFrameCollector.CollectCreatures(_creatures, _setup.LogicRate, frame.Creatures);
-            SimulationFrameCollector.CollectAudio(_world, frame.Audio);
+            SimulationFrameCollector.CollectAudio(_world, _creatures, frame.Audio);
             SimulationFrameCollector.CollectHighSpeed(_highSpeed, _latestEffectiveSpeed, frame.HighSpeed);
             frames.Publish();
             _publishedFrameSequence = frame.Sequence;

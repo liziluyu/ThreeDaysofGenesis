@@ -833,6 +833,32 @@ namespace TapTap2026.Tests
 
             return table;
         }
+
+        /// <summary>
+        /// 把世界里**所有水格**的温度设成「不结冰的常温」（默认 15°：低于慢蒸发门 20、远高于结冰门 4.0）。
+        /// </summary>
+        /// <remarks>
+        /// <para>世界的环境平衡温度就是 0（<see cref="HeatMap.AmbientHeat"/>），也就是水的冰点——冰相变上线后，
+        /// 不关心相变的用例（流动 / 浮力 / 存档 / 音效……）如果不保温，暴露的水面会在若干逻辑帧内结冰，
+        /// 把断言的水量、位置、浮力搅乱。需要结冰的用例当然不调它（见 <c>IceParticleTests</c>）。</para>
+        /// <para>只写热量、不动格子，也不消耗随机流；水随后被运动规则搬走时热随物质一起走
+        /// （<c>Swap</c> 搬 Q、<c>Set</c> 就地继承 Q），因此**建好场景后调一次**即可。</para>
+        /// <para>需要 <see cref="ParticleRegistration.RegisterAll"/> 已执行（用它回填的 <see cref="ParticleIds.Water"/> 认水）。</para>
+        /// </remarks>
+        internal static void WarmAllWater(ParticleWorld world, float temperature = 15f)
+        {
+            float heat = temperature * WaterParticle.HeatCapacity;
+            for (int y = 0; y < world.Height; y++)
+            {
+                for (int x = 0; x < world.Width; x++)
+                {
+                    if (world.GetCell(x, y).typeId == ParticleIds.Water)
+                    {
+                        world.Heat.SetHeat(x, y, heat);
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>生产粒子（Stone / Sand / Soil）的隔离类型表，供行为测试使用；同样不触碰全局注册表。</summary>
@@ -893,7 +919,7 @@ namespace TapTap2026.Tests
         internal LightSettings Light = LightSettings.Default;
 
         /// <summary>把 <paramref name="world"/> 的**当前**状态采成一帧并发布，返回该帧。</summary>
-        internal SimulationFrame Publish(ParticleWorld world, bool paused = false, bool probe = false, int probeX = 0, int probeY = 0)
+        internal SimulationFrame Publish(ParticleWorld world, bool paused = false, bool probe = false, int probeX = 0, int probeY = 0, CreatureWorld creatures = null)
         {
             if (!_publishers.TryGetValue(world, out SimulationFramePublisher publisher))
             {
@@ -907,8 +933,8 @@ namespace TapTap2026.Tests
                 ? SimulationFrameCollector.ReadProbe(world, probeX, probeY)
                 : default(CellProbe);
             SimulationFrameCollector.CollectWorld(world, paused, probeSnapshot, frame.World);
-            SimulationFrameCollector.CollectCreatures(null, 20f, frame.Creatures);
-            SimulationFrameCollector.CollectAudio(world, frame.Audio);
+            SimulationFrameCollector.CollectCreatures(creatures, 20f, frame.Creatures);
+            SimulationFrameCollector.CollectAudio(world, creatures, frame.Audio);
             SimulationFrameCollector.CollectHighSpeed(null, 0f, frame.HighSpeed);
             publisher.Publish();
             return frame;

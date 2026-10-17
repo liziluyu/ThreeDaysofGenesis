@@ -8556,7 +8556,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
   m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: 198.55298, y: -9.313477}
+  m_AnchoredPosition: {x: 198.55298, y: -9.313446}
   m_SizeDelta: {x: -578.1834, y: -153.6086}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1440004730
@@ -11230,6 +11230,7 @@ GameObject:
   - component: {fileID: 1926363758}
   - component: {fileID: 1926363759}
   - component: {fileID: 1926363760}
+  - component: {fileID: 1926363761}
   m_Layer: 0
   m_Name: Particle Sandbox
   m_TagString: Untagged
@@ -11344,6 +11345,7 @@ MonoBehaviour:
   - TreeTrunkParticle
   - TreeLeafParticle
   - BiomassParticle
+  - IceParticle
   _singlePlacementTypes:
   - GrassSeedParticle
   - TreeSeedParticle
@@ -11397,7 +11399,17 @@ MonoBehaviour:
   - {fileID: 1729916783, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
   - {fileID: -983619320, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
   - {fileID: 2125832360, guid: fafb9af055cccef4d9a4eac48e7bb5f8, type: 3}
-  _birdIdleFrames: []
+  _birdFlyFrames:
+  - {fileID: 497981050, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: 2087005500, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: -1260053960, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  _birdPerchFrames:
+  - {fileID: 1988199557, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: 1079763140, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: -1424763871, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  - {fileID: -75437789, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  _birdTakeoffFrame: {fileID: 2087005500, guid: 4783fc47b18fda4439e0c206c3dcd5ad, type: 3}
+  _birdTakeoffSeconds: 0.3
   _idleFps: 2
   _spriteScale: 16
   _spriteFacesLeft: 1
@@ -11438,6 +11450,9 @@ MonoBehaviour:
   - {fileID: 8300000, guid: bea7e2c4bd295234d99e1812d87012cb, type: 3}
   - {fileID: 8300000, guid: 36aff899f1cba194bab8687997ccec6b, type: 3}
   - {fileID: 8300000, guid: d91439c291124804c8e70daa43e9a5a9, type: 3}
+  - {fileID: 8300000, guid: 77ad513f4712f1c48afd5a57e2c9de52, type: 3}
+  - {fileID: 8300000, guid: 09ad18e247fb950409ca7db129ee504e, type: 3}
+  - {fileID: 8300000, guid: 6a2d1bb91f52cff429908b1e2f228682, type: 3}
   _loudnessPerSecond: 3
   _driver: {fileID: 0}
 --- !u!114 &1926363758
@@ -11496,6 +11511,42 @@ MonoBehaviour:
   _fullVolumeCount: 40
   _volume: 1
   _enabled: 1
+--- !u!114 &1926363761
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1926363748}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1f187e345f2b6bf42ab64fd8904d4471, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _driver: {fileID: 0}
+  _sound: {fileID: 0}
+  _rabbit:
+    idleClip: rabbit
+    idleIntervalMin: 6
+    idleIntervalMax: 14
+    idleVolume: 0.5
+    deathClip: 
+    spawnClip: 
+  _bird:
+    idleClip: bird
+    idleIntervalMin: 6
+    idleIntervalMax: 12
+    idleVolume: 0.5
+    deathClip: 
+    spawnClip: 
+  _fish:
+    idleClip: fish
+    idleIntervalMin: 8
+    idleIntervalMax: 18
+    idleVolume: 0.45
+    deathClip: 
+    spawnClip: 
+  _seed: 1592598566
 --- !u!1 &1953106145
 GameObject:
   m_ObjectHideFlags: 0

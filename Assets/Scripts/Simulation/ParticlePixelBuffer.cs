@@ -30,6 +30,16 @@ namespace TapTap2026.Simulation
         public const float OutlineFactor = 0.55f;
 
         /// <summary>
+        /// 浅色描边的目标色：带 <see cref="ParticleTypeInfo.OutlineLighten"/> 的格（冰）在同样的交界处
+        /// 向它插值（<see cref="OutlineLightenFactor"/>）——冰面反光，浅边比暗边更像覆霜。
+        /// 纯表现层，与 <see cref="OutlineFactor"/> 互斥使用。
+        /// </summary>
+        public static readonly RenderColor OutlineLightColor = new RenderColor(240, 250, 255, 255);
+
+        /// <summary>浅色描边的插值比例（0 = 原样，1 = 纯 <see cref="OutlineLightColor"/>）。</summary>
+        public const float OutlineLightenFactor = 0.55f;
+
+        /// <summary>
         /// 液面高光色：带 <see cref="ParticleTypeInfo.HasSurfaceHighlight"/> 的格、正上方不是液体时，
         /// 基底色向它插值（<see cref="SurfaceHighlightFactor"/>）。非常浅的淡蓝白。纯表现层，无逐类型配置。
         /// </summary>
@@ -122,7 +132,10 @@ namespace TapTap2026.Simulation
                     if (flag.HasOutline
                         && NeighbourTriggersOutline(cells, flags, width, height, x, y, i))
                     {
-                        color = RenderColorMath.ScaleRgb(color, OutlineFactor);
+                        // 两种描边风格：默认调暗（石 / 沙 / 土……），OutlineLighten 的（冰）向浅色提亮。
+                        color = flag.OutlineLighten
+                            ? RenderColorMath.Lerp(color, OutlineLightColor, OutlineLightenFactor)
+                            : RenderColorMath.ScaleRgb(color, OutlineFactor);
                     }
                     else if (flag.HasSurfaceHighlight
                         && IsOpenSurface(cells, flags, width, height, y, i))
@@ -171,6 +184,9 @@ namespace TapTap2026.Simulation
         {
             /// <summary>本格是否参与描边（<see cref="ParticleTypeInfo.HasOutline"/>）。</summary>
             public bool HasOutline;
+
+            /// <summary>描边提亮而非调暗（<see cref="ParticleTypeInfo.OutlineLighten"/>，冰用）。</summary>
+            public bool OutlineLighten;
 
             /// <summary>本格是否参与液面高光（<see cref="ParticleTypeInfo.HasSurfaceHighlight"/>）。</summary>
             public bool HasSurfaceHighlight;
@@ -225,6 +241,7 @@ namespace TapTap2026.Simulation
 
                 ParticleTypeInfo info = type.Info;   // 建表时整体读一次，运行期不再逐格拷贝
                 flags[id].HasOutline = info.HasOutline;
+                flags[id].OutlineLighten = info.OutlineLighten;
                 flags[id].HasSurfaceHighlight = info.HasSurfaceHighlight;
                 flags[id].BlocksSurface = (info.Tags & (ParticleTags.Solid | ParticleTags.Liquid)) != 0;
 

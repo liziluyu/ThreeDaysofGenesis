@@ -69,8 +69,8 @@
 
 - `RenderFrame`：`RenderColor[] Pixels`（**项目自有纯值 RGBA8**，帧槽持有、跨帧复用；不含任何 Unity 类型，见下「worker 安全光栅化」）+ 尺寸 + `Tick`/`Daylight`/`Brightness`，渲染真源；
 - `WorldFrame`：尺寸、`Tick`、`Daylight`、`Paused`、`CellProbe Probe`（坐标 / typeId / 温度 / 热量 / 湿度的值拷贝，不含 `Cell` 引用）。探针**在 `ProbeCell` 命令被应用的那一刻采一份**（命令边界；先于同批之后的命令与下一个 tick 的网格写入），此后不再重采——因此读数看到的是该命令**之前**那些命令的结果；世界重建时清空（`Valid = false`）；
-- `CreatureFrame`：`CreatureRenderData` 数组（`Id`/`Species`/插值位置/碰撞盒/朝向/动画倍率/占位色）+ 逻辑帧读数。`Id` 由 `CreatureWorld.Spawn` 赋值、同一世界内从 **1** 起单调递增：**0 是「未赋值」哨兵**（DTO 默认值），渲染层据此区分空槽；
-- `AudioFrame`：液体运动比例、固体运动格数、火格存量、自上次发布以来新写入的雷电格数；
+- `CreatureFrame`：`CreatureRenderData` 数组（`Id`/`Species`/插值位置/碰撞盒/朝向/`AiState`/动画倍率/占位色）+ 逻辑帧读数。`AiState` 原样搬运 Brain 写的字节（鸟据此选帧组），基类不解释它。`Id` 由 `CreatureWorld.Spawn` 赋值、同一世界内从 **1** 起单调递增：**0 是「未赋值」哨兵**（DTO 默认值），渲染层据此区分空槽；
+- `AudioFrame`：液体运动比例、固体运动格数、火格存量、自上次发布以来新写入的雷电格数，以及**各物种的出生 / 死亡计数**（`CreatureWorld.ConsumeEvents` 在采集时抽干，按 `CreatureSpecies` 槽位；消费方只读这份计数，不订阅活世界事件——`Step` 跑在 worker 线程上）；
 - `HighSpeedFrame`：高速会话状态 / 进度 / 采样 + 每类型产生 / 死亡 / 终态存量。
 
 `SimulationFramePublisher` 是 3 槽轮换（写 / 显示 / 空闲）：只写 `BeginWrite()` 的槽，`Publish()` 才对外可见；**已发布帧在两次后续发布之内保持不变**，写指针前进一格 ⇒ 正在写的槽永远不是当前显示的槽。像素数组按尺寸分配、绝不跨尺寸复用；世界重建 = 换一个发布器 + `Generation` +1。

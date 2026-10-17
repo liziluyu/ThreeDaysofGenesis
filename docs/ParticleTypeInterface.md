@@ -163,10 +163,10 @@ public readonly struct ParticleTypeInfo
 |---|---|---|
 | 沙 | `(1, 0, 1)` | 0/0 摩擦粘性 → 斜滑净空 1，只读正下与斜下 1 格 |
 | 土 / 湿土 / 腐殖土 / 湿润腐殖土 / 腐殖质 / 草种子 / **生物质** | `(1, 0, 3)` | 0.5/0.5 → 粘住时净空 `1/(1−0.5) + 1/(1−0.5) − 1 = 3` |
-| 水 | `(5, 1, 1)` | 落差视野扫描 `MaxFlowSpread = 5`（同行 `x ± 5`、读 `(scanX, y−1)`）；对流读 `(x, y+1)` |
+| 水 | `(5, 1, 9)` | 落差视野扫描 `MaxFlowSpread = 5`（同行 `x ± 5`、读 `(scanX, y−1)`）；对流读 `(x, y+1)`；穿冠沿正下扫过连续叶柱并读叶柱下那格 ⇒ `down = 1 + CanopyPassMaxDepth(8)` |
 | 石头 | `(1, 0, 19)` | 粘住时净空 19，斜滑净空链读 `(x ± 1, y−1 … y−19)` |
 | 大气 | `(1, 1, 1)` | 浮力读四邻；热压流的 `x ± 2` 只读温度，不进盒 |
-| 草 / 水生植物 / 火 | 默认 `(1, 1, 1)` | `OnMotion` 为空，无需放宽 |
+| 草 / 水生植物 / 火 / 冰 | 默认 `(1, 1, 1)` | `OnMotion` 为空，无需放宽 |
 
 ### HasLogic：何时可声明 `OnLogic` 为空（作者契约）
 
@@ -209,6 +209,7 @@ public readonly struct ParticleTypeInfo
 | 土 | `0.5` | `0.5` | 约 3:1（摩擦给 2:1，粘性再抬一档；孤立土粒仍按 2:1 滑落） |
 | 湿土 | `0.5` | `0.5` | 与干土同档 ⇒ 湿土堆与干土堆形状一致，只在颜色与热学上不同 |
 | 石 | `0.9` | `0.9` | 摩擦给 10:1，粘性再抬 9 档到 **19:1（约 87°）**——靠着石头的外侧几乎不滚，垛成近乎垂直的石垛 |
+| 冰 | `0` | `0` | 不移动（`OnMotion` 空体，原地不落不浮）：两个值都不参与任何规则，填 0 |
 
 要试别的粘性，改 `Info` 的 `stickiness:` 即可（粘性档位是量化的，步长约 `0.1` 才看得出堆体变化；
 `0.9` 与 `1` 的差别只在「粘住时还剩几格净空」与「完全不滑」之间，观感都接近垂直）。
@@ -238,7 +239,7 @@ public readonly struct ParticleTypeInfo
 
 `ParticleRules` 提供 `TagRank(ParticleTags)`、`TagsAt(world, x, y)`（一次取回整组标签）、`HasTag(world, x, y, tags)`（任意命中一个标签即为 true；越界/空气/空槽返回 `None`）与 `IsSolid(world, x, y)` 等原语，类型代码直接调用；`CanDisplace` / `CanFlowThrough` 已内置上述规则，并额外拒绝静态格（`IsStatic`）目标。`CanDisplace` 对**越界目标一律返回 false**（否则越界会被当成「空气可进入」，调用方以为能移动、随后的 `Swap` 却静默失败）；同时仍会拒绝静态格目标；`CanDisplace` 另内置上述**地下水闸门**（固体 → 液体要求运动中）。
 
-**吸水与湿土的水迁移（土 ⇄ 湿土）**：这是一对**具体类型之间的反应**，因此按「A 生成 B 走 `ParticleIds`」的约定直接引用 `ParticleIds.Soil` / `ParticleIds.WetSoil`（不是通用标签规则）。模型是 **湿土 = 干土 + 一份水**：水总量 = 水格 + 湿土格 + 湿度场，全程守恒。
+**吸水与湿土的水迁移（土 ⇄ 湿土）**：这是一对**具体类型之间的反应**，因此按「A 生成 B 走 `ParticleIds`」的约定直接引用 `ParticleIds.Soil` / `ParticleIds.WetSoil`（不是通用标签规则）。模型是 **湿土 = 干土 + 一份水**：水总量 = 水格 + **冰格** + 湿土格 + 湿度场，全程守恒（冰是水的固态形态，见 §6「水 ⇄ 冰相变」）。
 
 - **干土吸水（`SoilParticle.OnLogic`）**：正上方一格带 `Liquid` 标签 ⇒ 本格 `SetPhase` 变湿土，并把那一格水 `Clear` 掉。水的热量**搬进**本格而不是复制：先读出水格 Q、`AddHeat` 并进本格，再把水格 Q **显式清零**后再 `Clear`（`Set`/`Clear` 的契约是「新物质继承该格原有热量」，不清零会让同一份热同时留在湿土与水格两处、总热凭空增加）。一格水润湿一格土，水随即消失。（已知简化 B8：判据用 `Liquid` 标签，**当前所有液体一律视为水**；将来加入岩浆 / 酸等其它液体时必须改成 `id == ParticleIds.Water`，否则任何液体都会被灌成湿土。）
 - **湿土把这份水交给邻格（`WetSoilParticle.OnLogic`）**，成功即本格变干（水要么进了邻格的干土，要么进了空气，湿土不会凭空变干）：
@@ -766,6 +767,7 @@ public sealed class LightController
     public int   LitTicks  { get; set; }    // 亮相位持续刻数（>= 0）；0 = 从不照亮
     public int   DarkTicks { get; set; }    // 暗相位持续刻数（>= 0）；0 = 一直照亮
     public float Intensity { get; set; }    // 亮度：亮相位每刻向每列最上面的非气体粒子注入的热量 Q
+// ↑ 除了当热源，`Intensity` 还是水 ⇄ 冰相变的**气候旋钮**（`WaterParticle.LightColdScale`，见「水 ⇄ 冰相变」）：8~12 为适宜区间
     public float CloudExtinction { get; set; } // 云层消光系数（每单位光路湿度）；0 = 云不遮光
 
     public int  Elapsed { get; }            // 已推进的刻数（只读）
@@ -876,7 +878,8 @@ public void OnLogic(ParticleWorld world, int x, int y)
 | 土（`SoilParticle`） | `0.8` | 干土 |
 | 湿土（`WetSoilParticle`） | `2.0` | 吸进去的水让湿土比干土扛热得多（水给 6.5，按含水量折算到 2.0） |
 | 石（`StoneParticle`） | `0.8` | 石头：调小到 0.8，升温更快 |
-| 水（`WaterParticle`） | `6.5` | 水：热容最大，升温最慢——海陆温差（海风）与水面昼夜惰性的根源 |
+| 水（`WaterParticle`） | `6.5` | 水：热容最大，升温最慢——海陆温差（海风）与水面昼夜惰性的根源。**命名常量 `WaterParticle.HeatCapacity`**（冰的相变结算要按它算潜热） |
+| 冰（`IceParticle`） | `3.5` | 冰：水的一半（真实冰 2.09 / 水 4.18）。水 ⇄ 冰相变按**热容差** 3.0 与潜热一起结算，温度因此不跳变 |
 | 大气（`AtmosphereParticle`） | `1.0` | 必须等于 `AirHeatCapacity`：空气格与大气粒子的温度口径一致 |
 | 火（`FireParticle`） | `1.0` | 与大气同档：火焰的热惯性按空气算（热源强度是 `FireHeatPerTick` 常量，不靠热容） |
 | 空气 | `AirHeatCapacity = 1` | typeId 0（空）没有类型条目，固定常量 |
@@ -890,6 +893,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 | 湿土（`WetSoilParticle`） | `0.85` | 水（0.95）灌进孔隙，湿土比干土导热好 |
 | 石（`StoneParticle`） | `0.8` | 石头：固体里导热最快（原 0.7，接近水） |
 | 水（`WaterParticle`） | `0.95` | 水：导热最好，水体内部接近等温 |
+| 冰（`IceParticle`） | `0.85` | 冰：与水同档（略低）——冷锋能从冰面一路往下走，加厚与融化都不是「只动表面」 |
 | 大气（`AtmosphereParticle`） | `1.0` | 气体传导最强；须等于 `HeatMap.AirThermalConductivity` |
 | 火（`FireParticle`） | `1.0` | 气体传导最强一档（与大气一致）：火的热迅速摊给四邻 |
 | 空气 | `AirThermalConductivity = 1` | typeId 0（空）没有类型条目，可配常量 |
@@ -902,6 +906,7 @@ public void OnLogic(ParticleWorld world, int x, int y)
 |---|---|---|
 | 沙 / 土 / 湿土 / 石（固） | `1.0` | 沙/岩/土/湿土都是近黑体，与旧行为一致 |
 | 水（`WaterParticle`） | `1.0` | 水是近黑体（红外吸收极强），水面照常散热 |
+| 冰（`IceParticle`） | `1.0` | 近黑体：暴露的冰面夜间继续向外辐射抽冷，这正是冰层继续加厚的驱动力 |
 | 大气（`AtmosphereParticle`） | `0.1` | **N₂/O₂ 对红外透明**：气柱不逐格漏热，地表的热才能铺到网格顶 |
 | 火（`FireParticle`） | `1.0` | 近黑体：暴露的火焰面照常辐射散热（火的温度靠注入上限封顶，不靠 ε） |
 | 空气 | `AirThermalEmissivity = 1`（代码默认）/ 资产 `0.1` | typeId 0（空）没有类型条目，可配常量 |
@@ -925,7 +930,14 @@ public void OnLogic(ParticleWorld world, int x, int y)
         本格 AddHeat −LatentHeat(T) → 蒸发冷却，随温度放大）
 水汽 --(湿度 ≥ HumidityField.SaturationHumidity(T) = RainThreshold × 2^((T − DewPoint)/10))
     --> 雨（碰并凑够一个整水滴 → Water 粒子；凝结本格 AddHeat +LatentHeat(T) → 云层放热）
+水   --(T ≤ WaterParticle.FreezingPoint = 4.0 且**随机刻**命中：水面 / 冰缘 / 冰下按几何梯度)
+    --> 冰（固体粒子；结冰 AddHeat +C_冰·s → 本格放热升温 s）
+冰   --(T ≥ IceParticle.MeltingPoint(6.0) + MeltDepthStep(2.0)·d 且**随机刻**命中)
+    --> 水（融化 AddHeat −C_水·s → 本格吸热降温 s）
 ```
+
+上面前两条是**场（湿度）**里的水，后两条是**粒子态**（水 ⇄ 冰）——两条腿都在水账里
+（水格 + 冰格 + 湿土格 + 湿度场守恒），详见 §6「水 ⇄ 冰相变」。
 
 **云不是粒子，是"很湿的空气"**：湿度场（`HumidityField`）每格一个水汽质量，只有非固非液的格持有它。
 `ParticlePixelBuffer` 按湿度把格子染白（`VisibleThreshold` 起淡入），因此云就是湿度场里的一片高值区。
@@ -1005,6 +1017,50 @@ public void OnLogic(ParticleWorld world, int x, int y)
 > `down = 1 + CanopyPassMaxDepth`（= 9）。由 `Water_PassesThroughCanopy_ToCellBelowLeaves` /
 > `Water_DoesNotPassCanopy_WhenSolidBelow` / `Water_PassesCanopy_AtMaxDepth_ButNotDeeper` /
 > `CanopyPass_DoesNotConsumeRandomStream` 锁定。
+
+### 水 ⇄ 冰相变（`IceParticle`）：结冰、加厚与镜像融化
+
+**冰是静止固体**（`Solid` 标签、**不带 `Organic`**、不受重力）：不用 `IsStatic` 是因为静态类型收不到随机刻，而冰要靠随机刻融化——靠**空的 `OnMotion`** 保持原地不动（不落、不浮、不沉）；`OnLogic` 因此是**严格空体**（`hasLogic: false`，逻辑帧混合扫描整段跳过）。不可手刷（`ParticleEditor._unplaceableTypes` 的 C# 默认值 + `MainScene.unity` 的场景序列化名单，两处都要在）。
+
+**温度标定**：世界的温度下界是 0（`HeatMap.AmbientHeat`），但**实测只有刚放置那一刻的水是 0°、夜间水体稳定在 3° 上下**——所以结冰门取 **4.0°**（入夜的水面必定进得来，白天 20~30° 永远进不来），深度梯度用**几何衰减**向 0 逼近。
+
+**结冰**（写在 `WaterParticle.OnRandomTick` 的冷端分支——**随机刻驱动**，低频抽取本身就是稀有度，钩子里**不再叠概率骰**；与蒸发的热端区间不相交：冷端 ≤ 4.0、热端 ≥ 20）：
+
+- 深度 `d` = 正上方**连续冰格**数（`IceParticle.DepthBelowIceTop`，上限 `ColumnScanDepth` = 8；`d = 0` 就是水面）。
+- 水面（`d = 0`）有两道几何门：正上方必须是**界内**的气体 / 空（越界不算天空，与蒸发的审计 B3 同口径；**顶行的水因此不结冰**），且正下方不是气体 / 空（**落定**要求——否则雨滴会在空中冻成悬浮冰晶；正下方越界视作落在世界底，算落定）。
+- 三条路都只做**只读判定**：温度没到门就不改世界、也不消耗随机流。
+  | 情形 | 温度门（`T ≤`） |
+  |---|---|
+  | 水面·无冰邻格（**成核**） | `FreezingPoint − NucleationSupercooling` = 3.5（`NucleationSupercooling` = 0.5） |
+  | 水面·左 / 右 / 下有冰（**蔓延**） | `FreezingPoint` = 4.0 |
+  | 冰下第 d 层（**加厚**） | `FreezingPoint · FreezeDepthDecay^d`（几何：2.0 / 1.0 / 0.5 / …，d ≥ 8 取最后一档 ≈ 0.016） |
+
+  > 表里是**适宜光照**（强度 8~12）下的门槛；整条门槛还要乘**光照冷度缩放**（见下）。
+
+  几何梯度是唯一可行的写法：温度下界是 0，线性梯度几层后就穿到 0 以下、把厚度硬卡死；几何梯度是「越深越接近环境 0」，而冰下的水会一路被抽冷 ⇒ 加厚永不被阈值卡死——**厚度无上限**，只是越深越难（最后一档阈值恒为正，扫描上限只是不再细分梯度）。
+- 条件全满足才 `SetPhase(x, y, ParticleIds.Ice)` + `AddHeat(…, C_冰·s − ΔC·T)`：**结冰放热**（本格升温 `FusionTemperatureStep` = 1.0°），这份热随后由传导摊给邻居。
+- 世界**未注册冰**（隔离类型表 / 未走生产注册：`ParticleIds.Ice` 是 0 或越界）时整段跳过——那种世界里不存在「冰」这种物质，而 `SetPhase` 对未注册 id 会拒绝写入并 `Debug.LogError`（Unity 测试把意外的 error 日志算失败）。判据 `IceParticle.IsRegisteredIn` 与 `SetPhase` 自己的校验同源。
+
+**融化**（写在 `IceParticle.OnRandomTick`，镜像，同样**随机刻命中就当帧化**、不再叠概率门；门槛同样乘光照冷度缩放，见下）：`d` 用同一把尺子；`T ≥ MeltingPoint(6.0) + MeltDepthStep(2.0)·d`（**线性、无上限**——结冰「越深越冷」的镜像：越深越难融）→ `SetPhase(x, y, ParticleIds.Water)` + `AddHeat(…, ΔC·T − C_水·s)`：**融化吸热**（本格降温 s）。
+
+**潜热与热容差（守恒结算）**：`SetPhase` 保留 Q，而 `T = Q / 热容`——水 6.5 ⇄ 冰 3.5 换形态会让温度凭空跳。因此两侧都先结算**热容差** `ΔC·T`（= `IceParticle.HeatCapacityDelta` = 3.0 倍温度，让温度连续），再按**本相热容**加 / 减潜热 `C·s`（结冰 `+C_冰·s`、融化 `−C_水·s`）。两者合起来严格互逆：**冻融往返逐位守恒**；若两个方向改用同一个 Q 常数，往返会净产热 `s·ΔC·C_冰/C_水`（一个隐形热泵，见 `IceParticleTests.FreezeThenMelt_RoundTripIsHeatConservative`）。迟滞带 [4.0, 6.0] 宽于相变造成的 ±1.0° 摆动，同一格不会自激振荡。
+
+**气候旋钮：光照强度 → 冷度缩放（`WaterParticle.LightColdScale`）**：光照面板上的「强度」就是这个世界的**气候设定**，整条相变门槛按它缩放——结冰侧（`FreezeThresholdAt` / `FreezeNucleationThresholdAt`）与融化侧（`IceParticle.MeltThresholdAt`）**共用同一份缩放**：
+
+| 光照强度 | 冷度缩放 | 效果 |
+|---|---|---|
+| `≤ 0` | `×1.2`（`LightColdScaleMax`） | 最冷：更早结冰、现有冰更难化（「越弱越像冬天」） |
+| `0 → 8` | 线性 `1.2 → 1.0` | 弱光：随强度**连续**变难 |
+| `8 → 12` | `×1.0`（适宜区间） | 标定值：结冰门 4.0 / 成核门 3.5 / 融化门 6.0 |
+| `12 → 24` | 线性 `1.0 → 0.6` | 强光：随强度**连续**变易结冰（也更易化冰） |
+| `≥ 24`（2× 上沿） | `×0.6`（`LightColdScaleMin`） | 最热：最难结冰、冰化得最快（「越强越像夏天」） |
+
+- 两个端点值的取法都是**迟滞带完整性**：带宽 = 2.0·缩放必须始终宽于相变造成的 ±1.0° 摆动（×1.2 时 7.2 − 5.8 = 1.4 ✓、×0.6 时 3.6 − 2.6 = 1.0 ✓，再放宽就会让同一格反复相变）。
+- 看的是**配置强度**（玩家在光照面板上设的值），不是瞬时亮度：夜里灯光关闭时瞬时亮度恒为 0，按瞬时值缩放会让「夜晚 = 最冷」压过昼夜循环本身。
+
+**节奏与默认场景**：两条相变都走随机刻 ⇒ 推进速度由 `world.RandomTicksPerStep` 决定（默认 **0 = 关闭**，生产值 48/逻辑帧 ≈ 每格每 ~60 秒被点到一次）。默认场景（亮 / 暗各 600 刻、强度 10）里水面入夜降到 3° 上下 ⇒ 暴露的水面**每晚结冰、白天融回水**。`lightAbsorption = 0.4`（冰面反光）决定冰面的日间平衡温度（≈ `Intensity·abs / (RadiativeLoss·ε + 上下界面)`），它是「晨化夜冻」与「逐夜累积成永冻」之间的双稳开关（见 §13 待定）。
+
+**涌现的连带效果**（全部是既有规则的自动推论，无特判）：冰带 `Solid` ⇒ `BlocksLight`——冰下水不再蒸发、不再辐射散热、液体热对流被盖住；冰 rank 3，水推不动它（冻面下形成封闭）；冰写进 `CreatureTerrain.IsSolid` 白名单（**冻湖可以走**、动物不穿冰而过），但 `CreatureDeathMaterializer.CanCorpseOccupy` **显式排除冰**（尸体不得覆盖冰：冰按水账算一份水，而尸体物质化只搬 `ParticleIds.Water`、不搬冰，覆盖会凭空蒸发一份水）；冰是固体 ⇒ 按水生植物既有规则会把正下方的植物压死（该格还水，水账不破）。雨滴落在冷地 / 冷水面上会结霜（落定 + 低温）；空中雨滴不会（正下方是气体）。火不认冰（不在压顶白名单里，按「贴非可燃固体」1/5 熄灭），但火加热冰会让它被自己的随机刻化掉——涌现。**渲染**：`HasOutline` + `OutlineLighten` —— 冰的描边**向 `ParticlePixelBuffer.OutlineLightColor` 提亮**（与其它固体的「调暗描边」相反，冰面反光的观感），冰 / 空气与冰 / 水交界都触发。
 
 ### 写操作的钩子与副作用（精确定义）
 
@@ -1321,9 +1377,12 @@ if (_simulate)   // Pause()/Resume() 翻转它
 - **描边（可选表现层标志）**：`ParticleTypeInfo.HasOutline`（构造参数 `hasOutline`，默认 `false`）为 `true` 的类型，
   在 `Fill` 里做四邻判定——任一邻居「显示为背景」（空气 / 未注册 / `null` 槽位 / 调色板 alpha==0 的透明类型；
   **越界视同空气**，网格边缘的暴露面也描边）**或带 Liquid 标签**（固液交界也描边）时，
-  本格基底色乘以 `ParticlePixelBuffer.OutlineFactor`（0.55）调暗。
+  本格基底色按风格处理：默认乘以 `ParticlePixelBuffer.OutlineFactor`（0.55）**调暗**；
+  `ParticleTypeInfo.OutlineLighten`（构造参数 `outlineLighten`，默认 `false`，只在 `HasOutline` 为真时有意义）
+  为 `true` 时改为向 `ParticlePixelBuffer.OutlineLightColor` **提亮**（`OutlineLightenFactor` = 0.55）——
+  冰用浅色边表达「冰面反光」。
   只作用于基底色：云 / 热力叠加 / 昼夜变暗照常在其上进行（描边格仍算 `painted`）。纯 CPU 映射、零 GPU 增量，
-  不参与模拟、不影响确定性。当前启用：**石头 / 沙 / 土**。
+  不参与模拟、不影响确定性。当前启用：**石头 / 沙 / 土**（调暗）、**冰**（提亮）。
 - **液面高光（可选表现层标志）**：`ParticleTypeInfo.HasSurfaceHighlight`（构造参数 `hasSurfaceHighlight`，默认 `false`）
   为 `true` 的类型，`Fill` 里本格**正上方无实物**（非 Solid 非 Liquid——空气 / 气体算液面，被固体或液体压住不算；
   越界顶行算）时，基底色向 `ParticlePixelBuffer.SurfaceHighlightColor`（浅蓝白 `#C8E4F5`）按
@@ -1398,6 +1457,7 @@ Assets/Scripts/
       TreeTrunkParticle.cs                    树干（固体 + Organic，非 IsStatic、OnMotion 空；flags bit3-5 = 物种、bit6-7 = 生长阶段 0 爬升 / 1 造冠 / 2 成熟。**每逻辑帧**：① 温度 > 50 死（低温致死取 0，同水生植物——环境温可低到 0）；② 失去扎根（下格非三土 / 沙 / 树干）→ 本格与上方整段连续树干级联 Clear，**清完整段后逐格调 `TreeLeafParticle.NotifyTrunkRemoved` 主动通知邻接树叶失活**（顺序不能反：支撑检查必须读到整段已空；即使 `RandomTicksPerStep = 0`，砍树 / 挖根后整冠也在同一次逻辑帧集体失活、随后靠运动帧落叶）；③ 顶格生长——阶段 0 按物种 H 向上爬升（先查后掷 1/N；**正上方是树叶时可顶开它继续爬升**，石头 / 水 / 沙仍硬阻塞；上方越界即触顶 → 转造冠），阶段 1 按有序偏移表取「第一个未填充且当前可放」项 Set 成树叶（可放＝界内 + 非固液 + 八邻已有树干 / **未失活**树叶防浮空；**界外冠项视为已填充**，被挡项跳过不卡死、腾空后补长；全表填满转成熟，**并把 StageMature 沿树干列向下传播到底**——成熟即整柱熟态：此后砍顶 / 顶格热死留下的新顶格已是成熟态，OnLogic 直接返回（不补叶、不再生、零随机流），被腰斩的成熟树留下不再生长的树桩；**StageCanopy 不传播**，造冠期被砍顶仍续长剩余冠项）。**随机刻（繁殖）**：成熟顶格每次命中按 **1/4** 概率在半径 **5** 的圆盘内撒一颗同物种树木种子（落点＝界内空地 + 正下方固体且非树干 / 树叶 / 种子；先判后摇——非顶格 / 未成熟零 RNG，合格格每次命中恰耗 1 骰）；成熟后 OnLogic 零随机流消耗、撒种消耗只在 OnRandomTick。树干 / 树叶都是火的燃料（见 `FireParticle`）。不可手刷）
       TreeLeafParticle.cs                     树叶（固体 + Organic，非 IsStatic，OnLogic 空体；flags bit3-5 = 物种、bit6 = 失活标记。**对外静态入口 `NotifyTrunkRemoved(world,x,y)`**：树干级联倒下清完整段后逐格调用，让八邻树叶各跑支撑检查、无支撑者经 `DetachAndSpread` 向整冠扩散失活——整冠瞬时失活不依赖随机刻（关闭也生效）。**随机刻**：已失活 → Clear（**只在再被随机刻点到时才死**）；否则 ① 温度 > 50（低温致死取 0）；② 正上方是固体且非树叶（**液体不压**——树叶可泡水里，与草的有意不同）；③ 本物种支撑半径（Chebyshev 环由内向外扫描、命中即返回）内无树干 → **不失活即死**：记录失活（flags bit6）并**立刻**让八邻一圈的树叶各自检测支撑（无支撑者同样失活、继续扩散 → 砍树后整冠一瞬间集体失活）。**OnMotion**：失活叶竖直**自由下落**一格（**不滚落**；只有正下方是空气 / 气体才落——越界、固体**与液体**都停住：叶密度 0.6 < 水 1.0，落叶浮在水面上不沉底；已泡在水里的叶不上浮）。树叶 / 树干都是火的燃料（见 `FireParticle`）。死亡走 Clear，按世界 20% 有机衰变留腐殖质。不可手刷）
       BiomassParticle.cs                      生物质（动物尸体的物质化产物；**固体，刻意不带 Organic**——腐败由本类型自己结算：`OnLogic` 每逻辑帧推进 `flags` bit3-7 的**连续落稳帧数**（正下方带 `Solid` 标签才 +1、饱和在 31 ⇒ 未落稳时一个随机数都不消耗），落稳后每逻辑帧 1/200 摇腐败 → **70% `SetPhase(Humus)` / 30% `Clear` 散失**。`OnRandomTick` 空（随机刻为 0 时尸体照样腐败）；`OnMotion` = `StepSolid`（摩擦 / 粘性 0.5 ⇒ 堆形与土一致，不被水搬运、会沉穿水）。**颜色索引占 `Cell.shade`**（由 `ParticleWorld.SetWithShade` 按死亡轮廓写入，不重抽、调色板 6 档灰阶）；运动阅读盒 `(1, 0, 3)`。由 `CreatureDeathMaterializer` 在动物死亡清扫时按 `BiomassProfile`（兔 48 格 / 鱼 51 格，sprite 16×16 像素空间）逐格生成，不可手刷）
+      IceParticle.cs                          冰（**静止固体**：`Solid`、不带 Organic、不受重力；不用 IsStatic 是因为静态类型收不到随机刻，靠空的 `OnMotion` 保持原地不动——不落不浮不沉；`OnLogic` **严格空体**（hasLogic: false）；flags 私有位：无）。**不可手刷**，只能由水在低温下冻结生成（**随机刻相变**：`WaterParticle.OnRandomTick` 冷端分支——水面 = 正上方界内气体 / 空 + 正下方落定；挨着冰照 `FreezingPoint` 4.0° 蔓延、无冰邻格要过冷到 3.5° 成核、正上方是冰时按几何梯度 `4.0·0.5^d` 逐层向下加厚——越深越接近环境 0、厚度无上限；钩子里不再叠概率骰，稀有度由世界的随机刻抽取率给出）。`OnRandomTick` 另做**镜像融化**：`T ≥ 6.0 + 2.0·d`（越深越难融）当帧化回水。两侧都按「温度步长 s = 1.0 × 本相热容」结算潜热（结冰 +C_冰·s 放热、融化 −C_水·s 吸热）并先还 / 补**热容差** 3.0·T，温度连续且**冻融往返逐位守恒**。热容 3.5（水的一半）、导热 0.85（冷锋能走到冰下）、辐射率 1.0（暴露冰面夜间继续抽冷 ⇒ 驱动加厚）、光吸收 0.4（反光，白天融化不至于瞬间）、调色板 4 档淡蓝白、`HasOutline` + **`OutlineLighten`（浅色描边：向 OutlineLightColor 提亮）**。写进 `CreatureTerrain.IsSolid`（冻湖可走），但 `CreatureDeathMaterializer.CanCorpseOccupy` 显式排除它（尸体不得覆盖冰，否则水账漏一份水））
   Rendering/
     ParticleRenderer.cs                       Texture2D + quad（消费已完成帧的纯值像素 RenderColor[]，用复用的 Color32[] 上传缓冲转换后 SetPixels32 / Apply——Unity 纹理操作全在主线程）。**世界 quad 与笔刷轮廓叠层是场景里的可编辑对象**（`Particle Sandbox/ParticleGridQuad` 挂 MeshFilter+MeshRenderer、`Particle Sandbox/ParticleBrushOverlay` 挂 SpriteRenderer，由 `_meshFilter` / `_meshRenderer` / `_brushRenderer` 接线；编辑模式下 quad 挂预览 mesh（`Assets/Data/SandboxPreviewMesh.asset` + `SandboxPreview.mat`，白天底色）+ 相机已按沙箱取景，Game 视图直接看到沙箱范围）；未接线时运行时自建（HideFlags.DontSave）仅为测试兜底。纹理 / 运行时 mesh / 运行时材质仍为运行期 DontSave 资产。笔刷轮廓叠层 1 texel = 1 格、`sortingOrder = 1` 压在所有像素之上，由 ParticleEditor 每帧驱动
     BrushOutline.cs                           笔刷足迹的像素圆几何（纯整型）：圆内判定 `Contains`（= 编辑器笔刷判据）、轮廓判定 `IsOutline`（圆内且四邻有圆外）、`Collect`（枚举轮廓格）与 `Fill`（把轮廓画进方形像素缓冲，整块覆写不留残影）
@@ -1453,9 +1513,10 @@ Assets/Tests/EditMode/
     FireSoundDriverTests.cs                   火焰持续声（7 项，生产注册路径）：无火推 0 且声床目标为 0、火格数达 `_fullVolumeCount` 后 EMA 单调收敛到满响、更多火更响（锚定「取格数而非比例」）、死区边界、`_volume` 缩放、单帧推进受 dt 上限约束、关闭 / world=null 收声
     LightningSoundDriverTests.cs              闪电一次性音效（5 项，生产注册路径）：无世界不响、干燥世界不响、**一次起爆恰好 +1**（整条多格主干只响一声）、一帧内两次起爆仍最多一声、禁用期间仍清账且重开不补发
     FallingSandSoundDriverTests.cs            落下的固体声（8 项，生产注册路径）：无运动静音、固体下落推响度到声床、落更多格更响（锚定「绝对运动格数」口径）、死区边界、`_volume` 缩放、关闭 / world=null 收声、关闭期间仍清账不补发、以及**口径锚点**（树木种子下落 ⇒ 0，落沙声不认有机颗粒）
+    IceParticleTests.cs                       冰 ↔ 水相变（26 项，生产注册路径；两条相变都走随机刻，因此用「直接调 `ParticleType.OnRandomTick` + 条件断言」——条件满足时一次调用即触发，不再需要窗口循环）：注册回填（紧随生物质、Solid 不带 Organic、非静态、不受重力、空 OnMotion 用默认阅读盒、调色板不透明、`HasOutline`、热学三值与热容差自洽）/ 水面挨着冰在蔓延门（`FreezingPoint − 0.1`）内冻上 / 无冰邻格要过冷到成核门（`FreezingPoint − NucleationSupercooling`）才冻上（门上方 0.1° 冻不上、门内冻得上；门槛都从常量读）/ 几何门（水下、被固体压住、顶行水都不冻）/ 悬空水滴不冻而落在固体上的同温水会冻 / **随机刻相变零随机流消耗**（对照世界取下一个 `NextUInt` 相等）/ 加厚按深度阈值（d = 2 时 `阈值+0.1` 不够冷、`阈值−0.1` 冻得上）/ 深度扫描在 `ColumnScanDepth` 封顶且最后一档仍为正（12 格冰下 0° 仍继续加厚）/ `DepthBelowIceTop` 只数连续冰 / 表层冰在融化门之上化、之下不动（同样零随机流消耗）/ 融化阈值随深度升（`6.0 + 2.0·d`）/ **结冰放热**（温度恰好 +s、热量增量 = `C_冰·s − ΔC·T`）/ **融化吸热**（温度恰好 −s、热量增量 = `ΔC·T − C_水·s`）/ **冻融往返逐位守恒**（热账 = 原水热 + 注入热 × C_水/C_冰，反热泵回归）/ 冰在任何位置都不移动（空中 / 水里跑 200 运动帧）/ 水账守恒（水 → 冰 → 水全程「水格 + 冰格 + 湿度」不变）/ 冰封水面下水不蒸发 / 冰算 `CreatureTerrain` 地形但不算水 / **浅色描边**（与空气交界、与固液交界都提亮且亮于基底色）/ **光照冷度缩放**（8~12 平坦、0 处 ×1.2、24 处饱和 ×0.6、两侧线性单调；行为面：4.5° 的水弱光冻 / 适宜光不冻、3° 的水强光不冻、6.5° 的冰弱光不化）/ 整帧集成（冷池开随机刻跑 300 逻辑帧冻出冰且同种子逐位一致）/ 冷夜结冰 + 强日照化回水（水量账守恒）/ **隔离类型表守卫**（世界没注册冰时不结冰、不消耗随机流、不打 error 日志）
 ```
 
-测试总数 **604**（`ParticleWorldTests` 89 + `SandStoneParticleTests` 9 + `ThermalDriftTests` 7 + `WaterParticleTests` 26 + `WeatherParticleTests` 24 + `WetSoilParticleTests` 17 + `AquaticParticleTests` 27 + `GrassParticleTests` 13 + `FlowerParticleTests` 13 + `FireParticleTests` 34 + `MotionSleepTests` 5 + `LogicScanTests` 4 + `SpeedControllerTests` 12 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `CameraPanTests` 5 + `DialogueRunnerTests` 11 + `GameFlowTests` 28 + `TreeParticleTests` 49 + `GroundwaterTests` 14 + `HumusSoilParticleTests` 13 + `CreatureWorldTests` 13 + `CreatureAiTests` 42 + `BiomassParticleTests` 10 + `CreatureBiomassTests` 10 + `LightningParticleTests` 11 + `CreatureSpriteFacingTests` 7 + `BrushOutlineTests` 6 + `SceneWiringTests` 9 + `SoundControllerTests` 13 + `LiquidFlowSoundDriverTests` 4 + `ParticleCountMonitorTests` 8 + `MotionMonitorTests` 8 + `FireSoundDriverTests` 7 + `LightningSoundDriverTests` 5 + `FallingSandSoundDriverTests` 8 + `CreatureArtDataTests` 1 + `FishShallowWaterTests` 8 + `BirdCreatureTests` 16）
+测试总数 **818**（按 `[Test]` / `[TestCase]` 属性统计）：`AnimalSoundDriverTests` 11 + `AquaticParticleTests` 27 + `BiomassParticleTests` 10 + `BirdCreatureTests` 53 + `BrushOutlineTests` 6 + `CameraPanTests` 5 + `CreatureAiTests` 42 + `CreatureArtDataTests` 1 + `CreatureBiomassTests` 10 + `CreatureReproductionTests` 16 + `CreatureSpriteFacingTests` 7 + `CreatureWorldTests` 13 + `DialogueRunnerTests` 11 + `FallingSandSoundDriverTests` 8 + `FireParticleTests` 34 + `FireSoundDriverTests` 7 + `FishShallowWaterTests` 15 + `FlowerParticleTests` 13 + `GameFlowTests` 48 + `GameSaveProgressTests` 6 + `GrassParticleTests` 13 + `GroundwaterTests` 14 + `HeatSkipTests` 5 + `HighSpeedSessionTests` 13 + `HumusSoilParticleTests` 13 + `IceParticleTests` 26 + `LevelSelectControllerTests` 14 + `LevelSelectSceneWiringTests` 6 + `LightPanelStepTests` 5 + `LightningParticleTests` 11 + `LightningSoundDriverTests` 5 + `LiquidFlowSoundDriverTests` 4 + `LogicScanTests` 4 + `MotionMonitorTests` 8 + `MotionSleepTests` 5 + `ParticleCountMonitorTests` 8 + `ParticleSelectionPanelTests` 8 + `ParticleSelectionTests` 19 + `ParticleWorldTests` 89 + `RenderRasterizerTests` 8 + `SandStoneParticleTests` 9 + `SceneWiringTests` 10 + `SimulationFrameTests` 12 + `SimulationWorkerTests` 12 + `SoundControllerTests` 13 + `SpeedControllerTests` 12 + `ThermalDriftTests` 7 + `TreeParticleTests` 49 + `WaterParticleTests` 26 + `WeatherParticleTests` 30 + `WetSoilParticleTests` 17。
 声音测试只断言纯逻辑与目标响度 / 计数，**不断言主观听感**；真正的出声只能在编辑器 Play 模式里由人耳确认。
 
 **场景接线（已完成，`MainScene.unity`）**：场景根下六个常驻对象——`Main Camera`（编辑态已按沙箱取景：orthographic、size=高/2、位置 (宽/2, 高/2, −10)；挂 `CameraScreenFeed`，运行期把画面导进 HUD 正中央的显示图 `SandboxView`）、`ScreenBackdrop`（culling mask 0、只清屏的相机——主相机改画纹理后，屏幕上得有相机在画，否则 Game 视图报 No cameras rendering）、`Global Light 2D`、`Particle Sandbox`（挂十一个组件并已两两接线，见下）、`Dialogue Controller`、`Game Controller`；另有三个 UI 根对象——`EventSystem`（对话按钮 / 光照滑块都靠它收事件）、`HUD Canvas`（overlay、sortingOrder 500：`SandboxHud` 的全部元素——光标读数 / 鼠标跟随组 / 高速读数 / 结算面板 / 光照面板 / 通关横幅，外加暂停 / 光照 / 高速三颗按钮的 `ButtonPanel` 与屏幕正中央的显示图 `SandboxView`（`RawImage`，2:1、画布最底层、带占位图，运行期显示相机画面），全部场景可编辑）与 `Dialogue Canvas`（overlay、sortingOrder 1000：对话面板 / 选项按钮模板，默认隐藏、可视化编辑）。这些对象由 `SceneUiScaffolder`（菜单 `Tools/TapTap2026/Scene UI Setup`）幂等补齐与接线：
@@ -1538,6 +1599,7 @@ Particle Sandbox
 - [ ] 一个类型一个文件；`sealed`；无基类；非 MonoBehaviour。
 - [ ] `OnMotion` / `OnLogic` 内无分配、无 LINQ、无字符串、无 `UnityEngine.Random`、无 `Time.*`；运动只写在 `OnMotion`、相变 / 反应只写在 `OnLogic`，`OnLogic` 不移动粒子（**唯一例外**：`FireParticle` 的游离火在 `OnLogic` 末尾上升，已定稿）。
 - [ ] `OnRandomTick` 只用于「缓慢、按概率发生」的过程（生长 / 蔓延 / 渗流 / 腐化）；没有该行为的类型留空。它同样不许分配、不许读 `Time.*`，随机用 `world.NextUInt()`。
+- [ ] **随机刻钩子里不要再叠概率骰**：抽取本身就是低频事件（生产 48 格/逻辑帧 ≈ 每格每 ~60 秒被点到一次），命中即应完成该做的事；稀有度要调就调全局的 `RandomTicksPerStep` 或本类型的温度 / 几何门槛。范例：水 → 冰（`WaterParticle.OnRandomTick`）与冰 → 水（`IceParticle.OnRandomTick`）。
 - [ ] 每个写操作之前都有显式判断；写操作之后**立即 return**。
 - [ ] 没有直接写 `Cell.typeId`（绕过钩子）；没有整体覆盖 `flags`（破坏 bit0）。
 - [ ] 没有把 per-cell 状态放进单例字段。
@@ -1548,6 +1610,8 @@ Particle Sandbox
 - [ ] 若 `OnLogic` 是**严格空体**（只有注释，不读 / 不写 / 不消耗世界随机流），构造时传 `hasLogic: false`；否则保持默认 `true`。声明 `false` 会让该类型在逻辑帧不再收到 `OnLogic`（混合扫描整段跳过），误判等于丢失逻辑（见 §4「HasLogic」）。
 - [ ] 固体类型：`Info.Friction` 与 `Info.Stickiness` 都在 `[0, 1]` 内，`OnMotion` 走 `ParticleRules.StepSolid(world, x, y)`（自行实现则要在注释里说明为何不走共享规则）。
 - [ ] 跨类型判断只走 `ParticleTags`（`TagsAt` / `HasTag` / `IsSolid` / `CanDisplace` / …），不特判 typeId；**例外是"一对具体类型之间的反应"**（如土吸湿土、湿土吐干土），那种情况按约定用 `ParticleIds` 双向引用。
+- [ ] **跨类型写入前先确认目标类型真的在本世界的类型表里**（`id != AirTypeId && id < world.Types.Length && world.Types[id] != null` 一类判据）：隔离类型表（测试的 `TestTables.Build`）里 `ParticleIds.Xxx` 是 0 或上一次生产注册留下的越界 id，`SetPhase` 会拒绝写入并 `Debug.LogError`（Unity 测试把意外的 error 日志算失败），而且写前的随机流消耗会打乱既有隔离表用例的确定性。范例：`IceParticle.IsRegisteredIn`（水 → 冰、冰 → 水两侧都过这道门）。
+- [ ] **相变的潜热写成「温度步长 × 本相热容」（或等价的 Q 形式），保证换形态温度连续、往返可逆**：`SetPhase` 保留 Q，热容不同的两相直接换形态会让温度凭空跳；两个方向若用同一个 Q 常数，冻融往返会净产热。范例：`IceParticle.FusionTemperatureStep` + `HeatCapacityDelta`。
 - [ ] 静态类型的 `OnMotion` / `OnLogic` / `OnRandomTick` 都不会被调用——留空并注明原因，不要往里写逻辑。
 
 ---
@@ -1579,12 +1643,23 @@ Particle Sandbox
 8. **热力学（`HeatMap` + `LightController`）**：模型为「每格存 Q、T = Q / C、热由物质携带（`Swap` 搬 Q、`Set`/`Clear` 就地继承 Q）+ 每逻辑帧全格四邻扩散 + 两条散热路（顶行向虚空 `VoidHeatLoss`、**只作用于暴露面**的辐射 `RadiativeLoss`）+ 光照打到每列最上面的非气体粒子（液体挡光）」。三系数均在 `ParticleSimulationSettings` 资产（现配 0.24 / 0.12 / 0.05），另有绝热直减率 `_adiabaticLapse`（现配 0.1，气体竖直 Swap 结算）、空气导热率 `_airThermalConductivity`（现配 1）与空气辐射率 `_airThermalEmissivity`（现配 0.1）。辐射率已按材料区分（`ParticleTypeInfo.ThermalEmissivity`：大气 0.1、其余 1.0，见 §6 辐射率表），这是把「空气热铺得高」与「地表温度」解耦的旋钮。待定：虚空散热仍只看**网格顶行**，是否要一并改成「暴露面」（与辐射同一判据）；导热率已按材料区分（`ThermalConductivity`，界面取两侧平均），后续可考虑改几何平均；是否要给固/液/气之外的维度再分辐射率（目前按材料区分，大气 0.1、其余 1.0）；空气热容 `AirHeatCapacity` 是否也要可配；`LightController` 是否要方向性 / 距离衰减（目前垂直、无衰减，但不再穿过液体；云遮光已按**光路湿度**（自顶向下累加、遇 `BlocksLight` 即停）做 Beer–Lambert 衰减，`CloudExtinction` 目前是代码常量 + Inspector 字段）；`float` 精度是否需要改成定点以利存档与回放比对。「Q 由物质携带」「温度是导出量 T = Q / C」「传导与散热由世界每逻辑帧自动做一次」这三条已是契约，不随上述决策改变。相变阈值（沸点 80 / 慢蒸发 20 / 露点 30）与湿度场系数（`Diffusion` / `HorizontalBias` / `RiseBias` / `RiseStopHumidity` / `RainThreshold` / `RainRate` / `EvaporationCeiling` / `VisibleThreshold` / `CloudFullHumidity`）都还是代码常量；**水循环尚未做最终配平**——去掉大气随机漂移后，100×100 水盆在 30000 tick 后稳定在海水 284/900、湿度 616（总量 900 守恒），剖面单调上密下疏（顶带 0.094、低带 0.002），已是可玩状态；若要进一步提高海水留存，动「蒸发节流 / 降水阈值 / 水平辐合」时须重测云层厚度。待定：要不要把「沸点」也做成可配项。**风险注记（审计 B9）**：取消旧「温度高于露点即跳过」的硬截断后，高温下 `SaturationHumidity` 随指数升高，**极热表面仍难降雨**（热地表可能积累湿斑）——C2 的指数饱和已缓解（低温空气反而更易凝结）但未根治；等观感出问题再加「温度连续凝结核 / 高温慢降雨」。
 9. **土与湿土（`SoilParticle` / `WetSoilParticle`）的取舍**（当前实现见 §4「吸水与湿土的水迁移」）：
    - **已定：一格水润湿一格土、水随即消失**（土把正上方那格水喝掉），水的那份热量并进湿土。
-   - **已定：湿土 = 干土 + 一份水**，这份水由湿土自己搬运——常温（`T < DryingTemperature` = 60）下**有压才渗**（正上方是水或湿土才有 50%/逻辑帧 的下渗，正下方优先、被挡则随机序试左右干土；孤立湿土永久持水 = 田间持水量，湿斑不沉底），受热（≥ 60°）改往上送（上方是干土、带 50% 概率门）或蒸发（上方是空气，带份额门控与潜热），且**每送一次自己就变干**。因此水不会凭空出现或消失（水总量 = 水格 + 湿土格 + 湿度场，全程守恒）。
+   - **已定：湿土 = 干土 + 一份水**，这份水由湿土自己搬运——常温（`T < DryingTemperature` = 60）下**有压才渗**（正上方是水或湿土才有 50%/逻辑帧 的下渗，正下方优先、被挡则随机序试左右干土；孤立湿土永久持水 = 田间持水量，湿斑不沉底），受热（≥ 60°）改往上送（上方是干土、带 50% 概率门）或蒸发（上方是空气，带份额门控与潜热），且**每送一次自己就变干**。因此水不会凭空出现或消失（水总量 = 水格 + **冰格** + 湿土格 + 湿度场，全程守恒）。
    - **待定（已大幅缓解）：饱和层会挡住迁移**。迁移只看相邻一格，目标已是湿土就渗不动。现已加**侧向渗流**（被挡时随机序试左右干土）与**有压才渗**（无压即持水，湿斑不再穿柱沉底）；但四周都是湿土 / 固体时仍会卡住。若要「水总能找到路」需要更完整的地下水模型。
    - **待定：干燥阈值 60 与"只查相邻一格"**。60 是拍的（水：慢蒸发 20 / 沸腾 80）；斜上方有水不算、隔着沙也不算。参考现实可改成按"距最近水源"判定。
    - **已定：换格时水带热一起走**。`WetSoilParticle.GiveWater` 搬运时把 `ΔQ = T(源) × 1.2` 从源格挪到目标格（`1.2 = 湿土热容 2.0 − 干土热容 0.8`，即那一份水的热容份额），热容随物质一起变、两侧温度不因换格而跳，总热量严格守恒。旧「Q 留在原格不搬」已作废（详见 §4「吸水与湿土的水迁移」）。
    - **待定：常温不蒸发**。只有受热（≥ 60°）才往空气里蒸发，所以夜里/冷水里的湿土会一直保持湿。要不要给一条"常温极慢蒸发"的路（参考水粒子的 `SlowEvaporationTemperature` / 慢蒸发概率）。
    - 附：湿土的 `density 2.0` / `heatCapacity 2.0` / `thermalConductivity 0.85` 是取水与干土之间的中间值（水 6.5/0.95、干土 0.8/0.7），要不要按「孔隙含水率」正式推导。
+
+10. **冰（`IceParticle`）的配平与待定**（当前实现见 §6「水 ⇄ 冰相变」）：
+   - **已定：两条相变都走随机刻**（`WaterParticle.OnRandomTick` 结冰 / `IceParticle.OnRandomTick` 融化）。低频抽取本身就是稀有度 ⇒ 钩子里不叠概率骰、命中即相变；节奏（冰面推进多快）完全由 `world.RandomTicksPerStep`（生产 48/逻辑帧 ≈ 每格每 ~60 秒被点到一次）与亮 / 暗刻数决定，要快就调大随机刻格数（会同时加快草 / 树 / 水冲刷）。
+   - **已定：温度标定按实测夜间水温 3° 重做**——结冰门 4.0°、成核门 3.5°（旧值 1.5 / 1.25 在「水只在刚放置时是 0°」的世界里永远够不着，属标定错误）。**待定**：若玩家世界的水体昼夜温度另有变化，`FreezingPoint` 要跟着重标定（判据：入夜后水面温度能否稳定压过它）。
+   - **已定：几何深度梯度 + 镜像融化**。温度下界是环境 0，所以向下加厚只能用几何衰减（`FreezingPoint·0.5^d` = 2.0 / 1.0 / 0.5 …，d ≥ 8 取最后一档 ≈ 0.016）；融化侧镜像成线性（`6.0 + 2.0·d`，无上限，「越深越难融」）。**厚度无上限**：冰下的水会一路被抽冷，最后一档阈值永远够得着，只是越深越难。
+   - **已定：潜热按「温度步长 × 本相热容」结算**（结冰 `+C_冰·s` 放热、融化 `−C_水·s` 吸热，`s = 1.0`），另加 / 减热容差 `3.0·T`——冻融往返**逐位守恒**（用同一个 Q 常数会净产热，见 §11 评审清单新增条目）。
+   - **待定：`lightAbsorption` 是「晨化夜冻」与「永冻累积」的双稳开关**。冰面日间平衡温度 ≈ `Intensity·abs / (RadiativeLoss·ε + 上下界面)`；`abs = 0.4`（现值）在默认场景（强度 10、亮暗各 600 刻）下约 8°，略高于 `MeltingPoint` 6.0 ⇒ 每个白天把冰化尽（当前口径：厚度无上限只在「持续低温」下兑现，例如把暗刻调长 / 关灯）；调到 ≤ 0.2 则冰能过夜存活、逐夜累积成永久冰盖（副作用：冻实的池塘不再蒸发 ⇒ 降雨减少，是一条自限负反馈）。要季节循环还是永久冰盖需要拍板。
+   - **待定：`MeltingPoint`(6.0) 与迟滞带宽 [4.0, 6.0]**。带宽（2.0）必须大于相变造成的温度摆动 ±1.0；6.0 取「日照下的冰面必然超过」的量级——若改光照强度 / 云消光 / 辐射率，要重测冰面的日间平衡温度。
+   - **已定：浅色描边**（`HasOutline` + `OutlineLighten` ⇒ 向 `OutlineLightColor` 提亮）——冰面反光；若嫌太亮，调 `ParticlePixelBuffer.OutlineLightenFactor`（现 0.55）。
+   - **已定：光照强度当气候旋钮**（`WaterParticle.LightColdScale`：8~12 平坦 ×1、0 处 ×1.2、24 处饱和 ×0.6，两侧线性，见 §6 的映射表）。**待定**：端点值（1.2 / 0.6）与饱和点（2× 上沿）都是拍的，可按观感调；若以后把「暗刻占比」也纳入气候（夜越长越冷），要算进同一份缩放里，别再加第二个缩放（迟滞带的推导只按一份缩放做过）。
+   - **已知推论（刻意不加特判）**：冰是固体 ⇒ 按水生植物既有规则会「压死」正下方的植物（该格还水，守恒不破）；火不把冰列进压顶白名单（按「贴非可燃固体」1/5 熄灭）；鱼把冰盖当水面（`FishBrain` 的 `nearSurface` 只看 `ParticleIds.Water`）。要让它们「认识」冰，各加一处白名单即可。
 
 ---
 

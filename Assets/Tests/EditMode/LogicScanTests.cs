@@ -245,6 +245,10 @@ namespace TapTap2026.Tests
                 world.Set(x, 1, wet);
             }
 
+            // 保温：本场景开着随机刻（48/帧），而水是冷的——不保温的话水池表面会在头几帧被随机刻
+            // 冻出冰来（冰相变的正常行为，但会把「扫描透明性」的基线场景搅成另一副样子）。
+            // 见 TestTables.WarmAllWater。
+            TestTables.WarmAllWater(world);
             return world;
         }
 
@@ -313,6 +317,10 @@ namespace TapTap2026.Tests
             world.Light.DarkTicks = 600;
             world.Light.Intensity = 5f;
             world.Light.CloudExtinction = 0.05f;
+
+            // 保温：本场景开着随机刻（48/帧），海洋表面又冷——不保温的话头几帧就会冻出冰
+            //（冰相变的正常行为，但会改掉这些用例的基线场景）。见 TestTables.WarmAllWater。
+            TestTables.WarmAllWater(world);
             return world;
         }
 

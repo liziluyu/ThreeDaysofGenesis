@@ -18,10 +18,14 @@ namespace TapTap2026.Simulation
     /// </remarks>
     public sealed class FishCreature : Creature
     {
+        /// <summary>被鸟咬中后的死亡骰分母（1/本值 概率死亡）：3 ⇒ ≈33%，鱼在水里更难抓。</summary>
+        public const int HuntDeathRoll = 3;
+
         /// <summary>构造一条 1 × 0.5 格的鱼（位置由 <see cref="CreatureWorld.Spawn"/> 放置）。</summary>
         public FishCreature()
             : base(1f, 0.5f)
         {
+            HuntDeathDenominator = HuntDeathRoll;
         }
 
         /// <summary>每逻辑帧的逻辑钩子：门控命中后调 <see cref="FishBrain.Think"/>（2 Hz）。
@@ -33,6 +37,8 @@ namespace TapTap2026.Simulation
             if (ShouldThink(creatures))
             {
                 FishBrain.Think(this, creatures, world);
+                // 繁殖是思考帧的第二个决策（雌性才会真正摇骰；见 CreatureReproduction）。
+                CreatureReproduction.TryBreed(this, creatures, world);
             }
         }
 

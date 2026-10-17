@@ -17,10 +17,14 @@ namespace TapTap2026.Simulation
     /// </remarks>
     public sealed class RabbitCreature : Creature
     {
+        /// <summary>被鸟咬中后的死亡骰分母（1/本值 概率死亡）：2 ⇒ 50%，开阔地被扑中有一半机会挣脱。</summary>
+        public const int HuntDeathRoll = 2;
+
         /// <summary>构造一只 1.5 × 1 格的兔子（位置由 <see cref="CreatureWorld.Spawn"/> 放置）。</summary>
         public RabbitCreature()
             : base(1.5f, 1f)
         {
+            HuntDeathDenominator = HuntDeathRoll;
         }
 
         /// <summary>每逻辑帧的逻辑钩子：门控命中后调 <see cref="RabbitBrain.Think"/>（2 Hz）。
@@ -32,6 +36,8 @@ namespace TapTap2026.Simulation
             if (ShouldThink(creatures))
             {
                 RabbitBrain.Think(this, creatures, world);
+                // 繁殖是思考帧的第二个决策（雌性才会真正摇骰；见 CreatureReproduction）。
+                CreatureReproduction.TryBreed(this, creatures, world);
             }
         }
 

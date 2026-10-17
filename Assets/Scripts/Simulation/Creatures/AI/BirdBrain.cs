@@ -5,7 +5,7 @@ namespace TapTap2026.Simulation
     /// </summary>
     /// <remarks>
     /// <para><b>状态（<see cref="Creature.AiState"/>）：</b>0 = Perched（栖息）、1 = Fly（空中巡航）、
-    /// 2 = Flee（逃命）。</para>
+    /// 2 = Flee（逃命）、3 = Hunt（捕食——随机袭击兔 / 鱼，见 <c>docs/plan-bird-ai.md</c> §11）。</para>
     /// <para><b>节奏：</b>只应被 <see cref="Creature.ShouldThink"/> 放行后以 2 Hz 调用；RNG
     /// （<see cref="CreatureWorld.NextInt"/>）只在思考帧消耗。</para>
     /// <para><b>落水自救（最高优先级）：</b><see cref="Creature.IsSubmerged"/> 时只把 <c>IntentVy</c> 抬成
@@ -16,15 +16,30 @@ namespace TapTap2026.Simulation
     /// 远离最近那团火、同列时只摇一次骰选边，进入时写最短逃命时长 <see cref="FleeMinTicks"/>；
     /// 最短时长走完且火出圈才回 <see cref="StateFly"/>。竖直一律向上冲（<see cref="FleeClimbSpeed"/>）。</para>
     /// <para><b>Fly（巡航）：</b>水平沿用鱼的**墙感知换向**（前方 <see cref="AheadProbeCells"/> 格的体高行内
-    /// 全是非固体才保持方向、**不摇骰**；受阻才 1/3 摇骰换向）。竖直走**高度带**：
-    /// <see cref="CreatureSensors.ProbeSurfaceBelow"/> 探正下方第一个可栖面 / 水——距该面 &lt;
-    /// <see cref="MinAltitudeCells"/> 就上抬、<c>Y &gt; 世界高 − <see cref="CeilingMarginCells"/></c> 就下压、
-    /// 带内 <c>IntentVy = 0</c> 悬停。巡航计时归零且正下方 <see cref="LandProbeCells"/> 格内有**合格栖息面**
-    /// ⇒ 下压 <c>IntentVy</c> 直到 <see cref="Creature.IsGrounded"/>（转 Perched）；下方无可栖面则重置一个
-    /// <see cref="LandRetryTicks"/> 短计时继续找落点。</para>
+    /// 全是非固体才保持方向、**不摇骰**；受阻才 1/3 摇骰换向）。竖直走**随机目标高度的上下巡航**（v3，见
+    /// <c>docs/plan-bird-ai.md</c> §12）：以 <see cref="CreatureSensors.ProbeSurfaceBelow"/> 探到的正下方
+    /// 第一个可栖面 / 水为基准，目标高度 <see cref="Creature.TargetAltitudeCells"/> ∈
+    /// [<see cref="MinAltitudeCells"/>, <see cref="MaxAltitudeCells"/>]（**名义**带顶 50；实际每张地图按
+    /// <c>Min(MaxAltitudeCells, 世界高 − CeilingMarginCells − 1 − surfaceRow)</c> 的**可达净空**逐帧钳制，见
+    /// <c>docs/plan-bird-ai.md</c> §18），到达即用
+    /// <see cref="CreatureWorld.NextInt"/> 重掷；<c>Y &gt; 世界高 − <see cref="CeilingMarginCells"/></c> 是**天花板硬边界**
+    ///（优先于高度带，无条件下压并把目标收敛到下限）；探不到基准（整列扫到世界底）则悬停。捕食视野与降落探针
+    /// **仍为 24 格、不随带顶放大**（§18.2：鸟只有漂到低空才可能发现猎物 / 落树）。巡航计时归零且
+    /// 正下方 <see cref="LandProbeCells"/> 格内有**可降落的树**（树叶 / 树干，见 <see cref="CreatureTerrain.IsFoliage"/>）
+    /// ⇒ 下压 <c>IntentVy</c> 直到 <see cref="Creature.IsGrounded"/>（转 Perched）。**地面不落**（<c>docs/plan-bird-ai.md</c> §17）：
+    /// 地面虽可站但不算树，无树的图上鸟因此永不落地，下方没有树则重置一个 <see cref="LandRetryTicks"/> 短计时继续巡航找落点。</para>
     /// <para><b>Perched（栖息）：</b><c>IntentVx = IntentVy = 0</c>；计时（<see cref="PerchTicksMin"/> +
     /// [0, <see cref="PerchTicksRange"/>]）归零即起飞（随机水平方向 + <c>IntentVy = FlyVSpeed</c>）。</para>
     /// <para><b>v1 非目标：</b>不进食、不繁殖、不筑巢、不做全局寻路。</para>
+    /// <para><b>Hunt（捕食，v2；死亡骰 v5）：</b>只在 Fly 态思考帧触发——视野 <see cref="HuntDetectCells"/> 格内
+    /// （盒中心欧氏距离，与放弃判据同一口径）存在猎物（兔 / 鱼）才摇 <c>1 / <see cref="HuntDenominator"/></c>
+    /// 的骰，命中即转 <see cref="StateHunt"/> 并锁定 <see cref="Creature.HuntTarget"/>；**视野内无猎物不摇骰**
+    /// （随机流不漂移）。**锁定目标的那一刻**再摇一次死亡骰（<c>1 / HuntDeathDenominator</c>）并锁存到
+    /// <see cref="Creature.HuntKillLatched"/>（见 <c>docs/plan-bird-ai.md</c> §14）——追击动作不变，接触时由
+    /// 运动层 ⑥b 段（AABB 重叠）**只读锁存**结算死活，运动层因此零随机数依赖，动物随机流仍只在思考帧消耗。
+    /// 此后 Brain 看到「仍在本态但目标已空」即撤离回 Fly。放弃条件：目标死亡 / 移出世界、逃出 <see cref="HuntAbortCells"/>、
+    /// 超时 <see cref="HuntTimeoutTicks"/>。优先级 <b>落水自救 &gt; 火焰逃命（可打断 Hunt）&gt; Hunt &gt; Fly / Perched</b>——
+    /// 唯一的例外是「Hunt 态且目标是鱼」时豁免落水自救反射（鸟可以扎进水里叼鱼）。</para>
     /// </remarks>
     public static class BirdBrain
     {
@@ -36,6 +51,9 @@ namespace TapTap2026.Simulation
 
         /// <summary>状态：逃命（背向火、向上冲，豁免最短时长内不出圈）。</summary>
         public const byte StateFlee = 2;
+
+        /// <summary>状态：捕食（追击 <see cref="Creature.HuntTarget"/>，见 §11）。</summary>
+        public const byte StateHunt = 3;
 
         /// <summary>水平加速度（格 / 逻辑帧²）。</summary>
         public const float Accel = 0.02f;
@@ -61,11 +79,18 @@ namespace TapTap2026.Simulation
         /// <summary>巡航时维持的最小离面高度（格）：正下方可栖面 / 水面距此以内即上抬，避免贴面飞行。</summary>
         public const int MinAltitudeCells = 6;
 
+        /// <summary>巡航高度上限（格）：相对正下方第一个可栖面 / 水的**名义**最大高度。**带顶名义 50，实际每个地图
+        /// 由可达净空钳制**——运行时的 <c>maxAltitude = Min(本值, 世界高 − <see cref="CeilingMarginCells"/> − 1 − surfaceRow)</c>
+        /// （不小于 <see cref="MinAltitudeCells"/>）；摇骰与「目标越界重摇」都用它，否则摇到顶到天花板的不可达目标
+        /// 会在天花板分支与带底之间反复抖，见 <c>docs/plan-bird-ai.md</c> §18。</summary>
+        public const int MaxAltitudeCells = 50;
+
         /// <summary>天花板余量（格）：<c>Y &gt; 世界高 − 本值</c> 即下压，避免顶到世界上界。</summary>
         public const int CeilingMarginCells = 12;
 
-        /// <summary>降落探测距离（格）：正下方这么多格内出现合格栖息面才下压降落。</summary>
-        public const int LandProbeCells = 12;
+        /// <summary>降落探测距离（格）：正下方这么多格内出现**可降落的树**（树叶 / 树干，见 <see cref="CreatureTerrain.IsFoliage"/>）才下压降落。
+        /// **§18 起刻意不随带顶 50 放大、保持 24**（用户口径）：高于 24 时探不到落点，鸟只有漂低时才降落。</summary>
+        public const int LandProbeCells = 24;
 
         /// <summary>墙感知换向的前探格数：当前方向前方这么多格的体高行内全是非固体才认为畅通、保持原方向。</summary>
         public const int AheadProbeCells = 3;
@@ -93,14 +118,37 @@ namespace TapTap2026.Simulation
         /// <summary>降落未找到落点时的短巡航计时（逻辑帧 ≈ 2 秒）。</summary>
         public const int LandRetryTicks = 40;
 
+        /// <summary>捕食视野（格）：Fly 态思考帧上，盒中心欧氏距离 ≤ 本值才把猎物纳入候选并摇骰。
+        /// **§18 起刻意不随带顶 50 放大、保持 24**（用户口径）：高度 &gt; 24 时看不见地面猎物，鸟只有漂低才捕食。</summary>
+        public const int HuntDetectCells = 24;
+
+        /// <summary>捕食触发的骰子分母：视野内有猎物时 <c>1 / 本值</c> 概率发起（视野内期望约 20 秒一次）。</summary>
+        public const int HuntDenominator = 40;
+
+        /// <summary>追击放弃距离（格）：与目标的盒中心欧氏距离 &gt; 本值即放弃（与 <see cref="HuntDetectCells"/> 同口径）。
+        /// 大于视野半径 ⇒ 追击中短暂甩出视野不会立刻放弃。</summary>
+        public const int HuntAbortCells = 32;
+
+        /// <summary>追击超时（逻辑帧 ≈ 10 秒）：进入 Hunt 时写进 <see cref="Creature.StateTicksLeft"/>，归零即放弃。</summary>
+        public const int HuntTimeoutTicks = 200;
+
+        /// <summary>追击水平速度（格 / 逻辑帧）：比巡航快，逼近猎物。</summary>
+        public const float HuntSpeed = 0.10f;
+
+        /// <summary>俯冲竖直速度（格 / 逻辑帧）：比巡航竖直速度（<see cref="FlyVSpeed"/>）快，保证从带顶
+        /// （<see cref="HuntDetectCells"/> / <see cref="LandProbeCells"/> 同一量级）发起的下压也能在
+        /// <see cref="HuntTimeoutTicks"/> 内够到猎物。</summary>
+        public const float HuntDiveSpeed = 0.2f;
+
         /// <summary>
         /// 鸟可见身体的顶行相对碰撞盒底边的偏移（格）：由**生成美术数据**算出
-        /// （<c>MaxOpaqueRow − PivotRowPixels</c> ＝ 13 − 0 ＝ 13）。墙探针据此探「整个可见身体」占的行，
+        /// （<c>CreatureArtData.Bird.MaxOpaqueRow − PivotRowPixels</c>，当前 = 10；美术变更后重跑生成菜单即随动，
+        /// 本注释不写死数值以免与生成物脱节）。墙探针据此探「整个可见身体」占的行，
         /// 与 <see cref="FishBrain.BodyTopOffsetCells"/> 同一口径。
         /// </summary>
         public const int BodyTopOffsetCells = CreatureArtData.Bird.MaxOpaqueRow - CreatureArtData.Bird.PivotRowPixels;
 
-        /// <summary>一次思考：落水自救 &gt; 威胁逃命 &gt; Fly 巡航 &gt; Perched 栖息。</summary>
+        /// <summary>一次思考：落水自救 &gt; 威胁逃命 &gt; Hunt 捕食 &gt; Fly 巡航 &gt; Perched 栖息。</summary>
         /// <param name="creature">思考的鸟。</param>
         /// <param name="creatures">所属动物世界（RNG 来源）。</param>
         /// <param name="world">粒子世界（只读感知）。</param>
@@ -108,7 +156,9 @@ namespace TapTap2026.Simulation
         {
             // 落水自救：最高优先级——淹没时只管向上冲（强起飞意图），不再进别的状态。
             // 水平意图不动：出水前不摇骰、不换状态，配合基类正浮力几帧内即出水。
-            if (creature.IsSubmerged)
+            // 唯一例外：**Hunt 态且目标是鱼**时豁免（鸟俯冲入水叼鱼）；抓到 / 放弃后反射自动恢复。
+            bool divingForFish = creature.AiState == StateHunt && creature.HuntTarget is FishCreature;
+            if (creature.IsSubmerged && !divingForFish)
             {
                 creature.IntentVy = SwimAccel;
                 return;
@@ -121,6 +171,8 @@ namespace TapTap2026.Simulation
             int radius = fleeing ? Creature.ThreatRadius + FleeExitMargin : Creature.ThreatRadius;
             if (CreatureSensors.FindNearestFire(world, cx, cy, radius, out int fireX, out int fireY))
             {
+                // Flee 可打断 Hunt：进逃命即清掉捕猎目标（离开 Hunt 态必须断开引用，防悬挂）。
+                creature.HuntTarget = null;
                 // 逃命优先：朝**最近**那团火的反方向飞（取最近而非扫描序先见者，理由同 RabbitBrain）。
                 if (fireX > cx)
                 {
@@ -159,6 +211,12 @@ namespace TapTap2026.Simulation
                 return;
             }
 
+            if (creature.AiState == StateHunt)
+            {
+                ThinkHunt(creature, creatures);
+                return;
+            }
+
             if (creature.AiState == StateFly)
             {
                 ThinkFly(creature, creatures, world, cx);
@@ -181,13 +239,25 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>空中巡航：墙感知换向（水平）+ 高度带 / 降落（竖直）。</summary>
+        /// <summary>空中巡航：墙感知换向（水平）+ 随机目标高度的上下巡航 / **计时降落树叶 / 树干**（地面不落；竖直，见
+        /// <c>docs/plan-bird-ai.md</c> §12 / §17）。</summary>
         private static void ThinkFly(Creature creature, CreatureWorld creatures, ParticleWorld world, int cx)
         {
             // 已落地（主动降落完成）→ 转栖息并摇下一次起飞计时。
             if (creature.IsGrounded)
             {
                 EnterPerched(creature, creatures);
+                return;
+            }
+
+            // 捕食触发：**只有**视野内真有猎物时才摇 1/HuntDenominator 的骰——命中即转 Hunt。
+            // 视野内无猎物则连骰子都不摇（本特性因此不改变无猎物场景的随机流，既有鸟测试逐位不变）。
+            // 注意 `&&` 的短路：TryDetectPrey 为假时 NextInt 不会被求值。
+            if (TryDetectPrey(creature, creatures, out Creature prey)
+                && creatures.NextInt(HuntDenominator) == 0)
+            {
+                EnterHunt(creature, prey, creatures);
+                ThinkHunt(creature, creatures);
                 return;
             }
 
@@ -207,41 +277,201 @@ namespace TapTap2026.Simulation
                 creature.IntentVx = newDir * FlySpeed;
             }
 
-            // 降落：巡航计时归零且正下方 LandProbeCells 格内有合格栖息面 ⇒ 停止水平、下压直到落地。
+            // 降落：巡航计时归零且正下方 LandProbeCells 格内有**可降落的树**（树叶 / 树干）⇒ 停止水平、下压直到落地。
+            // 地面虽然可栖（perchable = true）但不算树 ⇒ 不落（v7，见 docs/plan-bird-ai.md §17）。
             if (creature.StateTicksLeft <= 0)
             {
                 if (CreatureSensors.ProbeSurfaceBelow(
-                        world, cx, footRow - 1, LandProbeCells, out _, out bool perchable)
-                    && perchable)
+                        world, cx, footRow - 1, LandProbeCells, out _, out bool perchable, out bool foliage)
+                    && perchable && foliage)
                 {
                     creature.IntentVx = 0f;
                     creature.IntentVy = -FlyVSpeed;
                     return;
                 }
 
-                // 下方没有合格落点：重置短计时继续巡航找落点（不消耗额外随机数）。
+                // 下方没有树：重置短计时继续巡航找落点（不消耗额外随机数）——无树的图上鸟因此永不落地。
                 creature.StateTicksLeft = LandRetryTicks;
             }
 
-            // 高度带：探正下方第一个可栖面 / 水（扫到世界底视为到底，探测范围即世界高）。
-            if (CreatureSensors.ProbeSurfaceBelow(
-                    world, cx, footRow - 1, world.Height, out int surfaceRow, out _))
+            // 天花板是硬边界：优先于高度带，无条件下压，并把目标收敛到下限（不摇骰）。
+            if (creature.Y > world.Height - CeilingMarginCells)
             {
-                int altitude = (footRow - 1) - surfaceRow;
-                if (altitude < MinAltitudeCells)
-                {
-                    creature.IntentVy = FlyVSpeed;
-                    return;
-                }
+                creature.TargetAltitudeCells = MinAltitudeCells;
+                creature.IntentVy = -FlyVSpeed;
+                return;
             }
 
-            if (creature.Y > world.Height - CeilingMarginCells)
+            // 高度带（v3，见 docs/plan-bird-ai.md §12）：正下方第一个可栖面 / 水 = 高度基准
+            //（基准**含地面与水**，不随 §17 的降落口径收窄，否则带宽在地面上无处安放）；
+            // 扫到世界底仍无基准 ⇒ 悬停（与 v2 一致，不摇骰）。
+            if (!CreatureSensors.ProbeSurfaceBelow(
+                    world, cx, footRow - 1, world.Height, out int surfaceRow, out _, out _))
+            {
+                creature.IntentVy = 0f;
+                return;
+            }
+
+            int altitude = (footRow - 1) - surfaceRow;
+            // 上限自适应天花板（§18）：目标必须能在 Y <= 世界高 − CeilingMarginCells 的净空内达到，
+            // 否则摇到不可达目标就会「爬顶 -> 天花板分支把目标重置为下限 -> 砸回带底」地反复抖。
+            int maxAltitude = Max(
+                MinAltitudeCells,
+                Min(MaxAltitudeCells, world.Height - CeilingMarginCells - 1 - surfaceRow));
+            // 目标无效（含新实体默认 0 / 超出当前净空）或已达成 ⇒ 重摇 ∈ [Min, maxAltitude]。
+            int targetAltitude = creature.TargetAltitudeCells;
+            if (targetAltitude < MinAltitudeCells
+                || targetAltitude > maxAltitude
+                || altitude == targetAltitude)
+            {
+                targetAltitude = MinAltitudeCells + creatures.NextInt(maxAltitude - MinAltitudeCells + 1);
+                creature.TargetAltitudeCells = targetAltitude;
+            }
+
+            if (altitude < targetAltitude)
+            {
+                creature.IntentVy = FlyVSpeed;
+                return;
+            }
+
+            if (altitude > targetAltitude)
             {
                 creature.IntentVy = -FlyVSpeed;
                 return;
             }
 
-            creature.IntentVy = 0f; // 带内悬停
+            creature.IntentVy = 0f; // 重摇恰好抽到当前高度：悬停一个思考帧，下帧再摇
+        }
+
+        /// <summary>视野扫描：在 <paramref name="creatures"/> 里找**最近的**猎物（兔 / 鱼）。按生成序扫描，
+        /// 只有严格更近才替换 ⇒ 距离平手时保留先生成者（生成序小者）。纯只读、零分配、不消耗随机流。</summary>
+        /// <param name="creature">观察者（鸟）。</param>
+        /// <param name="creatures">所属动物世界。</param>
+        /// <param name="nearest">命中的最近猎物；未命中为 null。</param>
+        /// <returns>视野 <see cref="HuntDetectCells"/> 格内存在猎物时 true。</returns>
+        private static bool TryDetectPrey(Creature creature, CreatureWorld creatures, out Creature nearest)
+        {
+            const float detectSq = HuntDetectCells * HuntDetectCells;
+            nearest = null;
+            float bestSq = 0f;
+            bool found = false;
+
+            int count = creatures.Count;
+            for (int i = 0; i < count; i++)
+            {
+                Creature other = creatures.Creatures[i];
+                if (other == null || ReferenceEquals(other, creature) || !other.Alive)
+                {
+                    continue;
+                }
+
+                if (!(other is RabbitCreature) && !(other is FishCreature))
+                {
+                    continue;
+                }
+
+                float sq = DistanceSquared(creature, other);
+                if (sq <= detectSq && (!found || sq < bestSq))
+                {
+                    bestSq = sq;
+                    nearest = other;
+                    found = true;
+                }
+            }
+
+            return found;
+        }
+
+        /// <summary>进入 Hunt：锁定目标、写超时计时（<see cref="Creature.StateTicksLeft"/> 复用为追击超时），
+        /// 并在**锁定这一刻**摇一次死亡骰锁存到 <see cref="Creature.HuntKillLatched"/>
+        /// （v5，见 <c>docs/plan-bird-ai.md</c> §14）——之后追击动作不变、接触时由运动层只读锁存结算。</summary>
+        private static void EnterHunt(Creature creature, Creature prey, CreatureWorld creatures)
+        {
+            creature.AiState = StateHunt;
+            creature.HuntTarget = prey;
+            creature.StateTicksLeft = HuntTimeoutTicks;
+            // 死亡骰：锁定目标时摇一次并锁存，之后追击动作不变、接触时按锁存结果结算。
+            // 分母 <= 1 ⇒ 必杀且不摇骰（保持「必死」物种的随机流不变）；骰子放在思考帧，守住
+            // 「动物随机流只在思考帧消耗」的纪律，运动层因此零随机数依赖。
+            creature.HuntKillLatched = prey.HuntDeathDenominator <= 1
+                || creatures.NextInt(prey.HuntDeathDenominator) == 0;
+        }
+
+        /// <summary>Hunt 态思考帧：先判撤离 / 放弃，否则重瞄目标转向。
+        /// 判据顺序即语义——「目标已空」只可能来自运动层 ⑥b 刚把它咬死，所以先判它并走**撤离**出口。</summary>
+        private static void ThinkHunt(Creature creature, CreatureWorld creatures)
+        {
+            Creature target = creature.HuntTarget;
+
+            // 运动层刚在本帧 ⑥b 把目标咬死（HuntTarget 已被清空）⇒ 撤离：攻击完就飞走，不停留。
+            if (target == null)
+            {
+                ExitHunt(creature, creatures, retreat: true);
+                return;
+            }
+
+            // 目标已死 / 已被移出世界 ⇒ 放弃。
+            if (!target.Alive || !Contains(creatures, target))
+            {
+                ExitHunt(creature, creatures, retreat: false);
+                return;
+            }
+
+            // 超时（<see cref="HuntTimeoutTicks"/>）或追丢（逃出 <see cref="HuntAbortCells"/>）⇒ 放弃。
+            if (creature.StateTicksLeft <= 0 || DistanceSquared(creature, target) > HuntAbortCells * HuntAbortCells)
+            {
+                ExitHunt(creature, creatures, retreat: false);
+                return;
+            }
+
+            // 追击转向：水平朝目标所在列（同列保持原方向），竖直按目标高低下压 / 缓升。
+            int targetCol = FloorToInt(target.X);
+            int selfCol = FloorToInt(creature.X);
+            if (targetCol > selfCol)
+            {
+                creature.IntentVx = HuntSpeed;
+            }
+            else if (targetCol < selfCol)
+            {
+                creature.IntentVx = -HuntSpeed;
+            }
+
+            creature.IntentVy = target.Y < creature.Y ? -HuntDiveSpeed : FlyVSpeed * 0.5f;
+        }
+
+        /// <summary>离开 Hunt 态的唯一出口：回 Fly、清目标（防悬挂）、摇新巡航计时（与起飞同口径）。
+        /// <paramref name="retreat"/> 为真（刚击杀的撤离）时立刻向上冲 <c>IntentVy = FlyVSpeed</c>（不停留）；
+        /// 为假（放弃）时不起飞冲，<c>IntentVy = 0</c> 交给高度带接管。</summary>
+        private static void ExitHunt(Creature creature, CreatureWorld creatures, bool retreat)
+        {
+            creature.HuntTarget = null;
+            creature.HuntKillLatched = false; // 复位命中锁存，防残留影响下一次追击
+            creature.AiState = StateFly;
+            creature.StateTicksLeft = CruiseTicksMin + creatures.NextInt(CruiseTicksRange);
+            creature.IntentVy = retreat ? FlyVSpeed : 0f;
+        }
+
+        /// <summary>目标是否仍在世界里（针对「被移除 ⇒ 放弃」这一条；正常死亡在移除前 <see cref="Creature.Alive"/> 即为假）。</summary>
+        private static bool Contains(CreatureWorld creatures, Creature target)
+        {
+            int count = creatures.Count;
+            for (int i = 0; i < count; i++)
+            {
+                if (ReferenceEquals(creatures.Creatures[i], target))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>两实体**碰撞盒中心**的欧氏距离平方（省一次开方）。触发视野与放弃判据共用本口径。</summary>
+        private static float DistanceSquared(Creature a, Creature b)
+        {
+            float dx = b.X - a.X;
+            float dy = (b.Y + b.Height * 0.5f) - (a.Y + a.Height * 0.5f);
+            return (dx * dx) + (dy * dy);
         }
 
         /// <summary>进入 Fly：随机水平方向、向上起飞、摇巡航计时（≈10~30 秒）。</summary>
@@ -287,6 +517,18 @@ namespace TapTap2026.Simulation
         {
             int truncated = (int)value;
             return value < truncated ? truncated - 1 : truncated;
+        }
+
+        /// <summary>两整数取小（与 <c>FishBrain.Min</c> 同做法：手写以保持决策路径零 UnityEngine / 零 System 依赖）。</summary>
+        private static int Min(int a, int b)
+        {
+            return a < b ? a : b;
+        }
+
+        /// <summary>两整数取大（同 <see cref="Min"/>：手写以守住决策路径的零依赖）。</summary>
+        private static int Max(int a, int b)
+        {
+            return a > b ? a : b;
         }
     }
 }

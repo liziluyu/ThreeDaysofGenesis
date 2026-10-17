@@ -46,12 +46,13 @@
 
 `SoundController`：每条音频一条独立循环声床（与 `_clips` 下标一一对应、惰性建源、永久复用）+ 一个一次性音效源。`SetAmbience(文件名, 目标响度)`/`StopAmbience(文件名)` 只作用点名声床（水火同响）；`PlayOneShot` 走独立 `loop=false` 声源、累计 `OneShotPlayCount`。查询 `TargetLoudness`/`CurrentLoudness`/`IsPlaying`/`FindClip`（最后一段、去扩展名、大小写不敏感，未知名只警告一次）。`ClampDeltaTime`（上限 0.25s）防异常 dt 跳变；纯数学 `NextVolume`/`MapLoudness`/`Ema` 公开静态供各驱动复用。高速模式整层静音（见上）：目标响度照记、退出后原样淡入。`OnDisable` 归零目标并 `StopAllSources` 硬停、`OnDestroy` 销毁自建子物体；声源一律 2D + `HideFlags.DontSave`。
 
-四个声音驱动（每帧读**帧快照的 `AudioFrame`** → `SetAmbience`/`PlayOneShot`，`Pump(frame)` 公开供测试脱离帧循环驱动）：
+五个声音驱动（每帧读**帧快照的 `AudioFrame` / `CreatureFrame`** → `SetAmbience`/`PlayOneShot`，`Pump(frame)` 公开供测试脱离帧循环驱动）：
 
 - `LiquidFlowSoundDriver`：`frames.Audio.LiquidMovingRatio` → 死区 0.15 + 滞回 0.03 → 比例→响度（满响 0.6）→ EMA 0.25s。
 - `FireSoundDriver`：`frames.Audio.FireCount` 火格数（不是比例）→ `MapLoudness(0..40)` → EMA 0.25s。
 - `LightningSoundDriver`：`frames.Audio.LightningCreated > 0` 就 `PlayOneShot` 一声（created 是格数——一次起爆几十格，故一帧最多一声）；按帧**身份 + 序号**去重，同一帧读两次也只响一次。
 - `FallingSandSoundDriver`：`frames.Audio.SolidMovingCount` 绝对运动格数 → `MapLoudness(0..40)`。**无 EMA/滞回**——固体落地即静止、无噪声底；口径 = Solid 且非 Organic（落叶/种子不触发）。
+- `AnimalSoundDriver`（动物声音，§16）：**按物种存在与否**间歇放一次性音——每帧 `for` 遍历 `frames.Creatures` 的物种字段只判「该物种在不在场」（不读活世界），每物种一个倒计时，到点 `PlayOneShot(idleClip, 音量)` 并**重摇** `[min, max]` 间隔（间歇而非节拍器）；物种消失即解除武装（重现要等完整间隔）。出生 / 死亡事件读 `frames.Audio` 的每物种计数（世界侧 `ConsumeEvents` 由帧采集抽干，**每物种每路每帧最多一声**，同帧死 5 只折叠成一声）——但**出生 / 死亡声默认静音**：`spawnClip`/`deathClip` 留空即该路不出声（素材现只用于闲聊），填了文件名才启用。**自带一条 xorshift32**（不碰粒子 / 动物世界的随机流）；高速静音期间连骰子都不摇，事件计数照常积压、退出后补一声。驱动上线前的出生不补发（第一帧只用于建立观察）。
 
 **运动类信号在陈旧帧上按 0 处理**（**同一帧对象且序号没变** = 自上次读取以来没有新发布，例如暂停中不发布）：与旧版「每帧读后清账 ⇒ 读到 0」逐帧同义，因此死区 / 滞回 / EMA 的既有行为不变；火焰按**存量**口径沿用上次读到的值（火格数不是本帧增量）。新鲜度判定必须**帧身份 + 序号**一起看：帧槽会回收复用，而每个发布器的 `Sequence` 都从 1 开始，只比序号会把别的发布器（别的世界 / 测试里的第二个世界）的第 1 帧误判成陈旧。
 
