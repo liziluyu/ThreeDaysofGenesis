@@ -1,6 +1,6 @@
 # 动物实体层（Creatures）
 
-`Assets/Scripts/Simulation/Creatures/`，与粒子世界并列、同线程、逻辑帧 20 Hz。架构与数值的权威文档是 **`docs/design-creature-ai.md`**；生态扩展计划见 `docs/plan-creature-ecology.md`、鸟方案见 `docs/plan-bird-ai.md`。
+`Assets/Scripts/Simulation/Creatures/`，与粒子世界并列、同线程、逻辑帧 20 Hz。架构与数值的权威文档是 **`docs/design-creature-ai.md`**；生态扩展计划见 `docs/plan-creature-ecology.md`、鸟方案见 `docs/plan-bird-ai.md`、**繁殖方案见 `docs/plan-creature-reproduction.md`**。
 
 ## 骨架
 
