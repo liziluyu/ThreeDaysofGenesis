@@ -35,7 +35,7 @@ namespace TapTap2026.Simulation
     /// 碰撞盒跨度 <c>[X − Width/2, X + Width/2] × [Y, Y + Height]</c>，单位 = 格；
     /// 世界坐标与格坐标**同一套数值**（与渲染取景约定一致，无单位换算）。</para>
     /// <para><b>对世界只读：</b>物理路径（<see cref="StepPhysics"/>）只调用 <see cref="CreatureTerrain"/>
-    /// 的查询，绝不写世界。未来的写行为（打洞 / 吃草）**必须**走
+    /// 的查询，绝不写世界。进食（兔子吃草 / 花、鱼吃水草、鸟吃生物质）与死亡物质化**必须**走
     /// <see cref="ParticleWorld.Set"/> / <see cref="ParticleWorld.Clear"/> / <see cref="ParticleWorld.SetPhase"/>，
     /// 让粒子侧看得见这次改动（否则世界账目会悄悄失衡）。</para>
     /// <para><b>不消耗世界随机流：</b>动物用自己的 <see cref="CreatureWorld.NextUInt"/>；
@@ -223,13 +223,17 @@ namespace TapTap2026.Simulation
         /// <summary>进食冷却（逻辑帧）：进食后禁止立即再次进食的剩余帧数，运动层每帧递减到 0 为止。</summary>
         public int FeedingCooldownTicks;
 
-        /// <summary>当前食物目标格 x；<see cref="NoFoodTarget"/> 表示无目标。仅物种 Brain 读写。</summary>
+        /// <summary>当前食物目标格 x；<see cref="NoFoodTarget"/> 表示无目标。仅物种 Brain 读写
+        /// （兔子用于草 / 花，鸟用于生物质）。</summary>
         public int FoodTargetX;
 
-        /// <summary>当前食物目标格 y；<see cref="NoFoodTarget"/> 表示无目标。仅物种 Brain 读写。</summary>
+        /// <summary>当前食物目标格 y；<see cref="NoFoodTarget"/> 表示无目标。仅物种 Brain 读写
+        /// （兔子用于草 / 花，鸟用于生物质）。</summary>
         public int FoodTargetY;
 
-        /// <summary>连续无法接近 / 找不到食物目标的思考帧数，超过 <see cref="RabbitBrain.FoodTargetFailLimit"/> 即放弃目标。</summary>
+        /// <summary>连续无法接近 / 找不到食物目标的思考帧数，超过物种 Brain 的失败上限即放弃目标
+        /// （兔子 <see cref="RabbitBrain.FoodTargetFailLimit"/> 后回 Wander；鸟 <see cref="BirdBrain.FoodTargetFailLimit"/>
+        /// 后丢弃目标并重扫最近的生物质格）。</summary>
         public int FoodTargetFailTicks;
 
         /// <summary>本实体被 <see cref="Kill"/> 标注的死因，仅供 <see cref="CreatureWorld"/> 清扫时读取。</summary>

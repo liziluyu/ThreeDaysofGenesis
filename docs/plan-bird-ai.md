@@ -1,6 +1,6 @@
 # 鸟（第三物种）AI 设计与实施计划
 
-> 2026-10-14 用户批准开工。决策记录：**a = 接受「1 源像素 = 1 格」惯例**（鸟视觉上是大型动物，与兔/鱼同风格，不上按物种像素尺度）；**b = 栖息面含树叶 / 树干**（选 2：地形从「挡/穿」二元变三态，见 §3）；**c = v1 不进食**（选 1：无饥饿、不饿死）；**d = 帧序由实现时读图自判**（选 1）。
+> 2026-10-14 用户批准开工。决策记录：**a = 接受「1 源像素 = 1 格」惯例**（鸟视觉上是大型动物，与兔/鱼同风格，不上按物种像素尺度）；**b = 栖息面含树叶 / 树干**（选 2：地形从「挡/穿」二元变三态，见 §3）；**c = v1 不进食**（选 1：无饥饿、不饿死；**已被 §19 v9 取代**：饥饿时先吃生物质、无生物质再捕猎，仍不饿死）；**d = 帧序由实现时读图自判**（选 1）。
 
 ## 1. 目标与非目标
 
@@ -419,3 +419,53 @@ maxAltitude = Max(MinAltitudeCells, Min(MaxAltitudeCells, 世界高 − CeilingM
 3. **捕食只在低空**:猎物在地面、把鸟钉在 `altitude = 40` ⇒ 视野内无猎物(不进入 Hunt);把鸟降到 `altitude = 20` ⇒ 预算内进入 Hunt。
 4. **高处不落树**:冠顶在上方 `LandProbeCells` 之外 ⇒ 不降落(与 §17 一致)。
 5. 既有全组回归:§12 八条高度带、§17 只落树 3 条、捕食死亡骰、确定性、天花板压制。
+
+## 19. v9 饥饿时先食生物质、无生物质再捕猎(2026-10-17 用户指定)
+
+**需求:** 世界维护一个生物质数值(产生 / 消失时同步更新);鸟饥饿时先检查世界有没有生物质,有就**食用**生物质;世界没有生物质时才回到既有捕猎逻辑。
+
+### 19.1 世界侧:生物质存量
+
+- `ParticleWorld.BiomassCount`(int,只读,O(1)) = 当前生物质格数。
+- 记账复用既有 `ParticleCountMonitor`(`world.Counts`):`Set` / `SetWithShade` / `SetPhase` 在类型替换时差分,`Clear` 走 `Set`,`Swap` 不改变任何类型存量。**不新增第二份逐格计数、不逐帧扫描**。
+- 构造时从类型表解析 `BiomassParticle` 的 typeId(自定义隔离类型表也可用;表里没有该类型则恒 0),属性读 `_counts.Count(该 id)`。
+- 产生路径:死亡物质化 `SetWithShade`;消失路径:腐败 `SetPhase(Humus)` / `Clear`、被覆盖、鸟进食 `Clear`——全部自动反映。
+
+### 19.2 鸟侧:状态与数值
+
+`BirdBrain` 状态号**只追加**(0..3 不动):
+
+| 状态 | 值 | 语义 |
+|---|---:|---|
+| `StateSeekFood` | 4 | 朝最近的生物质格飞行 |
+| `StateEat` | 5 | 停住并清除邻格一格生物质 |
+
+常量(集中在 `BirdBrain`):`HungryThreshold = 600`(30 秒)、`FoodRestoreTicks = 420`、`FeedingCooldown = 20`、`FoodDetectCells = 24`(局部圆盘,与捕食视野同量级)、`EatRangeCells = 1`、`FoodTargetFailLimit = 40`。鸟仍 `StarvesWithoutFood = false`——本次不新增饿死,饥饿只作为觅食优先级。
+
+### 19.3 优先级与流程
+
+```text
+落水自救 > 火焰逃命 > 已提交的 Hunt > 饥饿且世界有生物质? 觅食 : 既有 Hunt / Fly / Perched
+```
+
+- 已在 `StateHunt`:照旧打完这一架,不因饥饿中断;击杀后生物质出现,下一次思考再进入觅食。
+- 饥饿(`HungerTicks >= HungryThreshold` 且冷却为 0)且 `world.BiomassCount > 0`:进入生物质觅食,**不摇捕食触发骰**。
+- 饥饿但 `world.BiomassCount == 0`:走既有捕猎路径(随机流行为与 v8 一致)。
+- 生物质觅食:目标失效/无目标时用 `CreatureSensors.FindNearestBiomass`(半径 24、固定扫描序、取最近)重扫;进入 `EatRangeCells` 转 Eat;否则水平朝目标列、竖直朝目标行(用 `FlySpeed` / `FlyVSpeed`)飞行。
+- 若世界有生物质但 24 格内没有:继续巡航搜索,并**禁用捕食触发与降落**(全局门控:有生物质就不捕猎),直到漂到目标附近或世界生物质归零。
+- Eat 按固定顺序(正下→正前→正上→左→右)找第一格生物质,`world.Clear` 一格;恢复 `FoodRestoreTicks`、置 `FeedingCooldown`、清目标,经 `EnterFly` 起飞离开。
+- 目标连续 40 思考帧不可达:清目标并重扫,不卡死在同一格。
+- 不再处于可觅食条件(不饿 / 冷却中 / 世界生物质已归零)时,`SeekFood` / `Eat` 一律复位到 Fly,避免状态分派把它误当 Perched。
+
+### 19.4 确定性与写入
+
+- 觅食只在 `ShouldThink` 放行的思考帧执行;扫描只读、零分配、不消耗随机流。
+- 鸟进食的唯一世界写入是 `world.Clear`;不直接改 `_cells`。生物质不带 Organic、Clear 到空气也不抽 shade ⇒ **这次写入不消耗世界随机流**。
+- `ThinkFly` 仅为搜索态增加可选 `allowHunt` / `allowLanding` 参数(默认 true),既有调用与无生物质路径逐位不变。
+
+### 19.5 验收(测试)
+
+1. `ParticleWorld.BiomassCount`:Set/SetWithShade 产生递增、Set/SetPhase/Clear 消失递减、Swap 不变。
+2. 饥饿 + 世界有生物质 + 视野内同时有猎物:鸟吃生物质、全程不进 Hunt(生物质优先)。
+3. 饥饿 + 世界无生物质 + 视野内有猎物:进入 Hunt(回退捕猎)。
+4. 不饥饿 + 旁边有生物质:不进入 SeekFood/Eat,生物质保留。

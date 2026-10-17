@@ -494,6 +494,45 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, CountType(coveredHumus, ParticleIds.Humus), "覆盖腐殖质不得再产出第二格腐殖质");
         }
 
+        // ============================== 世界存量 ==============================
+
+        /// <summary>
+        /// <see cref="ParticleWorld.BiomassCount"/>：空世界为 0；<see cref="ParticleWorld.Set"/> /
+        /// <see cref="ParticleWorld.SetWithShade"/> 写入生物质递增；换成非生物质（Set / SetPhase）递减；
+        /// <see cref="ParticleWorld.Clear"/> 递减；<see cref="ParticleWorld.Swap"/> 不改变任何类型的存量。
+        /// 计数来自 <see cref="ParticleCountMonitor"/> 的增量记账，不需要逐帧扫描。
+        /// </summary>
+        [Test]
+        public void BiomassCount_TracksWorldStock()
+        {
+            ParticleWorld world = new ParticleWorld(8, 8, 20261011u);
+            Assert.AreEqual(0, world.BiomassCount, "空世界没有生物质");
+
+            Assert.IsTrue(world.SetWithShade(1, 1, Biomass, 3), "SetWithShade 应写入生物质");
+            Assert.AreEqual(1, world.BiomassCount, "SetWithShade 写入生物质应 +1");
+
+            Assert.IsTrue(world.Set(2, 1, Biomass));
+            Assert.AreEqual(2, world.BiomassCount, "Set 写入生物质应 +1");
+
+            Assert.IsTrue(world.Set(2, 1, ParticleIds.Stone));
+            Assert.AreEqual(1, world.BiomassCount, "Set 换成非生物质应 −1");
+
+            Assert.IsTrue(world.SetPhase(1, 1, ParticleIds.Stone));
+            Assert.AreEqual(0, world.BiomassCount, "SetPhase 换成非生物质应 −1");
+
+            Assert.IsTrue(world.Set(3, 2, Biomass));
+            Assert.AreEqual(1, world.BiomassCount);
+            Assert.IsTrue(world.Clear(3, 2));
+            Assert.AreEqual(0, world.BiomassCount, "Clear（= Set 空气）应 −1");
+
+            Assert.IsTrue(world.Set(4, 4, Biomass));
+            Assert.IsTrue(world.Set(5, 4, ParticleIds.Stone));
+            Assert.AreEqual(1, world.BiomassCount);
+            Assert.IsTrue(world.Swap(4, 4, 5, 4));
+            Assert.AreEqual(Biomass, world.GetCell(5, 4).typeId, "Swap 应把生物质换到另一端");
+            Assert.AreEqual(1, world.BiomassCount, "Swap 只交换两格，不改变存量");
+        }
+
         // ============================== 渲染映射 ==============================
 
         /// <summary>

@@ -19,9 +19,12 @@ namespace TapTap2026.Simulation
     /// <para><b>栖息：</b><see cref="PerchesOnFoliage"/> = true ⇒ 向下支撑扫描把树叶 / 树干也算作可栖面，
     /// 鸟能停在树冠叶顶；但叶子不挡水平 / 上升（<see cref="CreatureTerrain.IsSolid"/> 不变），
     /// 因此鸟**水平飞穿树冠不受阻**。</para>
-    /// <para><b>行为：</b>决策全在静态 <see cref="BirdBrain"/>（Perched / Fly / Flee），本类只负责用
+    /// <para><b>行为：</b>决策全在静态 <see cref="BirdBrain"/>（Perched / Fly / Flee / Hunt / SeekFood / Eat），本类只负责用
     /// <see cref="Creature.ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 飞行 / 致死门控）接到虚门上。</para>
-    /// <para><b>v1 非目标：</b>不进食（<see cref="StarvesWithoutFood"/> = false）、不繁殖、不筑巢。</para>
+    /// <para><b>进食：</b>饥饿时（<see cref="BirdBrain.HungryThreshold"/>）优先寻找并食用生物质
+    /// （<see cref="ParticleIds.Biomass"/>，经 <see cref="ParticleWorld.Clear"/> 清除一格）；世界没有生物质时
+    /// 回退到既有捕猎（Hunt）。<see cref="StarvesWithoutFood"/> = false ⇒ **不因饥饿而死**。</para>
+    /// <para><b>非目标：</b>不繁殖、不筑巢。</para>
     /// </remarks>
     public sealed class BirdCreature : Creature
     {
@@ -93,7 +96,7 @@ namespace TapTap2026.Simulation
             get { return false; }
         }
 
-        /// <summary>v1 不进食：不会因饥饿而死。</summary>
+        /// <summary>鸟不因饥饿而死：饥饿时先吃生物质，世界没有生物质则回退到捕猎（见 <see cref="BirdBrain"/>）。</summary>
         protected override bool StarvesWithoutFood
         {
             get { return false; }

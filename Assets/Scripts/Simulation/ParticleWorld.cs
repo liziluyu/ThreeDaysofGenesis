@@ -76,6 +76,13 @@ namespace TapTap2026.Simulation
         private readonly ParticleCountMonitor _counts;
         private readonly ParticleType[] _types;
 
+        /// <summary>
+        /// 类型表里 <see cref="BiomassParticle"/> 的 typeId（构造时解析一次；没有该类型时为
+        /// <see cref="ParticleRegistry.AirTypeId"/> = 0，空气不计入存量 ⇒ <see cref="BiomassCount"/> 恒 0）。
+        /// 刻意不读全局静态的 <see cref="ParticleIds.Biomass"/>：自定义类型表同样要能工作，且世界不依赖注册表状态。
+        /// </summary>
+        private readonly ushort _biomassTypeId;
+
         // ── 运动休眠（阶段 B）──
         // 候选位图：每 chunk 256 bit（ulong[4]），扁平一维；bit0 处理标记机制不变。
         // _candidates 收集「写入 / 温度脏」置位的待求值格；StepMotion 开始时与 _scanCandidates 互换，
@@ -214,6 +221,7 @@ namespace TapTap2026.Simulation
             _width = width;
             _height = height;
             _types = types;
+            _biomassTypeId = ResolveBiomassTypeId(types);
             _cells = new Cell[width * height];
             _humidity = new HumidityField(width, height);
             _heat = new HeatMap(width, height, _cells, types, _humidity);
@@ -430,6 +438,38 @@ namespace TapTap2026.Simulation
         public ParticleCountMonitor Counts
         {
             get { return _counts; }
+        }
+
+        /// <summary>
+        /// 当前世界的生物质（<see cref="BiomassParticle"/>）格数，O(1)。
+        /// </summary>
+        /// <remarks>
+        /// <para><b>自动跟随写入：</b>读数来自 <see cref="ParticleCountMonitor"/> 的增量记账——<see cref="Set"/> /
+        /// <see cref="SetWithShade"/> 写入生物质即 +1、把生物质换成别的类型即 −1；<see cref="SetPhase"/> 同样按
+        /// 旧 / 新类型差分；<see cref="Clear"/> 等价于 <see cref="Set"/>(x, y, AirTypeId)，因此递减走的也是这条路径。
+        /// <see cref="Swap"/> 只交换两格、不改变任何类型的存量，故**不改变**本值。不需要逐帧扫描。</para>
+        /// <para>生物质 typeId 在构造时从类型表解析（按行为类名 <c>BiomassParticle</c>，不读全局
+        /// <see cref="ParticleIds"/> 静态状态）；类型表里没有该类型时恒为 0。纯读：不消耗 RNG、不写格子、不写场。</para>
+        /// </remarks>
+        public int BiomassCount
+        {
+            get { return _counts.Count(_biomassTypeId); }
+        }
+
+        /// <summary>在类型表里找 <see cref="BiomassParticle"/> 的下标；没有则返回空气 id 0（不计存量）。</summary>
+        private static ushort ResolveBiomassTypeId(ParticleType[] types)
+        {
+            string biomassClassName = nameof(BiomassParticle);
+            for (int i = 1; i < types.Length; i++)
+            {
+                ParticleType entry = types[i];
+                if (entry != null && entry.ClassName == biomassClassName)
+                {
+                    return (ushort)i;
+                }
+            }
+
+            return ParticleRegistry.AirTypeId;
         }
 
         /// <summary>网格宽（格数）。</summary>

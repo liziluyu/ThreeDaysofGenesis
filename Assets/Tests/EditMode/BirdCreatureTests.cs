@@ -1892,5 +1892,100 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(entered, "低空（altitude 20）应在捕食预算内发现并进入 Hunt");
         }
+
+        // ============================== 生物质觅食（v9） ==============================
+
+        /// <summary>饥饿 + 世界有生物质 ⇒ 优先生物质、不捕猎：正下方一格生物质在第 10 个思考帧被清除，
+        /// 同列视野内的 Idle 兔子全程不诱发 Hunt（世界级门控）。</summary>
+        [Test]
+        public void Hungry_WithBiomass_EatsCell_AndPrefersBiomassOverPrey()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 20f, 7f);
+            world.SetWithShade(20, 6, Biomass, 0);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 20f, 1f);
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+            bird.HungerTicks = BirdBrain.HungryThreshold;
+
+            Assert.AreEqual(1, world.BiomassCount, "夹具应先有一格生物质");
+            bool enteredHunt = false;
+            for (int i = 0; i < 11; i++)
+            {
+                bird.X = 20f;
+                bird.Y = 7f;
+                prey.X = 20f;
+                prey.HungerTicks = 0; // 钉住饥饿：兔子不转入觅食移动
+                creatures.Step(world);
+                enteredHunt |= bird.AiState == BirdBrain.StateHunt;
+            }
+
+            Assert.IsFalse(enteredHunt, "世界仍有生物质时饥饿鸟不得进入 Hunt（即便视野里有猎物）");
+            Assert.AreEqual(0, world.BiomassCount, "第 10 个思考帧应吃掉正下方的生物质");
+            Assert.AreEqual(0, CountType(world, Biomass), "场上不应再剩生物质格");
+            Assert.Less(bird.HungerTicks, BirdBrain.HungryThreshold, "进食应恢复饥饿值");
+        }
+
+        /// <summary>无生物质的世界里饥饿鸟回退到既有捕猎：视野内的 Idle 兔子在捕食预算内诱发 Hunt。</summary>
+        [Test]
+        public void Hungry_WithoutBiomass_FallsBackToHunt()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 20f, 7f);
+            RabbitCreature prey = creatures.Spawn(new RabbitCreature(), world, 20f, 1f);
+            prey.AiState = RabbitBrain.StateIdle;
+            prey.StateTicksLeft = 100000;
+            bird.HungerTicks = BirdBrain.HungryThreshold;
+
+            bool entered = false;
+            for (int i = 0; i < BirdBrain.HuntTimeoutTicks * 10 && !entered; i++)
+            {
+                bird.X = 20f;
+                bird.Y = 7f;
+                prey.X = 20f;
+                prey.HungerTicks = 0; // 钉住饥饿：兔子保持 Idle、不移动
+                if (bird.AiState == BirdBrain.StateFly)
+                {
+                    bird.StateTicksLeft = 100000; // 不降落，保持巡航扫视野
+                }
+
+                creatures.Step(world);
+                entered = bird.AiState == BirdBrain.StateHunt;
+            }
+
+            Assert.AreEqual(0, world.BiomassCount, "本用例没有生物质");
+            Assert.IsTrue(entered, "世界没有生物质时饥饿鸟应回退到既有捕猎");
+        }
+
+        /// <summary>不饥饿的鸟不碰生物质：正下方一格生物质 100 帧后仍在，状态不是 SeekFood / Eat。</summary>
+        [Test]
+        public void NotHungry_DoesNotEatBiomass()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 20f, 7f);
+            world.SetWithShade(20, 6, Biomass, 0);
+            bird.HungerTicks = 0;
+
+            Assert.AreEqual(1, world.BiomassCount, "夹具应先有一格生物质");
+            for (int i = 0; i < 100; i++)
+            {
+                bird.X = 20f;
+                bird.Y = 7f;
+                Assert.AreNotEqual(BirdBrain.StateSeekFood, bird.AiState, $"第 {i} 帧不饥饿的鸟不该进入觅食");
+                Assert.AreNotEqual(BirdBrain.StateEat, bird.AiState, $"第 {i} 帧不饥饿的鸟不该进食");
+                creatures.Step(world);
+            }
+
+            Assert.AreEqual(1, world.BiomassCount, "不饥饿时生物质应原样保留");
+            Assert.AreEqual(1, CountType(world, Biomass), "生物质格数应仍为 1");
+            Assert.AreNotEqual(BirdBrain.StateSeekFood, bird.AiState);
+            Assert.AreNotEqual(BirdBrain.StateEat, bird.AiState);
+        }
     }
 }

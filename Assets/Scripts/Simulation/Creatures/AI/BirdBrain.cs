@@ -5,7 +5,8 @@ namespace TapTap2026.Simulation
     /// </summary>
     /// <remarks>
     /// <para><b>状态（<see cref="Creature.AiState"/>）：</b>0 = Perched（栖息）、1 = Fly（空中巡航）、
-    /// 2 = Flee（逃命）、3 = Hunt（捕食——随机袭击兔 / 鱼，见 <c>docs/plan-bird-ai.md</c> §11）。</para>
+    /// 2 = Flee（逃命）、3 = Hunt（捕食——随机袭击兔 / 鱼，见 <c>docs/plan-bird-ai.md</c> §11）、
+    /// 4 = SeekFood（生物质觅食）、5 = Eat（进食生物质）。</para>
     /// <para><b>节奏：</b>只应被 <see cref="Creature.ShouldThink"/> 放行后以 2 Hz 调用；RNG
     /// （<see cref="CreatureWorld.NextInt"/>）只在思考帧消耗。</para>
     /// <para><b>落水自救（最高优先级）：</b><see cref="Creature.IsSubmerged"/> 时只把 <c>IntentVy</c> 抬成
@@ -30,15 +31,26 @@ namespace TapTap2026.Simulation
     /// 地面虽可站但不算树，无树的图上鸟因此永不落地，下方没有树则重置一个 <see cref="LandRetryTicks"/> 短计时继续巡航找落点。</para>
     /// <para><b>Perched（栖息）：</b><c>IntentVx = IntentVy = 0</c>；计时（<see cref="PerchTicksMin"/> +
     /// [0, <see cref="PerchTicksRange"/>]）归零即起飞（随机水平方向 + <c>IntentVy = FlyVSpeed</c>）。</para>
-    /// <para><b>v1 非目标：</b>不进食、不繁殖、不筑巢、不做全局寻路。</para>
+    /// <para><b>v1 非目标：</b>不繁殖、不筑巢、不做全局寻路。</para>
+    /// <para><b>v9 生物质觅食：</b>饥饿（<see cref="HungryThreshold"/>）且冷却结束时，若世界还有生物质
+    /// （<see cref="ParticleWorld.BiomassCount"/> &gt; 0）就**只**找生物质——<see cref="StateSeekFood"/> 朝
+    /// 局部 <see cref="FoodDetectCells"/> 圆盘内最近的 <see cref="ParticleIds.Biomass"/> 飞，
+    /// 进入 <see cref="EatRangeCells"/> 内转 <see cref="StateEat"/>，下一思考帧按固定邻格序（正下、正前、正上、左、右）
+    /// 找到第一格并用 <see cref="ParticleWorld.Clear"/> 吃掉；不直接写 <c>Cells</c>。
+    /// 进食恢复 <see cref="FoodRestoreTicks"/> 饥饿帧并置 <see cref="FeedingCooldown"/> 冷却。
+    /// <b>全局门控：</b><see cref="ParticleWorld.BiomassCount"/> &gt; 0 时饥饿鸟**不进入 Hunt**（哪怕视野里有兔 / 鱼）；
+    /// 世界生物质耗尽后才回退到既有捕猎。鸟仍然 <see cref="Creature.StarvesWithoutFood"/> = false（不因饥饿而死）。</para>
     /// <para><b>Hunt（捕食，v2；死亡骰 v5）：</b>只在 Fly 态思考帧触发——视野 <see cref="HuntDetectCells"/> 格内
     /// （盒中心欧氏距离，与放弃判据同一口径）存在猎物（兔 / 鱼）才摇 <c>1 / <see cref="HuntDenominator"/></c>
     /// 的骰，命中即转 <see cref="StateHunt"/> 并锁定 <see cref="Creature.HuntTarget"/>；**视野内无猎物不摇骰**
-    /// （随机流不漂移）。**锁定目标的那一刻**再摇一次死亡骰（<c>1 / HuntDeathDenominator</c>）并锁存到
+    /// （随机流不漂移）。已提交的 Hunt **不因饥饿打断**（饥饿分支让位于 ThinkHunt）。**世界级门控**：
+    /// <see cref="ParticleWorld.BiomassCount"/> &gt; 0 时饥饿鸟的巡航搜索用
+    /// <c>ThinkFly(allowHunt: false)</c>，捕猎触发根本不求值。**锁定目标的那一刻**再摇一次死亡骰
+    /// （<c>1 / HuntDeathDenominator</c>）并锁存到
     /// <see cref="Creature.HuntKillLatched"/>（见 <c>docs/plan-bird-ai.md</c> §14）——追击动作不变，接触时由
     /// 运动层 ⑥b 段（AABB 重叠）**只读锁存**结算死活，运动层因此零随机数依赖，动物随机流仍只在思考帧消耗。
     /// 此后 Brain 看到「仍在本态但目标已空」即撤离回 Fly。放弃条件：目标死亡 / 移出世界、逃出 <see cref="HuntAbortCells"/>、
-    /// 超时 <see cref="HuntTimeoutTicks"/>。优先级 <b>落水自救 &gt; 火焰逃命（可打断 Hunt）&gt; Hunt &gt; Fly / Perched</b>——
+    /// 超时 <see cref="HuntTimeoutTicks"/>。优先级 <b>落水自救 &gt; 火焰逃命（可打断 Hunt）&gt; Hunt &gt; 生物质觅食 &gt; Fly / Perched</b>——
     /// 唯一的例外是「Hunt 态且目标是鱼」时豁免落水自救反射（鸟可以扎进水里叼鱼）。</para>
     /// </remarks>
     public static class BirdBrain
@@ -54,6 +66,30 @@ namespace TapTap2026.Simulation
 
         /// <summary>状态：捕食（追击 <see cref="Creature.HuntTarget"/>，见 §11）。</summary>
         public const byte StateHunt = 3;
+
+        /// <summary>状态：寻找生物质（朝局部最近的一格 <see cref="ParticleIds.Biomass"/> 飞）。</summary>
+        public const byte StateSeekFood = 4;
+
+        /// <summary>状态：进食生物质（停住并清除邻格一格生物质）。</summary>
+        public const byte StateEat = 5;
+
+        /// <summary>开始寻找生物质的饥饿阈值（逻辑帧，30 秒）。</summary>
+        public const int HungryThreshold = 600;
+
+        /// <summary>吃一格生物质恢复的饥饿帧数（与兔子吃草 / 花同值）。</summary>
+        public const int FoodRestoreTicks = 420;
+
+        /// <summary>两次进食之间的最小间隔（逻辑帧）。</summary>
+        public const int FeedingCooldown = 20;
+
+        /// <summary>生物质搜索半径（格）：局部圆盘扫描，与 <see cref="HuntDetectCells"/> 同量级。</summary>
+        public const int FoodDetectCells = 24;
+
+        /// <summary>可进食的格差范围：<c>|target − floor(pos)| ≤ 本值</c>（脚下 / 前方 / 左右）。</summary>
+        public const int EatRangeCells = 1;
+
+        /// <summary>目标连续不可接近的思考帧上限，超过即丢弃目标并重新扫描最近格。</summary>
+        public const int FoodTargetFailLimit = 40;
 
         /// <summary>水平加速度（格 / 逻辑帧²）。</summary>
         public const float Accel = 0.02f;
@@ -148,7 +184,8 @@ namespace TapTap2026.Simulation
         /// </summary>
         public const int BodyTopOffsetCells = CreatureArtData.Bird.MaxOpaqueRow - CreatureArtData.Bird.PivotRowPixels;
 
-        /// <summary>一次思考：落水自救 &gt; 威胁逃命 &gt; Hunt 捕食 &gt; Fly 巡航 &gt; Perched 栖息。</summary>
+        /// <summary>一次思考：落水自救 &gt; 威胁逃命 &gt; Hunt 捕食（不因饥饿打断）&gt; 饥饿时的生物质觅食
+        /// （世界仍有生物质）&gt; Fly 巡航 &gt; Perched 栖息。世界没有生物质时饥饿鸟回退到既有 Hunt。</summary>
         /// <param name="creature">思考的鸟。</param>
         /// <param name="creatures">所属动物世界（RNG 来源）。</param>
         /// <param name="world">粒子世界（只读感知）。</param>
@@ -213,8 +250,25 @@ namespace TapTap2026.Simulation
 
             if (creature.AiState == StateHunt)
             {
+                // 已提交的追击不因饥饿打断：击杀后下一次思考会看到尸体生物质。
                 ThinkHunt(creature, creatures);
                 return;
+            }
+
+            bool hungryAndReady = creature.HungerTicks >= HungryThreshold && creature.FeedingCooldownTicks == 0;
+            bool hasBiomass = world.BiomassCount > 0;
+            if (hungryAndReady && hasBiomass)
+            {
+                ThinkBiomass(creature, creatures, world, cx, cy);
+                return;
+            }
+
+            // 本帧没走生物质觅食（不饥饿 / 冷却中 / 世界已无生物质）：SeekFood / Eat 是必须复位的过渡态，
+            // 否则下面的状态分派会把它们当成 Perched（default 分支）。复位后继续既有状态机
+            //（Fly 走既有 Hunt 触发，Perched 沿用栖息逻辑）。
+            if (creature.AiState == StateSeekFood || creature.AiState == StateEat)
+            {
+                EnterFly(creature, creatures);
             }
 
             if (creature.AiState == StateFly)
@@ -241,7 +295,17 @@ namespace TapTap2026.Simulation
 
         /// <summary>空中巡航：墙感知换向（水平）+ 随机目标高度的上下巡航 / **计时降落树叶 / 树干**（地面不落；竖直，见
         /// <c>docs/plan-bird-ai.md</c> §12 / §17）。</summary>
-        private static void ThinkFly(Creature creature, CreatureWorld creatures, ParticleWorld world, int cx)
+        /// <param name="creature">思考的鸟。</param>
+        /// <param name="creatures">所属动物世界（RNG 来源）。</param>
+        /// <param name="world">粒子世界（只读感知）。</param>
+        /// <param name="cx">感知中心格 x。</param>
+        /// <param name="allowHunt">是否允许本帧摇捕食骰并转入 Hunt（默认 true，既有调用逐位不变）。
+        /// 饥饿且世界仍有生物质时为 false——「有生物质就不捕猎」的全局门控。</param>
+        /// <param name="allowLanding">是否允许计时降落（默认 true，既有调用逐位不变）。
+        /// 搜索生物质时为 false，避免半途落树中断觅食。</param>
+        private static void ThinkFly(
+            Creature creature, CreatureWorld creatures, ParticleWorld world, int cx,
+            bool allowHunt = true, bool allowLanding = true)
         {
             // 已落地（主动降落完成）→ 转栖息并摇下一次起飞计时。
             if (creature.IsGrounded)
@@ -253,7 +317,8 @@ namespace TapTap2026.Simulation
             // 捕食触发：**只有**视野内真有猎物时才摇 1/HuntDenominator 的骰——命中即转 Hunt。
             // 视野内无猎物则连骰子都不摇（本特性因此不改变无猎物场景的随机流，既有鸟测试逐位不变）。
             // 注意 `&&` 的短路：TryDetectPrey 为假时 NextInt 不会被求值。
-            if (TryDetectPrey(creature, creatures, out Creature prey)
+            if (allowHunt
+                && TryDetectPrey(creature, creatures, out Creature prey)
                 && creatures.NextInt(HuntDenominator) == 0)
             {
                 EnterHunt(creature, prey, creatures);
@@ -279,7 +344,7 @@ namespace TapTap2026.Simulation
 
             // 降落：巡航计时归零且正下方 LandProbeCells 格内有**可降落的树**（树叶 / 树干）⇒ 停止水平、下压直到落地。
             // 地面虽然可栖（perchable = true）但不算树 ⇒ 不落（v7，见 docs/plan-bird-ai.md §17）。
-            if (creature.StateTicksLeft <= 0)
+            if (allowLanding && creature.StateTicksLeft <= 0)
             {
                 if (CreatureSensors.ProbeSurfaceBelow(
                         world, cx, footRow - 1, LandProbeCells, out _, out bool perchable, out bool foliage)
@@ -341,6 +406,211 @@ namespace TapTap2026.Simulation
             }
 
             creature.IntentVy = 0f; // 重摇恰好抽到当前高度：悬停一个思考帧，下帧再摇
+        }
+
+        /// <summary>饥饿生物质觅食分支：已在 Eat 态则执行进食；否则统一走 SeekFood 决策。</summary>
+        /// <remarks>
+        /// 只有 <see cref="Think"/> 在「饥饿且冷却结束、且 <see cref="ParticleWorld.BiomassCount"/> &gt; 0」时进来，
+        /// 因此这里不需要再判饥饿 / 冷却。RNG 仍只在思考帧消耗（<see cref="EnterFly"/> 的两次抽取）。
+        /// </remarks>
+        private static void ThinkBiomass(
+            Creature creature, CreatureWorld creatures, ParticleWorld world, int cx, int cy)
+        {
+            if (creature.AiState == StateEat)
+            {
+                if (ThinkEatBiomass(creature, creatures, world))
+                {
+                    return;
+                }
+
+                // 邻格没有生物质（已被吃掉 / 被埋）：回 SeekFood，下一思考帧重新扫描。
+                creature.AiState = StateSeekFood;
+                creature.FoodTargetX = Creature.NoFoodTarget;
+                creature.FoodTargetY = Creature.NoFoodTarget;
+                return;
+            }
+
+            if (creature.AiState != StateSeekFood)
+            {
+                // 从 Fly / Perched 进入觅食：清掉旧目标，交给 ThinkSeekBiomass 统一扫描。
+                creature.AiState = StateSeekFood;
+                creature.FoodTargetX = Creature.NoFoodTarget;
+                creature.FoodTargetY = Creature.NoFoodTarget;
+                creature.FoodTargetFailTicks = 0;
+            }
+
+            ThinkSeekBiomass(creature, creatures, world, cx, cy);
+        }
+
+        /// <summary>
+        /// SeekFood 的每思考帧决策：目标失效则重扫；进入进食范围转 Eat；否则朝目标飞；
+        /// 连续 <see cref="FoodTargetFailLimit"/> 帧未达成即丢弃目标、重扫最近格（世界里还有生物质就不放弃觅食）。
+        /// </summary>
+        private static void ThinkSeekBiomass(
+            Creature creature, CreatureWorld creatures, ParticleWorld world, int cx, int cy)
+        {
+            if (!ResolveBiomassTarget(creature, world, cx, cy))
+            {
+                SearchWithoutTarget(creature, creatures, world, cx);
+                return;
+            }
+
+            // 最多走两遍：第二遍只发生在「失败计数超限 ⇒ 丢目标 + 重扫」之后，避免递归 / 死循环。
+            for (int attempt = 0; ; attempt++)
+            {
+                int tx = creature.FoodTargetX;
+                int ty = creature.FoodTargetY;
+                int feetX = FloorToInt(creature.X);
+                int feetY = FloorToInt(creature.Y);
+
+                if (Abs(tx - feetX) <= EatRangeCells && Abs(ty - feetY) <= EatRangeCells)
+                {
+                    creature.FoodTargetFailTicks = 0;
+                    creature.AiState = StateEat;
+                    // 停住：水平与竖直意图都清零。鸟的竖直意图是持续状态（FlyAccel 逼近），
+                    // 只清 IntentVx 的话下压 / 上抬会在进食思考间隔里继续生效、可能漂出进食范围。
+                    creature.IntentVx = 0f;
+                    creature.IntentVy = 0f;
+                    return;
+                }
+
+                creature.FoodTargetFailTicks++;
+                if (creature.FoodTargetFailTicks > FoodTargetFailLimit && attempt == 0)
+                {
+                    // 目标长期不可达（被埋 / 卡在墙后）：丢弃并重扫最近的生物质。
+                    creature.FoodTargetX = Creature.NoFoodTarget;
+                    creature.FoodTargetY = Creature.NoFoodTarget;
+                    creature.FoodTargetFailTicks = 0;
+                    if (!ResolveBiomassTarget(creature, world, cx, cy))
+                    {
+                        SearchWithoutTarget(creature, creatures, world, cx);
+                        return;
+                    }
+
+                    continue;
+                }
+
+                // 水平朝目标列；竖直以脚底行 ± EatRangeCells 为死区（范围内不产生竖直意图）。
+                if (tx > creature.X)
+                {
+                    creature.IntentVx = FlySpeed;
+                }
+                else if (tx < creature.X)
+                {
+                    creature.IntentVx = -FlySpeed;
+                }
+                else
+                {
+                    creature.IntentVx = 0f;
+                }
+
+                int footRow = FloorToInt(creature.Y);
+                if (ty > footRow + EatRangeCells)
+                {
+                    creature.IntentVy = FlyVSpeed;
+                }
+                else if (ty < footRow - EatRangeCells)
+                {
+                    creature.IntentVy = -FlyVSpeed;
+                }
+                else
+                {
+                    creature.IntentVy = 0f;
+                }
+
+                return;
+            }
+        }
+
+        /// <summary>
+        /// 确保 <see cref="Creature.FoodTargetX"/> / <see cref="Creature.FoodTargetY"/> 指向一格仍在界的生物质；
+        /// 目标无效时用 <see cref="CreatureSensors.FindNearestBiomass"/>（半径 <see cref="FoodDetectCells"/>）
+        /// 重扫，扫到即写入目标并清零失败计数。纯感知：不写世界、不消耗随机流。
+        /// </summary>
+        private static bool ResolveBiomassTarget(Creature creature, ParticleWorld world, int cx, int cy)
+        {
+            int tx = creature.FoodTargetX;
+            int ty = creature.FoodTargetY;
+            bool targetValid = tx != Creature.NoFoodTarget
+                && world.IsInBounds(tx, ty)
+                && world.GetCell(tx, ty).typeId == ParticleIds.Biomass;
+            if (targetValid)
+            {
+                return true;
+            }
+
+            if (!CreatureSensors.FindNearestBiomass(world, cx, cy, FoodDetectCells, out tx, out ty))
+            {
+                creature.FoodTargetX = Creature.NoFoodTarget;
+                creature.FoodTargetY = Creature.NoFoodTarget;
+                return false;
+            }
+
+            creature.FoodTargetX = tx;
+            creature.FoodTargetY = ty;
+            creature.FoodTargetFailTicks = 0;
+            return true;
+        }
+
+        /// <summary>
+        /// 视野圆盘内已没有生物质：栖息 / 贴地的鸟给起飞意图离地搜索；已在空中则继续巡航，
+        /// 但**禁止捕猎与降落**（世界仍有生物质 ⇒ 饥饿鸟不触发 Hunt，也不该半途落树中断觅食）。
+        /// </summary>
+        private static void SearchWithoutTarget(
+            Creature creature, CreatureWorld creatures, ParticleWorld world, int cx)
+        {
+            if (creature.IsGrounded)
+            {
+                EnterFly(creature, creatures);
+                return;
+            }
+
+            ThinkFly(creature, creatures, world, cx, allowHunt: false, allowLanding: false);
+        }
+
+        /// <summary>
+        /// Eat 的每思考帧决策：停住，按固定枚举顺序在邻格找第一格生物质并清除；找不到返回 false
+        /// （调用方回 SeekFood 重扫）。顺序写死（正下、正前、正上、左、右），与 <see cref="RabbitBrain"/> 同序。
+        /// </summary>
+        private static bool ThinkEatBiomass(Creature creature, CreatureWorld creatures, ParticleWorld world)
+        {
+            creature.IntentVx = 0f;
+            creature.IntentVy = 0f;
+
+            int cx = FloorToInt(creature.X);
+            int cy = FloorToInt(creature.Y);
+            int front = creature.Facing >= 0 ? 1 : -1;
+
+            return TryEatBiomass(creature, creatures, world, cx, cy - 1)       // 正下方
+                || TryEatBiomass(creature, creatures, world, cx + front, cy)   // 正前方（朝向侧）
+                || TryEatBiomass(creature, creatures, world, cx, cy + 1)       // 正上方
+                || TryEatBiomass(creature, creatures, world, cx - 1, cy)       // 左
+                || TryEatBiomass(creature, creatures, world, cx + 1, cy);      // 右
+        }
+
+        /// <summary>若 <c>(gx,gy)</c> 是生物质则清除一格、恢复饥饿、置冷却、清目标并起飞，返回 true。
+        /// <see cref="ParticleWorld.Clear"/> 是吃生物质的**唯一**写入路径（不直接改 <c>Cells</c>）。</summary>
+        private static bool TryEatBiomass(
+            Creature creature, CreatureWorld creatures, ParticleWorld world, int gx, int gy)
+        {
+            if (!world.IsInBounds(gx, gy) || world.GetCell(gx, gy).typeId != ParticleIds.Biomass)
+            {
+                return false;
+            }
+
+            world.Clear(gx, gy);
+            creature.HungerTicks -= FoodRestoreTicks;
+            if (creature.HungerTicks < 0)
+            {
+                creature.HungerTicks = 0;
+            }
+
+            creature.FeedingCooldownTicks = FeedingCooldown;
+            creature.FoodTargetX = Creature.NoFoodTarget;
+            creature.FoodTargetY = Creature.NoFoodTarget;
+            creature.FoodTargetFailTicks = 0;
+            EnterFly(creature, creatures);
+            return true;
         }
 
         /// <summary>视野扫描：在 <paramref name="creatures"/> 里找**最近的**猎物（兔 / 鱼）。按生成序扫描，
@@ -517,6 +787,12 @@ namespace TapTap2026.Simulation
         {
             int truncated = (int)value;
             return value < truncated ? truncated - 1 : truncated;
+        }
+
+        /// <summary>整数绝对值（同 <see cref="Min"/>：手写以守住决策路径的零依赖）。</summary>
+        private static int Abs(int value)
+        {
+            return value < 0 ? -value : value;
         }
 
         /// <summary>两整数取小（与 <c>FishBrain.Min</c> 同做法：手写以保持决策路径零 UnityEngine / 零 System 依赖）。</summary>
