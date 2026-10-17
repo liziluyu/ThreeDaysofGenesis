@@ -60,8 +60,9 @@ namespace TapTap2026.Simulation
         /// <summary>扑腾一跳的竖直脉冲（格 / 逻辑帧）。</summary>
         public const float HopVelocity = 0.5f;
 
-        /// <summary>巡游速度（格 / 逻辑帧）。</summary>
-        public const float SwimSpeed = 0.05f;
+        /// <summary>巡游速度（格 / 逻辑帧）：**2026-10-17 用户要求 ×2**（0.05 → 0.1，≈2 格/秒 @20 Hz）。
+        /// 觅食时的水平追击速度同样用它（鱼没有单独的「冲刺」档）。</summary>
+        public const float SwimSpeed = 0.1f;
 
         /// <summary>下潜 / 上浮的竖直**目标**速度（格 / 逻辑帧）。物理每帧再乘 <c>1 − WaterDrag</c>，
         /// 因此稳态竖直位移/帧 = <c>(1 − WaterDrag) · min(本值, SwimAccel / WaterDrag)</c>；

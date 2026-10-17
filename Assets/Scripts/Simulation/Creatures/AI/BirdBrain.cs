@@ -101,16 +101,19 @@ namespace TapTap2026.Simulation
         public const float FlyAccel = 0.05f;
 
         /// <summary>巡航水平速度（格 / 逻辑帧）。</summary>
-        public const float FlySpeed = 0.06f;
+        public const float FlySpeed = 0.30f;
 
-        /// <summary>巡航竖直速度（格 / 逻辑帧）：上抬 / 下压 / 起飞的目标竖直速度。</summary>
+        /// <summary>巡航竖直速度（格 / 逻辑帧）：上抬 / 下压 / 起飞的目标竖直速度。
+        /// **刻意不随水平「移速」放大**：目标高度按「相对高度 == 目标」重摇，2 Hz 思考间隔内每帧 0.08 只走
+        /// 0.8 格 ⇒ 等值才能命中；放大到 0.4 时单次思考间隔跨越 4 格、等值永不成立，鸟会锁死在头一次摇到的
+        /// 高度上、「目标高度随机巡航」退化成固定高度来回抖（见 BirdCreatureTests 高度带用例）。</summary>
         public const float FlyVSpeed = 0.08f;
 
         /// <summary>逃命水**平**速度（格 / 逻辑帧）。</summary>
-        public const float FleeSpeed = 0.12f;
+        public const float FleeSpeed = 0.60f;
 
         /// <summary>逃命上冲速度（格 / 逻辑帧）。</summary>
-        public const float FleeClimbSpeed = 0.10f;
+        public const float FleeClimbSpeed = 0.50f;
 
         /// <summary>巡航时维持的最小离面高度（格）：正下方可栖面 / 水面距此以内即上抬，避免贴面飞行。</summary>
         public const int MinAltitudeCells = 6;
@@ -169,12 +172,12 @@ namespace TapTap2026.Simulation
         public const int HuntTimeoutTicks = 200;
 
         /// <summary>追击水平速度（格 / 逻辑帧）：比巡航快，逼近猎物。</summary>
-        public const float HuntSpeed = 0.10f;
+        public const float HuntSpeed = 0.50f;
 
         /// <summary>俯冲竖直速度（格 / 逻辑帧）：比巡航竖直速度（<see cref="FlyVSpeed"/>）快，保证从带顶
         /// （<see cref="HuntDetectCells"/> / <see cref="LandProbeCells"/> 同一量级）发起的下压也能在
         /// <see cref="HuntTimeoutTicks"/> 内够到猎物。</summary>
-        public const float HuntDiveSpeed = 0.2f;
+        public const float HuntDiveSpeed = 1.0f;
 
         /// <summary>
         /// 鸟可见身体的顶行相对碰撞盒底边的偏移（格）：由**生成美术数据**算出

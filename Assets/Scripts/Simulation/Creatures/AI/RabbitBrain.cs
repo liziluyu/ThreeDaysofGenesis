@@ -77,10 +77,10 @@ namespace TapTap2026.Simulation
         public const float HopVelocity = 0.75f;
 
         /// <summary>漫步速度（格 / 逻辑帧）。</summary>
-        public const float WalkSpeed = 0.06f;
+        public const float WalkSpeed = 0.18f;
 
         /// <summary>逃命速度（格 / 逻辑帧）。</summary>
-        public const float FleeSpeed = 0.15f;
+        public const float FleeSpeed = 0.45f;
 
         /// <summary>逃命**脱离**的半径滞回余量（格）：已在 Flee 时把威胁扫描半径放大这么多。
         /// 一进圈就立刻回 Wander 的话，刚出圈又会被随机漫步方向带回边界上蹭——两条半径把抖动夹在中间。</summary>
