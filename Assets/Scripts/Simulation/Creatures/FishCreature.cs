@@ -21,6 +21,10 @@ namespace TapTap2026.Simulation
         /// <summary>被鸟咬中后的死亡骰分母（1/本值 概率死亡）：3 ⇒ ≈33%，鱼在水里更难抓。</summary>
         public const int HuntDeathRoll = 3;
 
+        /// <summary>饥饿致死上限（逻辑帧）：2400 ≈ 2 分钟 @20 Hz——比兔子的 1200（1 分钟）宽一倍，
+        /// 给玩家「先种水草再放鱼」的余地；公开成常量供测试派生（<see cref="HungerLimitTicks"/> 返回它）。</summary>
+        public const int HungerLimitFrames = 2400;
+
         /// <summary>构造一条 1 × 0.5 格的鱼（位置由 <see cref="CreatureWorld.Spawn"/> 放置）。</summary>
         public FishCreature()
             : base(1f, 0.5f)
@@ -70,6 +74,19 @@ namespace TapTap2026.Simulation
         protected override bool DiesWhenBeached
         {
             get { return true; }
+        }
+
+        /// <summary>没有水草可吃就会饿死（<see cref="CreatureDeathCause.Starved"/>）：鱼是玩家最常投放的物种，
+        /// 「不喂就死」是 <see cref="FishBrain"/> 进食行为的动机；饿死窗口见 <see cref="HungerLimitTicks"/>。</summary>
+        protected override bool StarvesWithoutFood
+        {
+            get { return true; }
+        }
+
+        /// <summary>饥饿致死上限：<see cref="HungerLimitFrames"/>（2400 ≈ 2 分钟），比兔子（基类默认 1200）宽一倍。</summary>
+        protected override int HungerLimitTicks
+        {
+            get { return HungerLimitFrames; }
         }
 
         /// <summary>图案顶行相对脚底行的偏移（格）：取生成美术数据（鱼图案 4 行、脚底之上伸 3 行）——

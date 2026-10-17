@@ -191,12 +191,13 @@ namespace TapTap2026.Simulation
         /// <summary>无食物目标的哨兵值。目标格字段用它与合法格坐标（&ge; 0）区分。</summary>
         public const int NoFoodTarget = int.MinValue;
 
-        /// <summary>饥饿饱和上限（逻辑帧）：<see cref="HungerTicks"/> 的饱和值，达到且 <see cref="StarvesWithoutFood"/>
-        /// 为真即饿死（60 秒 @20 Hz）。放在基类是因为**推进与封顶都在运动层**（每帧 +1），物种 Brain 只读它做阈值判断。</summary>
+        /// <summary>饥饿饱和上限（逻辑帧）的**默认值**：<see cref="HungerTicks"/> 的饱和值，达到且 <see cref="StarvesWithoutFood"/>
+        /// 为真即饿死（60 秒 @20 Hz）。放在基类是因为**推进与封顶都在运动层**（每帧 +1），物种 Brain 只读它做阈值判断。
+        /// 需要更长饥饿窗口的物种覆盖 <see cref="HungerLimitTicks"/>（鱼 = 2400 ≈ 2 分钟）。</summary>
         public const int MaxHungerTicks = 1200;
 
         /// <summary>饥饿计数（逻辑帧）：距上次进食的帧数，<see cref="ApplyLocomotion"/> 每帧 +1、饱和在
-        /// <see cref="MaxHungerTicks"/>（只有 <see cref="StarvesWithoutFood"/> 的物种会因它饿死）。</summary>
+        /// <see cref="HungerLimitTicks"/>（只有 <see cref="StarvesWithoutFood"/> 的物种会因它饿死）。</summary>
         public int HungerTicks;
 
         /// <summary>进食冷却（逻辑帧）：进食后禁止立即再次进食的剩余帧数，运动层每帧递减到 0 为止。</summary>
@@ -338,11 +339,18 @@ namespace TapTap2026.Simulation
             get { return false; }
         }
 
-        /// <summary>是否会因饥饿而死（兔子 true、鱼 / 探针 false）：门控 <see cref="ApplyLocomotion"/> 的饿死判定，
+        /// <summary>是否会因饥饿而死（兔子 / 鱼 true、探针 false）：门控 <see cref="ApplyLocomotion"/> 的饿死判定，
         /// 使饥饿致死与「溺水 / 搁浅」同属物种差异而非基类特判。</summary>
         protected virtual bool StarvesWithoutFood
         {
             get { return false; }
+        }
+
+        /// <summary>饥饿致死上限（逻辑帧）：<see cref="HungerTicks"/> 达到它且 <see cref="StarvesWithoutFood"/> 时饿死。
+        /// 默认 = <see cref="MaxHungerTicks"/>（1200 ≈ 60 秒，兔子沿用）；鱼覆盖为 2400（2 分钟，给玩家先种水草的余地）。</summary>
+        protected virtual int HungerLimitTicks
+        {
+            get { return MaxHungerTicks; }
         }
 
         /// <summary>物种调试名（中文，日志 / 编辑器用）。</summary>
@@ -576,7 +584,8 @@ namespace TapTap2026.Simulation
 
             // ⑩ 饥饿推进 + 进食冷却递减（每逻辑帧，属「反射」而非「思考」，因此放在运动层而非 Brain）。
             //    只有 StarvesWithoutFood 的物种会因饥饿饱和而死；其余物种照常累计（无害）但不杀。
-            if (HungerTicks < MaxHungerTicks)
+            //    封顶必须与致死判据用**同一个**虚拟上限：否则鱼（2400）会被基类默认的 1200 先封顶，永远到不了致死线。
+            if (HungerTicks < HungerLimitTicks)
             {
                 HungerTicks++;
             }
@@ -586,7 +595,7 @@ namespace TapTap2026.Simulation
                 FeedingCooldownTicks--;
             }
 
-            if (StarvesWithoutFood && HungerTicks >= MaxHungerTicks)
+            if (StarvesWithoutFood && HungerTicks >= HungerLimitTicks)
             {
                 Kill(CreatureDeathCause.Starved);
             }

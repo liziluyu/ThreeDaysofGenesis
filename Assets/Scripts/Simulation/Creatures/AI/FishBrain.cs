@@ -28,7 +28,11 @@ namespace TapTap2026.Simulation
     /// 后，浅水贴底的鱼不再沿坑洼池底爬行撞坎掉头（实测狭池带坎 600 帧 21 次 → 0 次）。</para>
     /// <para><b>搁浅：</b>离水后只能每隔 15~35 帧扑腾一跳；连续离水超过 <see cref="Creature.BeachedTicksLimit"/>
     /// 帧由运动层判搁浅而死。</para>
-    /// <para><b>v1 非目标：</b>不吃草、不繁殖、不寻路。</para>
+    /// <para><b>进食（2026-10-17，docs §7.2）：</b>饥饿达到 <see cref="HungryThreshold"/> 且不在
+    /// <see cref="FeedingCooldown"/> 时，在半径 <see cref="FoodSearchRadius"/> 内找**最近的水草顶格**
+    /// （<see cref="ParticleIds.AquaticPlant"/> 且正上方不是同类），游到 <see cref="EatReachCells"/> 内啃掉一格：
+    /// 该格 <c>SetPhase</c> 成水（水账 1:1）、<see cref="Creature.HungerTicks"/> − <see cref="FoodRestoreTicks"/>、
+    /// 进冷却。该路径优先于深度带、且不摇动物随机数（见 <see cref="TryFeed"/>）。仍然**不做**全局寻路。</para>
     /// </remarks>
     public static class FishBrain
     {
@@ -99,6 +103,28 @@ namespace TapTap2026.Simulation
         /// <summary>墙感知换向的前探格数：当前方向前方这么多格的**体高行内**全是水才认为畅通、保持原方向不摇骰。</summary>
         public const int AheadProbeCells = 3;
 
+        /// <summary>饥饿阈值（逻辑帧）：<see cref="Creature.HungerTicks"/> 达到它才开始寻食（600 ≈ 30 秒 @20 Hz）。
+        /// 取鱼饥饿上限 <see cref="FishCreature.HungerLimitFrames"/>（2400）的 1/4：从「开始找」到「饿死」留 90 秒，
+        /// 足够以 0.05 格/帧的游速走完搜索半径 6 并啃到一口；也不至于刚出生就满池找草。</summary>
+        public const int HungryThreshold = 600;
+
+        /// <summary>每格水草恢复的饥饿帧数（600 = 30 秒）：与 <see cref="HungryThreshold"/> 同值 ⇒ 吃完一口立刻回到
+        /// 「不饿」区间，下一次要再饿满 600 帧（30 秒）才会重新寻食，形成可持续的「啃—长」节奏。</summary>
+        public const int FoodRestoreTicks = 600;
+
+        /// <summary>寻食扫描半径（格）：以鱼为中心的圆盘内找**最近的顶格**水草。
+        /// 与兔子局部目标选择同档（<c>docs/design-creature-ai.md</c> §12 明确不做全局寻路）——13 × 13 = 113 格读 /
+        /// 思考帧，只占一个世界 pass 的 0.2%，且只在「饿且不在冷却」时才走。</summary>
+        public const int FoodSearchRadius = 6;
+
+        /// <summary>进食冷却（逻辑帧）：20 ≈ 1 秒 @20 Hz。相邻可能有两格以上的顶格（不同株），
+        /// 冷却把「一帧啃一格」节流成「一秒一口」，避免思考帧里把一整片草瞬间啃平。</summary>
+        public const int FeedingCooldown = 20;
+
+        /// <summary>吃到目标所需的最大切比雪夫距离（格）：1 = 目标格与碰撞盒**中心格**相邻或重合。
+        /// 鱼碰撞盒只有 1 × 0.5 格，中心落在目标格或其八邻即视觉上已贴到草尖。</summary>
+        public const int EatReachCells = 1;
+
         /// <summary>一次思考：在水里就巡游，离水就搁浅扑腾。</summary>
         /// <param name="creature">思考的鱼。</param>
         /// <param name="creatures">所属动物世界（RNG 来源）。</param>
@@ -121,6 +147,14 @@ namespace TapTap2026.Simulation
         private static void ThinkSwim(Creature creature, CreatureWorld creatures, ParticleWorld world)
         {
             creature.AiState = StateSwim;
+
+            // 进食优先于巡游与深度带（docs §7.2 的判据顺序：Stranded > 进食 > 深度带）。
+            // 返回 true 的帧（寻食移动 / 啃掉一格）直接结束本帧思考：寻食意图覆盖水平墙感知与竖直深度带，
+            // 否则「朝目标游」会被深度带每思考帧改写，鱼永远够不到草尖。
+            if (TryFeed(creature, creatures, world))
+            {
+                return;
+            }
 
             int cx = FloorToInt(creature.X);
             int footRow = FloorToInt(creature.Y);
@@ -207,6 +241,142 @@ namespace TapTap2026.Simulation
             {
                 creature.IntentVy = 0f; // 自由漂：中性浮力保持当前深度
             }
+        }
+
+        /// <summary>
+        /// 进食：饿且不在冷却中才寻食 / 吃。返回 true 表示本思考帧已被进食占用（调用方必须直接结束思考），
+        /// false 表示照常走巡游 + 深度带。
+        /// </summary>
+        /// <remarks>
+        /// <para><b>判据顺序：</b>① 不饿 / 冷却中 ⇒ 清目标、false（不扫描、不摇骰）；② 已有目标先校验
+        /// （仍在半径内且仍是顶格），失效即清；③ 无目标 ⇒ 半径 <see cref="FoodSearchRadius"/> 的圆盘找最近顶格，
+        /// 找不到 ⇒ false；④ 目标相邻 ⇒ 啃一格（<c>SetPhase</c> 成水，1:1 水账）；⑤ 否则朝目标写意图并 true。</para>
+        /// <para><b>随机流：</b>搜索是纯扫描、移动只写意图 ⇒ 本路径**一粒动物骰都不摇**；只有 ④ 的
+        /// <see cref="ParticleWorld.SetPhase"/> 会消耗世界随机流（与兔子进食同属既有例外清单）。</para>
+        /// <para><b>为什么寻食移动要 return true：</b>深度带 / 墙感知每思考帧都会改写竖直 / 水平意图，
+        /// 若寻食意图再被它们覆盖，鱼会在目标附近来回改写、永远够不到草尖。</para>
+        /// </remarks>
+        private static bool TryFeed(Creature creature, CreatureWorld creatures, ParticleWorld world)
+        {
+            if (creature.HungerTicks < HungryThreshold || creature.FeedingCooldownTicks != 0)
+            {
+                ClearFoodTarget(creature);
+                return false;
+            }
+
+            int cx = FloorToInt(creature.X);
+            int centerRow = FloorToInt(creature.Y + creature.Height * 0.5f);
+            int targetX = creature.FoodTargetX;
+            int targetY = creature.FoodTargetY;
+
+            // 目标校验：超出半径（鱼已游走）或已不是顶格（被别的鱼啃掉 / 长高）都作废，本帧重新扫描。
+            if (targetX == Creature.NoFoodTarget
+                || targetY == Creature.NoFoodTarget
+                || !IsWithinFoodSearchRadius(targetX - cx, targetY - centerRow)
+                || !IsEdibleTopCell(world, targetX, targetY))
+            {
+                ClearFoodTarget(creature);
+                if (!TryFindNearestEdibleTopCell(world, cx, centerRow, out targetX, out targetY))
+                {
+                    return false;
+                }
+
+                creature.FoodTargetX = targetX;
+                creature.FoodTargetY = targetY;
+            }
+
+            if (Abs(targetX - cx) <= EatReachCells && Abs(targetY - centerRow) <= EatReachCells)
+            {
+                // 啃掉顶格：相变成水（每格植物 ⇔ 一格水，用 SetPhase 不用 Clear，水账 1:1 不破）。
+                world.SetPhase(targetX, targetY, ParticleIds.Water);
+                int hunger = creature.HungerTicks - FoodRestoreTicks;
+                creature.HungerTicks = hunger > 0 ? hunger : 0;
+                creature.FeedingCooldownTicks = FeedingCooldown;
+                ClearFoodTarget(creature);
+                return true;
+            }
+
+            // 寻食移动：水平朝目标列、竖直朝目标行（覆盖深度带；目标本身在水下 ⇒ 不会把它带出水面）。
+            float dxf = targetX - creature.X;
+            int dirX = dxf > 0f ? 1 : (dxf < 0f ? -1 : 0);
+            creature.IntentVx = dirX * SwimSpeed;
+
+            if (targetY < centerRow)
+            {
+                creature.IntentVy = -VerticalSpeed;
+            }
+            else if (targetY > centerRow)
+            {
+                creature.IntentVy = VerticalSpeed;
+            }
+            else
+            {
+                creature.IntentVy = 0f;
+            }
+
+            return true;
+        }
+
+        /// <summary>目标是否仍在以鱼为中心、半径 <see cref="FoodSearchRadius"/> 的圆盘内（欧氏距离平方，含边界）。</summary>
+        private static bool IsWithinFoodSearchRadius(int dx, int dy)
+        {
+            return dx * dx + dy * dy <= FoodSearchRadius * FoodSearchRadius;
+        }
+
+        /// <summary>可吃格 = 水生植物且**正上方不是**水生植物（整株最上面那一格）；下方茎格永不被吃。
+        /// 越界由 <see cref="ParticleWorld.GetCell"/> 返回空气，天然不是植物。</summary>
+        private static bool IsEdibleTopCell(ParticleWorld world, int x, int y)
+        {
+            return world.GetCell(x, y).typeId == ParticleIds.AquaticPlant
+                && world.GetCell(x, y + 1).typeId != ParticleIds.AquaticPlant;
+        }
+
+        /// <summary>以 (cx, cy) 为中心扫半径 <see cref="FoodSearchRadius"/> 的圆盘，找**最近**的顶格。
+        /// 固定扫描序（dy 升序、dx 升序）+「严格更近才替换」⇒ 距离平手保留先生成序，结果完全确定；
+        /// 纯读、零分配、无随机数。</summary>
+        private static bool TryFindNearestEdibleTopCell(
+            ParticleWorld world, int cx, int cy, out int targetX, out int targetY)
+        {
+            int bestX = 0;
+            int bestY = 0;
+            int bestDistSq = int.MaxValue;
+            for (int dy = -FoodSearchRadius; dy <= FoodSearchRadius; dy++)
+            {
+                for (int dx = -FoodSearchRadius; dx <= FoodSearchRadius; dx++)
+                {
+                    int distSq = dx * dx + dy * dy;
+                    if (distSq > FoodSearchRadius * FoodSearchRadius || distSq >= bestDistSq)
+                    {
+                        continue;
+                    }
+
+                    int x = cx + dx;
+                    int y = cy + dy;
+                    if (IsEdibleTopCell(world, x, y))
+                    {
+                        bestX = x;
+                        bestY = y;
+                        bestDistSq = distSq;
+                    }
+                }
+            }
+
+            targetX = bestX;
+            targetY = bestY;
+            return bestDistSq != int.MaxValue;
+        }
+
+        /// <summary>清空食物目标（写哨兵 <see cref="Creature.NoFoodTarget"/>）。</summary>
+        private static void ClearFoodTarget(Creature creature)
+        {
+            creature.FoodTargetX = Creature.NoFoodTarget;
+            creature.FoodTargetY = Creature.NoFoodTarget;
+        }
+
+        /// <summary>整数绝对值（不引 Math / Mathf，保持决策路径零 BCL 依赖）。</summary>
+        private static int Abs(int value)
+        {
+            return value < 0 ? -value : value;
         }
 
         /// <summary>当前方向前方 <see cref="AheadProbeCells"/> 格是否一路畅通：体高行（脚底行 .. 体顶行）内
