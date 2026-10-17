@@ -9,6 +9,8 @@ namespace TapTap2026.Simulation
     //               正下连续最多 CanopyPassMaxDepth 格（穿冠扫描，见行为第 0 段）、
     //               正上方连续最多 IceParticle.ColumnScanDepth 格（结冰的深度扫描，见冷端相变）
     // 交互的 ParticleIds：TreeLeaf（穿冠判据——正下方连续叶柱；失活落叶同样算）、
+    //                    Grass / Flower（渗草——正下方同一株的草株：沿本列向下找根格，见行为「热端」）、
+    //                    Soil → WetSoil、HumusSoil → WetHumusSoil（根格被浸湿的目标形态）、
     //                    Ice（结冰目标形态，见随机刻的冷端相变）——
     //                    蒸发把水汽交给湿度场（HumidityField），水汽不以粒子形式存在
     //
@@ -21,12 +23,22 @@ namespace TapTap2026.Simulation
     //         整条门槛再乘**光照冷度缩放**（LightColdScale：强度 8~12 = ×1；更弱 → 最多 ×1.2「更易结冰」；
     //         更强 → 最低 ×0.6「更难结冰」，两端都随强度连续变化）。
     //         结冰放热（潜热 + 热容差，见 IceParticle.FusionTemperatureStep）。
-    //       热端——**蒸发**（走逻辑帧 OnLogic，下列两条路）：
-    //         · 沸腾（T ≥ 沸点）：把 1 份水汽**集中**在原地一小片 → 每格浓度高 → 渲染成可见的白色汽团；
-    //         · 慢蒸发（T ≥ 常温阈值、按概率、且**正上方是界内气体**）：把同样 1 份水汽**摊到 9×9 一大片**
-    //           （半径 4）→ 每格低于可见阈值 → 看不见，只让湿度稳步升高。摊不够薄（接收格太少，
-    //           单格份额会超过 InvisibleSpreadMaxShare）时**不蒸发、水保留**——否则半封闭地形会凭空
-    //           冒出可见水汽（审计 B2）。
+    //       热端——逻辑帧 **OnLogic**，顺序是「**渗草** → 蒸发」：
+    //         · **渗草**（优先于蒸发；雨水穿过草株浸湿根下的土）：正下方一格是**同一株**的草 / 花
+    //           （先按 ParticleIds 快速筛，再核对本世界类型表里的类型标识——隔离类型表里全局 id 可能与
+    //           别的类型相撞，见 TrySoakThroughStalk 的 remarks）时，沿本列竖直向下扫过**连续**草株
+    //           （最多 GrassParticle.MaxStalkHeight = 4 格 = 种子格 + 上方最多 3 格），
+    //           停在第一格非草株（= 根格）。根格是**干土 / 干腐殖土**时把它换成湿土 / 湿润腐殖土，
+    //           本格水被吸干——一格水 ⇔ 一格湿土（1:1），热随水走，与 SoilParticle 的直接吸水逐条相同；
+    //           根格**已湿**（或石头 / 沙 / 空气 / 越界 = 草株悬空）时**不吸**，水留在草顶照常蒸发。
+    //           只扫同一株、不穿别的固体；只读扫描 + 一次相变 + 一次抹除，零分配、零随机流。
+    //           **运动阅读盒不变**：这是 OnLogic 的扫描，不是运动路径。
+    //         · **蒸发**（走逻辑帧的下列两条路）：
+    //           · 沸腾（T ≥ 沸点）：把 1 份水汽**集中**在原地一小片 → 每格浓度高 → 渲染成可见的白色汽团；
+    //           · 慢蒸发（T ≥ 常温阈值、按概率、且**正上方是界内气体**）：把同样 1 份水汽**摊到 9×9 一大片**
+    //             （半径 4）→ 每格低于可见阈值 → 看不见，只让湿度稳步升高。摊不够薄（接收格太少，
+    //             单格份额会超过 InvisibleSpreadMaxShare）时**不蒸发、水保留**——否则半封闭地形会凭空
+    //             冒出可见水汽（审计 B2）。
     //       这就是"水蒸气只在沸腾时出现"：可见的水汽只由沸腾产生，慢蒸发是隐形的。
     //       潜热：蒸发（沸腾与慢蒸发）从水里**带走** HumidityField.LatentHeat(T)（随温度线性）的热量，
     //       海面因此被蒸发冷却；这份潜热由湿度单位携带、随降雨按凝结温度归还（见 HumidityField.LatentHeat）。
@@ -348,6 +360,13 @@ namespace TapTap2026.Simulation
 
         public void OnLogic(ParticleWorld world, int x, int y)
         {
+            // 渗草优先于蒸发：雨水落在草 / 花株顶时先试着浸湿根下的干土（同一逻辑帧完成，
+            // 水不会在草顶停留到随机刻）。失败才走既有蒸发路径。
+            if (TrySoakThroughStalk(world, x, y))
+            {
+                return;
+            }
+
             // 相变优先于运动。**结冰不在这里**——它走随机刻（见 OnRandomTick / TryFreeze）：
             // 结冰是「缓慢、按概率发生」的过程，交给世界的随机刻抽取，逻辑帧只管蒸发。
             // 于是热端（蒸发 ≥ SlowEvaporationTemperature = 20）与冷端（结冰 ≤ FreezingPoint = 4.0）
@@ -550,6 +569,106 @@ namespace TapTap2026.Simulation
 
             world.Swap(x, y, x, targetY);
             return true;
+        }
+
+        /// <summary>
+        /// 渗草（雨水穿过草株浸湿根下的土）：正下方一格是**同一株**的草 / 花时，沿本列竖直向下扫过
+        /// **连续**草株（最多 <see cref="GrassParticle.MaxStalkHeight"/> 格），停在第一格非草株（= 根格）；
+        /// 根格是**干土 / 干腐殖土**时把本格水交给它——根格相变到湿形态、本格水被吸干
+        /// （水账 1:1、热随水走，与 SoilParticle 的直接吸水结算逐条相同）。
+        /// <para>根格已是湿土 / 湿腐殖土、石头 / 沙 / 气体（草株悬空），或连续草株超过上限时返回 false，
+        /// 本格水原样保留——「尝试」浸湿：土壤饱和后雨水仍积在草上，既有「水压草」规则照旧。</para>
+        /// <para>只扫同一株的草 / 花格，不穿别的固体；只读判定 + 一次相变 + 一次抹除，零分配。</para>
+        /// <para>判据走**本世界的类型表**（<see cref="ParticleWorld.Types"/>）而不是裸比 id：<see cref="ParticleIds"/>
+        /// 是全局回填的，隔离类型表里与它无关（上一次生产注册的旧值可能恰好等于隔离表里的沙 / 大气），
+        /// 只比 id 会在隔离世界里凭空相变、乃至写入未注册的湿形态。与 <c>IceParticle.IsRegisteredIn</c> 同一取舍。</para>
+        /// </summary>
+        private static bool TrySoakThroughStalk(ParticleWorld world, int x, int y)
+        {
+            int rootY = y - 1;
+            int depth = 0;
+            while (IsStalkMember(world, world.GetCell(x, rootY).typeId))
+            {
+                depth++;
+                if (depth > GrassParticle.MaxStalkHeight)
+                {
+                    return false; // 连续草株超过上限：不吸
+                }
+
+                rootY--;
+            }
+
+            if (depth == 0)
+            {
+                // 正下方不是草株：本规则只管「穿过草」。裸土的吸水仍由 SoilParticle.OnLogic 结算
+                // （湿土 / 腐殖土 / 石头 / 沙等既有行为一格不改）。
+                return false;
+            }
+
+            ushort rootId = world.GetCell(x, rootY).typeId;
+            ushort wetId;
+            if (rootId == ParticleIds.Soil && IsRegisteredAs(world, rootId, nameof(SoilParticle)))
+            {
+                wetId = ParticleIds.WetSoil;
+                if (!IsRegisteredAs(world, wetId, nameof(WetSoilParticle)))
+                {
+                    return false; // 湿形态未注册（隔离 / 自定义类型表）：不写未注册 id
+                }
+            }
+            else if (rootId == ParticleIds.HumusSoil && IsRegisteredAs(world, rootId, nameof(HumusSoilParticle)))
+            {
+                wetId = ParticleIds.WetHumusSoil;
+                if (!IsRegisteredAs(world, wetId, nameof(WetHumusSoilParticle)))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                // 湿土已饱和、草株悬空 / 越界（空气），石头 / 沙等没有湿形态：都不吸。
+                return false;
+            }
+
+            // 与 SoilParticle.OnLogic 的直接吸水逐条一致：水的 Q 搬进根格（SetPhase 保留根格原 Q），
+            // 水格先清零再 Clear，热不复制。
+            float waterHeat = world.Heat.GetHeat(x, y);
+            world.SetPhase(x, rootY, wetId);
+            world.Heat.AddHeat(x, rootY, waterHeat);
+            world.Heat.SetHeat(x, y, 0f);
+            world.Clear(x, y);
+            return true;
+        }
+
+        /// <summary>(x,y) 的类型是否属于草株（草 / 花是同一株）——先按 <see cref="ParticleIds"/> 快速筛，
+        /// 再核对**本世界类型表**里该槽位的类型标识（<see cref="ParticleType.ClassName"/>）。
+        /// 隔离类型表里草 / 花的 id 是 0（= 空气），且 <see cref="ParticleIds"/> 的全局旧值可能与该表的
+        /// 别的 id 相撞——只比 id 会在隔离世界里把沙 / 大气当成草株（与穿冠门「排除空气」同一取舍）。</summary>
+        private static bool IsStalkMember(ParticleWorld world, ushort typeId)
+        {
+            if (typeId == ParticleRegistry.AirTypeId
+                || (typeId != ParticleIds.Grass && typeId != ParticleIds.Flower))
+            {
+                return false;
+            }
+
+            return IsRegisteredAs(world, typeId, nameof(GrassParticle))
+                || IsRegisteredAs(world, typeId, nameof(FlowerParticle));
+        }
+
+        /// <summary>本世界的类型表是否把 <paramref name="typeId"/> 登记成 <paramref name="className"/> 这个类型。
+        /// 越界 / 空气槽（<c>Types[0] == null</c>）一律 false。
+        /// <para>用 <see cref="ParticleType.ClassName"/>（注册时从行为类取的类名，是仓库既有的语言无关类型标识）
+        /// 而不是 <c>Types[id] is XxxParticle</c>：<see cref="ParticleType"/> 只持有委托，不认识行为实例。</para>
+        /// </summary>
+        private static bool IsRegisteredAs(ParticleWorld world, ushort typeId, string className)
+        {
+            if (typeId == ParticleRegistry.AirTypeId || typeId >= world.Types.Length)
+            {
+                return false;
+            }
+
+            ParticleType type = world.Types[typeId];
+            return type != null && type.ClassName == className;
         }
 
         /// <summary>

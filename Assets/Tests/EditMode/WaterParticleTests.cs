@@ -8,7 +8,8 @@ namespace TapTap2026.Tests
     /// 水（<see cref="WaterParticle"/>）的流体行为测试：下落、无安息角摊平、被固体沉穿（下落的固体在运动中，照旧可排开液体；静止固体则不能——见地下水规则）、确定性、
     /// 孤立水滴静止不抖动（平地 / 世界底行）、
     /// 液体热对流（暖水换位 / 死区 / 不抢下落 / 夜间海面反超陆面的涌现回归），
-    /// 穿冠（水穿叶柱落到冠下 / 叶柱下是固体不穿 / 超过深度上限不穿 / 零随机流消耗），
+    /// 穿冠（水穿叶柱落到冠下 / 叶柱下是固体不穿 / 超过深度上限不穿 / 零随机流消耗）、
+    /// 渗草（水穿草株浸湿根下的土 / 根格已湿则留在草顶）、
     /// 以及蒸发（慢蒸发不可见 / 沸腾可见 / 潜热吸热）与生产注册路径的回填与标签。
     /// </summary>
     /// <remarks>
@@ -783,11 +784,13 @@ namespace TapTap2026.Tests
         // ============================== 穿冠（雨水穿冠） ==============================
 
         /// <summary>
-        /// 穿冠测试走 <see cref="ParticleRegistration.RegisterAll"/> 的**生产表**：穿冠门比较
-        /// <see cref="ParticleIds.TreeLeaf"/>，隔离表里它是 0（= 空气的 typeId，与
+        /// 需要生产注册表的测试（穿冠 / 渗草）走 <see cref="ParticleRegistration.RegisterAll"/> 的**生产表**：
+        /// 穿冠门比较 <see cref="ParticleIds.TreeLeaf"/>、渗草比较 <see cref="ParticleIds.Grass"/> /
+        /// <see cref="ParticleIds.Flower"/> 并把根格换成 <see cref="ParticleIds.WetSoil"/> /
+        /// <see cref="ParticleIds.WetHumusSoil"/>；隔离表里这些字段是 0（= 空气的 typeId，与
         /// <c>WetSoilParticle.IsDrySoil</c> 同一取舍），只有回填后才有意义。
         /// </summary>
-        private static ParticleWorld CreateCanopyWorld(int width, int height, uint seed = 20261012u)
+        private static ParticleWorld CreateProductionWorld(int width, int height, uint seed = 20261012u)
         {
             ParticleRegistration.RegisterAll();
             return new ParticleWorld(width, height, seed);
@@ -804,7 +807,7 @@ namespace TapTap2026.Tests
         {
             const int x = 2;
             const int waterY = 8;
-            ParticleWorld world = CreateCanopyWorld(5, 12);
+            ParticleWorld world = CreateProductionWorld(5, 12);
 
             for (int i = 0; i < leafDepth; i++)
             {
@@ -843,7 +846,7 @@ namespace TapTap2026.Tests
             {
                 const int x = 1;
                 const int waterY = 9;
-                ParticleWorld world = CreateCanopyWorld(3, 14);
+                ParticleWorld world = CreateProductionWorld(3, 14);
 
                 // 两壁 + 一整列基质（底部托住、不会下沉）把水彻底关在一格宽的竖井里。
                 for (int y = 0; y < world.Height; y++)
@@ -914,7 +917,7 @@ namespace TapTap2026.Tests
         {
             const int x = 1;
             const int leafTopY = 12;
-            ParticleWorld world = CreateCanopyWorld(3, 24);
+            ParticleWorld world = CreateProductionWorld(3, 24);
 
             for (int y = 0; y < world.Height; y++)
             {
@@ -939,8 +942,8 @@ namespace TapTap2026.Tests
         [Test]
         public void CanopyPass_DoesNotConsumeRandomStream()
         {
-            ParticleWorld triggered = CreateCanopyWorld(5, 12);
-            ParticleWorld control = CreateCanopyWorld(5, 12);
+            ParticleWorld triggered = CreateProductionWorld(5, 12);
+            ParticleWorld control = CreateProductionWorld(5, 12);
             foreach (ParticleWorld world in new[] { triggered, control })
             {
                 world.Set(2, 7, ParticleIds.TreeLeaf);
@@ -953,6 +956,195 @@ namespace TapTap2026.Tests
             Assert.AreEqual(ParticleIds.Water, triggered.GetCell(2, 5).typeId, "前置：穿冠确实发生了");
             Assert.AreEqual(control.NextUInt(), triggered.NextUInt(),
                 "穿冠不得消耗世界随机流（运动路径铁律）");
+        }
+
+        // ============================== 渗草（雨水穿过草株浸湿根下的土） ==============================
+
+        /// <summary>全场热量 Q 之和（守恒断言用）。</summary>
+        private static float SumHeat(ParticleWorld world)
+        {
+            float total = 0f;
+            for (int i = 0; i < world.CellCount; i++)
+            {
+                total += world.Heat.Values[i];
+            }
+
+            return total;
+        }
+
+        /// <summary>
+        /// 渗草：草株高度 1~<see cref="GrassParticle.MaxStalkHeight"/> 时，草顶上的水在**一个逻辑帧**内
+        /// 穿过整株、把根下的干土浸湿——根格 Soil → WetSoil、水格清空、草株逐格不动。
+        /// 世界宽 1：越界挡住横流 / 斜落，水位唯一的去处就是根格。
+        /// </summary>
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        [TestCase(4)]
+        public void Water_SoaksThroughGrass_AndWetsTheSoilBelow(int stalkHeight)
+        {
+            ParticleWorld world = CreateProductionWorld(1, 10);
+            Assert.IsTrue(world.Set(0, 0, ParticleIds.Stone), "石头托底");
+            Assert.IsTrue(world.Set(0, 1, ParticleIds.Soil), "根格：干土");
+
+            for (int y = 2; y <= 1 + stalkHeight; y++)
+            {
+                Assert.IsTrue(world.Set(0, y, ParticleIds.Grass), $"铺草：y={y}");
+            }
+
+            int waterY = 2 + stalkHeight;
+            Assert.IsTrue(world.Set(0, waterY, ParticleIds.Water), "草顶上方放一滴水");
+
+            world.StepLogic();
+
+            Assert.AreEqual(ParticleIds.WetSoil, world.GetCell(0, 1).typeId,
+                $"{stalkHeight} 格草株：根格应被浸湿（Soil → WetSoil）");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(0, waterY).typeId,
+                $"{stalkHeight} 格草株：水被根格吸干，原格清空");
+            for (int y = 2; y <= 1 + stalkHeight; y++)
+            {
+                Assert.AreEqual(ParticleIds.Grass, world.GetCell(0, y).typeId,
+                    $"{stalkHeight} 格草株：草株逐格不动（y={y}）");
+            }
+
+            Assert.AreEqual(0, CountType(world, ParticleIds.Water),
+                $"{stalkHeight} 格草株：水已进土，不再有游离的水");
+            Assert.AreEqual(1, CountType(world, ParticleIds.WetSoil),
+                $"{stalkHeight} 格草株：根格是唯一的湿土");
+            Assert.AreEqual(1, CountType(world, ParticleIds.Water) + CountType(world, ParticleIds.WetSoil),
+                $"{stalkHeight} 格草株：一滴水 ⇔ 一格湿土（1:1）");
+        }
+
+        /// <summary>
+        /// 花也算同一株：草 → 花的株顶被水打湿时同样沿本列下扫到根格（花不被当成挡路的固体）。
+        /// </summary>
+        [Test]
+        public void Water_SoaksThroughFlower_AndWetsTheSoilBelow()
+        {
+            ParticleWorld world = CreateProductionWorld(1, 10);
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.Soil);
+            world.Set(0, 2, ParticleIds.Grass);
+            world.Set(0, 3, ParticleIds.Flower);
+            world.Set(0, 4, ParticleIds.Water);
+
+            world.StepLogic();
+
+            Assert.AreEqual(ParticleIds.WetSoil, world.GetCell(0, 1).typeId,
+                "花株：根格应被浸湿（Soil → WetSoil）");
+            Assert.AreEqual(ParticleIds.Flower, world.GetCell(0, 3).typeId, "花仍在株顶");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(0, 4).typeId,
+                "花株：水被吸干，原格清空");
+        }
+
+        /// <summary>
+        /// 根格是**干腐殖土**时浸成湿润腐殖土（HumusSoil → WetHumusSoil），水账同样 1:1。
+        /// </summary>
+        [Test]
+        public void Water_SoaksThroughGrass_AndWetsHumusSoilBelow()
+        {
+            ParticleWorld world = CreateProductionWorld(1, 10);
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.HumusSoil);
+            world.Set(0, 2, ParticleIds.Grass);
+            world.Set(0, 3, ParticleIds.Water);
+
+            world.StepLogic();
+
+            Assert.AreEqual(ParticleIds.WetHumusSoil, world.GetCell(0, 1).typeId,
+                "腐殖土根格应被浸湿（HumusSoil → WetHumusSoil）");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, world.GetCell(0, 3).typeId,
+                "腐殖土根格：水被吸干，原格清空");
+            Assert.AreEqual(ParticleIds.Grass, world.GetCell(0, 2).typeId, "草株仍在");
+        }
+
+        /// <summary>
+        /// 根格**已经湿了**（土壤饱和）就不再吸水：水留在草顶，不凭空消失。
+        /// 跑 10 个逻辑帧（随机刻默认 0——草不会被打死；水温 0 不蒸发、宽 1 无路可流）。
+        /// </summary>
+        [Test]
+        public void Water_RemainsOnGrass_WhenTheRootSoilIsAlreadyWet()
+        {
+            ParticleWorld world = CreateProductionWorld(1, 10);
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.WetSoil);
+            world.Set(0, 2, ParticleIds.Grass);
+            world.Set(0, 3, ParticleIds.Water);
+
+            for (int i = 0; i < 10; i++)
+            {
+                world.StepLogic();
+            }
+
+            Assert.AreEqual(ParticleIds.WetSoil, world.GetCell(0, 1).typeId,
+                "根格已湿：不再被浸湿（也不会自己变干）");
+            Assert.AreEqual(ParticleIds.Water, world.GetCell(0, 3).typeId,
+                "尝试失败：水仍留在草顶");
+            Assert.AreEqual(ParticleIds.Grass, world.GetCell(0, 2).typeId, "草株仍在");
+            Assert.AreEqual(1, CountType(world, ParticleIds.Water),
+                "尝试失败但水不凭空消失（水账守恒）");
+        }
+
+        /// <summary>
+        /// 适用范围：本规则只管「穿过草」。水直接坐在**裸的腐殖土**上时没有草株可穿 ⇒ 不吸
+        /// （腐殖土没有吸水反应、`hasLogic: false`），水留在原格；裸干土的吸水仍由
+        /// <c>SoilParticle.OnLogic</c> 结算（对照组）。
+        /// </summary>
+        [Test]
+        public void Water_OnBareSoil_OnlyWetsPlainSoil_NotHumusSoil()
+        {
+            ParticleWorld humus = CreateProductionWorld(1, 8);
+            humus.Set(0, 0, ParticleIds.Stone);
+            humus.Set(0, 1, ParticleIds.HumusSoil);
+            humus.Set(0, 2, ParticleIds.Water);
+
+            humus.StepLogic();
+
+            Assert.AreEqual(ParticleIds.Water, humus.GetCell(0, 2).typeId,
+                "裸腐殖土上方没有草株：渗草不参与，水留在原格");
+            Assert.AreEqual(ParticleIds.HumusSoil, humus.GetCell(0, 1).typeId,
+                "腐殖土没有吸水反应，保持干态");
+
+            ParticleWorld soil = CreateProductionWorld(1, 8);
+            soil.Set(0, 0, ParticleIds.Stone);
+            soil.Set(0, 1, ParticleIds.Soil);
+            soil.Set(0, 2, ParticleIds.Water);
+
+            soil.StepLogic();
+
+            Assert.AreEqual(ParticleIds.WetSoil, soil.GetCell(0, 1).typeId,
+                "对照组：裸干土照旧由 SoilParticle 自己吸水");
+            Assert.AreEqual(ParticleRegistry.AirTypeId, soil.GetCell(0, 2).typeId, "水被吸干");
+        }
+
+        /// <summary>
+        /// 热随水走：水的 Q 必须**搬进**根格（与 <c>SoilParticle.OnLogic</c> 的直接吸水逐条一致），
+        /// 不是复制——总热严格守恒。这里直接调水的逻辑钩子，隔离 <c>StepLogic</c> 的热传导。
+        /// </summary>
+        [Test]
+        public void SoakThroughGrass_MovesTheWaterHeatIntoTheRootCell()
+        {
+            ParticleWorld world = CreateProductionWorld(1, 10);
+            world.Set(0, 0, ParticleIds.Stone);
+            world.Set(0, 1, ParticleIds.Soil);
+            world.Set(0, 2, ParticleIds.Grass);
+            world.Set(0, 3, ParticleIds.Water);
+
+            world.Heat.SetHeat(0, 1, 3f);
+            world.Heat.SetHeat(0, 3, 11f);
+            float before = SumHeat(world);
+
+            // 直接调钩子（不跑整帧）：隔离热传导 / 降水，只看这一次相变的热账。
+            ParticleRegistry.Types[ParticleIds.Water].OnLogic(world, 0, 3);
+
+            Assert.AreEqual(ParticleIds.WetSoil, world.GetCell(0, 1).typeId,
+                "前置：根格确实被浸湿");
+            Assert.AreEqual(14f, world.Heat.GetHeat(0, 1), 1e-4f,
+                "水的 Q 搬进根格（3 + 11）");
+            Assert.AreEqual(0f, world.Heat.GetHeat(0, 3), 1e-4f,
+                "水格 Q 清零（Clear 不会再继承一份）");
+            Assert.AreEqual(before, SumHeat(world), 1e-4f,
+                "总热守恒：热随水走，不复制");
         }
     }
 }

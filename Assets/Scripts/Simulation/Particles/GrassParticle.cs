@@ -53,6 +53,10 @@ namespace TapTap2026.Simulation
         /// <summary>撒下新草种子时搜索的半径（格，欧氏距离）：只处理 dx²+dy² ≤ 半径² 的格。</summary>
         public const int SeedSpawnRadius = 2;
 
+        /// <summary>一株草的最大格数：草种子自己那格 + 上方最多 <see cref="GrassSeedParticle.MaxGrowthHeight"/> 格。
+        /// 雨水「渗草」沿本列向下扫同一株时的格数上限（见 <c>WaterParticle</c>）。</summary>
+        public const int MaxStalkHeight = 1 + GrassSeedParticle.MaxGrowthHeight;
+
         /// <summary>
         /// 撒种概率的分母：每次随机刻命中时摇一次骰 <c>NextUInt() % 本值 &lt; <see cref="SeedSpawnChanceNumerator"/></c>
         /// 才尝试撒种，即 3/20 = 15%（= 1.5 × 原先的 1/10）。
