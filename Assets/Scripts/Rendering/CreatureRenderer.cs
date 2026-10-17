@@ -184,8 +184,11 @@ namespace TapTap2026.Rendering
                         view.TakeoffRemaining = AdvanceBirdTakeoff(
                             view.LastAiState, creature.AiState, view.TakeoffRemaining, deltaSeconds, _birdTakeoffSeconds);
                         view.LastAiState = creature.AiState;
-                        view.Renderer.sprite = ResolveBirdFrame(
+
+                        // 某个帧组漏接线（例如只接了飞行组）时退回飞行组：宁可播错一组，也不能让鸟隐形。
+                        Sprite birdFrame = ResolveBirdFrame(
                             creature.AiState, view.TakeoffRemaining, clock, _birdFlyFrames, _birdPerchFrames, _birdTakeoffFrame);
+                        view.Renderer.sprite = birdFrame != null ? birdFrame : view.Frames[(int)clock % view.Frames.Length];
                     }
                     else
                     {

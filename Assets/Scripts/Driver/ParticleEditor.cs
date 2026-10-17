@@ -147,7 +147,7 @@ namespace TapTap2026.Game
         /// 动物投放受阶段名单（<see cref="SetPlacementFilter"/> 的第二参数）限制：null = 不限制，空数组 = 全部隐藏；
         /// 不在名单里的物种不会出现在 <see cref="Selections"/> 里。
         /// </remarks>
-        private Creature[] _creaturePrototypes;
+        private Creature[] _creaturePrototypes = new Creature[0];
 
         private readonly HashSet<ushort> _unplaceable = new HashSet<ushort>();
         private readonly HashSet<ushort> _singlePlacement = new HashSet<ushort>();
@@ -1232,6 +1232,7 @@ namespace TapTap2026.Game
             {
                 Debug.LogError(
                     "[ParticleEditor] SetPlacementFilter：没有任何可投放的粒子类型。请确认 ParticleRegistration.RegisterAll() 已执行。");
+                _placementFilter = previousFilter;
                 return;
             }
 

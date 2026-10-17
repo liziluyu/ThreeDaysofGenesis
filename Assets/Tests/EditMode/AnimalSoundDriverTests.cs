@@ -171,7 +171,7 @@ namespace TapTap2026.Tests
             int first = FirstSoundFrame(creatures, world, 400);
             Assert.AreEqual(113, first, "首次闲聊声在第一轮间隔到点时响");
 
-            // 消失：Clear() 不发死亡事件（也顺带不打扰事件标志）。
+            // 消失：Clear() 不发死亡事件（也不留下待结算的死亡计数）。
             creatures.Clear();
             for (int i = 0; i < 30; i++)
             {
@@ -289,7 +289,7 @@ namespace TapTap2026.Tests
 
         /// <summary>
         /// 出生 / 死亡素材名留空 ⇒ 该路**不出声**（不再回落闲聊声）：出生一只 + 杀一只，<see cref="AnimalSoundDriver.Pump"/>
-        /// 返回 0、<c>OneShotPlayCount</c> 不增；事件标志照旧被清洗，不积压到下一帧。
+        /// 返回 0、<c>OneShotPlayCount</c> 不增；计数照旧被清洗，不积压到下一帧。
         /// </summary>
         [Test]
         public void Pump_SpawnAndDeathClipsEmpty_PlayNothing()
@@ -310,7 +310,7 @@ namespace TapTap2026.Tests
             Assert.AreEqual(0, PumpFrame(creatures, world), "死亡声留空 ⇒ 该路静音");
             Assert.AreEqual(0, _sound.OneShotPlayCount, "死亡事件不该起播");
 
-            Assert.AreEqual(0, PumpFrame(creatures, world), "标志已清洗，不积压到下一帧");
+            Assert.AreEqual(0, PumpFrame(creatures, world), "计数已清洗，不积压到下一帧");
             Assert.AreEqual(0, _sound.OneShotPlayCount);
         }
 

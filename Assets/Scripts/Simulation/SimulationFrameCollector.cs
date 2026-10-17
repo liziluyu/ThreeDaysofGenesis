@@ -134,7 +134,7 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
-        /// 抽干世界的音频监视器，把本帧的运动 / 存量 / 新建计数写进音频帧。
+        /// 抽干世界的音频监视器与动物事件计数，把本帧的运动 / 存量 / 新建 / 物种出生死亡写进音频帧。
         /// **抽干这一动作归采集**（也就是归 world 的唯一写者）：消费方此后只读快照，读几次都不再改账。
         /// </summary>
         /// <param name="world">粒子世界（运动 / 存量 / 新建监视器都在它上面）。</param>
@@ -169,20 +169,8 @@ namespace TapTap2026.Simulation
 
             // 动物出生 / 死亡同样「读后清零」：声音驱动只读帧里的数字，不再订阅活世界的事件
             // （Step 可能跑在 worker 线程上，主线程监听事件就是数据竞争）。
-            if (creatures == null)
-            {
-                frame.ClearCreatureEvents();
-            }
-            else
-            {
-                creatures.ConsumeEvents(SpawnScratch, DeathScratch);
-                frame.SetCreatureEvents(SpawnScratch, DeathScratch);
-            }
+            frame.CollectCreatureEvents(creatures);
         }
-
-        /// <summary>物种事件抽干用的复用缓冲（采集跑在单写者线程上，静态复用零分配）。</summary>
-        private static readonly int[] SpawnScratch = new int[CreatureWorld.SpeciesSlotCount];
-        private static readonly int[] DeathScratch = new int[CreatureWorld.SpeciesSlotCount];
 
         /// <summary>
         /// 采集高速模式读数与统计快照（每种类型的产生 / 死亡 / 终态存量）。

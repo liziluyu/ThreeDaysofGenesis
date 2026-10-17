@@ -707,13 +707,16 @@ namespace TapTap2026.Tests
             var world = new ParticleWorld(3, 3, 7u);
             world.Set(1, 1, Ice);
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             Cell cell = world.GetCell(1, 1);
             Color32 baseColor = ParticleRegistry.Types[Ice].Info.Palette[cell.shade];
-            Color32 expected = Color32.Lerp(
-                baseColor, ParticlePixelBuffer.OutlineLightColor, ParticlePixelBuffer.OutlineLightenFactor);
+            // 期望值用 Unity 的 Color32.Lerp 亲笔算出，再换成项目自有纯值——光栅化必须与之逐位一致。
+            RenderColor expected = RenderColorConversion.FromColor32(Color32.Lerp(
+                baseColor,
+                RenderColorConversion.ToColor32(ParticlePixelBuffer.OutlineLightColor),
+                ParticlePixelBuffer.OutlineLightenFactor));
 
             Assert.AreEqual(expected, pixels[world.Index(1, 1)], "冰的描边应向浅色插值");
             Assert.Greater((int)pixels[world.Index(1, 1)].r, (int)baseColor.r, "描边后的红分量高于基底色（提亮）");
@@ -733,8 +736,8 @@ namespace TapTap2026.Tests
             world.Set(1, 1, Ice);
             world.Set(2, 1, Water);   // 右侧：水（固液交界）
 
-            var pixels = new Color32[world.CellCount];
-            ParticlePixelBuffer.Fill(world, pixels, new Color32(9, 8, 7, 255));
+            var pixels = new RenderColor[world.CellCount];
+            ParticlePixelBuffer.Fill(world, pixels, new RenderColor(9, 8, 7, 255));
 
             Cell cell = world.GetCell(1, 1);
             Color32 baseColor = ParticleRegistry.Types[Ice].Info.Palette[cell.shade];

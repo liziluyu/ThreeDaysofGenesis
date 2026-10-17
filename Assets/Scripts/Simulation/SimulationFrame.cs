@@ -31,13 +31,13 @@ namespace TapTap2026.Simulation
     }
 
     /// <summary>
-    /// 一只实体的**渲染 DTO**（值类型）：渲染层需要的位置 / 朝向 / 动画倍率 / 占位色，
+    /// 一只实体的**渲染 DTO**（值类型）：渲染层需要的位置 / 朝向 / 行为状态 / 动画倍率 / 占位色，
     /// 没有任何 <see cref="Creature"/> 引用（活实体是 world 私有的可变对象）。
     /// </summary>
     /// <remarks>
     /// <see cref="Id"/> 稳定标识一只实体，渲染层据此对账视图——不用对象引用，因此帧可以在 worker 上生成。
-    /// <see cref="AnimationSpeedFactor"/> 在生成侧算好（它要读 AI 状态，那是 world 私有的）：
-    /// 渲染层只做「帧索引 × 倍率」。
+    /// <see cref="AiState"/> 与 <see cref="AnimationSpeedFactor"/> 都在生成侧填好（它们要读 AI 状态，
+    /// 那是 world 私有的）：渲染层只按状态选帧组、按倍率推进帧索引。
     /// </remarks>
     public struct CreatureRenderData
     {
@@ -185,8 +185,9 @@ namespace TapTap2026.Simulation
     }
 
     /// <summary>
-    /// 音频观察帧：本帧（自上次发布以来）的运动 / 存量 / 新建计数。由 world 的**唯一写者**在发布前抽干
-    /// 监视器得到，因此每个消费方都只是读同一份快照——谁先读谁后读都一样，谁也不清账。
+    /// 音频观察帧：本帧（自上次发布以来）的运动 / 存量 / 新建计数，以及各物种的出生 / 死亡计数。
+    /// 由 world 的**唯一写者**在发布前抽干监视器得到，因此每个消费方都只是读同一份快照——
+    /// 谁先读谁后读都一样，谁也不清账。
     /// </summary>
     public sealed class AudioFrame
     {
@@ -220,21 +221,21 @@ namespace TapTap2026.Simulation
             return index >= 0 && index < _creatureDeaths.Length ? _creatureDeaths[index] : 0;
         }
 
-        /// <summary>写入本帧的物种事件计数（采集侧调用；逐槽覆盖写，数组长度不足的槽按 0）。</summary>
-        internal void SetCreatureEvents(int[] spawns, int[] deaths)
+        /// <summary>
+        /// 抽干动物世界的物种事件计数并写进本帧（采集侧调用，同一线程）。
+        /// 直接写帧自己的数组：不经过共享临时缓冲，因此两个 worker / 两个世界并发采集也不会串账。
+        /// <paramref name="creatures"/> 为 null 时清零（本帧没有任何出生 / 死亡）。
+        /// </summary>
+        internal void CollectCreatureEvents(CreatureWorld creatures)
         {
-            for (int i = 0; i < _creatureSpawns.Length; i++)
+            if (creatures == null)
             {
-                _creatureSpawns[i] = i < spawns.Length ? spawns[i] : 0;
-                _creatureDeaths[i] = i < deaths.Length ? deaths[i] : 0;
+                System.Array.Clear(_creatureSpawns, 0, _creatureSpawns.Length);
+                System.Array.Clear(_creatureDeaths, 0, _creatureDeaths.Length);
+                return;
             }
-        }
 
-        /// <summary>把物种事件计数清零（无动物世界时）。</summary>
-        internal void ClearCreatureEvents()
-        {
-            System.Array.Clear(_creatureSpawns, 0, _creatureSpawns.Length);
-            System.Array.Clear(_creatureDeaths, 0, _creatureDeaths.Length);
+            creatures.ConsumeEvents(_creatureSpawns, _creatureDeaths);
         }
     }
 

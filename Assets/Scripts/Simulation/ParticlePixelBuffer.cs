@@ -120,7 +120,8 @@ namespace TapTap2026.Simulation
                 RenderColor color = BaseColor(cells[i], types, background, out bool painted);
 
                 // 描边：带 HasOutline 的格，四邻中有「显示为背景」的格（含越界）或是液体（固液交界）时
-                // 按 OutlineFactor 调暗。在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
+                // 按风格处理——默认乘 OutlineFactor 调暗，OutlineLighten 的（冰）向 OutlineLightColor 提亮。
+                // 在云/热叠加之前做——描边是基底色的一部分，热力染色照常能盖上去；
                 // painted 恒为真（底色已画出实物），描边格因此照常参与昼夜变暗。
                 // 液面高光：带 HasSurfaceHighlight 的格，正上方无实物（液面）时向浅蓝白插值（同一轮判定，不另开 pass）。
                 // 两个标志与邻居判据都查 types 的派生标志表（见 GetTypeRenderFlags），不再逐格拷贝 ParticleTypeInfo。

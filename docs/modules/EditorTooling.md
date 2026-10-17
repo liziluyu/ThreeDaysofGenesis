@@ -13,7 +13,7 @@
   >
   > 需要它做的其它事情（补 UI 对象、接引用）请手工做，或改代码绕开这两个方法。字体资产与 `TMP Settings` 属**只读区**，清单见 `docs/modules/ProjectSetup.md`「字体」一节。
 - `CreatureArtGenerator`：菜单 `Tools/Animals/Regenerate Creature Art Data`——从 `Assets/Images/Animals/*/1/*.png` + 切片 pivot 生成 `CreatureArtData.g.cs`（尸体轮廓/pivot/不透明行区间），美术变更后重跑（`CreatureArtDataTests` 对拍守卫）。
-- `BirdSpriteWiring`：菜单 `Tools/Animals/Wire Bird Sprites`——把鸟切片定点写进场景的 `_birdIdleFrames`，幂等、场景 YAML 不手改。
+- `BirdSpriteWiring`：菜单 `Tools/Animals/Wire Bird Sprites`——把鸟切片按语义定点写进场景的三块鸟帧字段（`_birdFlyFrames` 下排 bird_4..6 / `_birdPerchFrames` 上排 bird_0..3 / `_birdTakeoffFrame` = bird_5），并清掉历史遗留的单帧组字段；幂等、场景 YAML 不手改。
 
 ## MCP（AI Game Developer / Unity-MCP）
 
@@ -24,7 +24,7 @@
 
 ## 场景
 
-- `Assets/Scenes/MainScene.unity`：**游戏场景**（build 下标 0）。Main Camera + Global Light 2D + `ScreenBackdrop`。`Particle Sandbox` 物体上挂：`ParticleSimulationDriver` + `ParticleRenderer` + `ParticleSandboxSeeder` + `ParticleEditor` + `ParticleLightDriver`（光照开关/亮暗刻数/强度/云层消光/昼夜天空色/夜晚亮度）+ `SoundController` + `LiquidFlowSoundDriver` + `FireSoundDriver` + `LightningSoundDriver` + `FallingSandSoundDriver`；场景根另有 `Game Controller`（`GameController`）。UI 结构详见 `docs/modules/Rendering.md`。
+- `Assets/Scenes/MainScene.unity`：**游戏场景**（build 下标 0）。Main Camera + Global Light 2D + `ScreenBackdrop`。`Particle Sandbox` 物体上挂：`ParticleSimulationDriver` + `ParticleRenderer` + `ParticleSandboxSeeder` + `ParticleEditor` + `ParticleLightDriver`（光照开关/亮暗刻数/强度/云层消光/昼夜天空色/夜晚亮度）+ `SoundController` + `LiquidFlowSoundDriver` + `FireSoundDriver` + `LightningSoundDriver` + `FallingSandSoundDriver` + `AnimalSoundDriver`（动物间歇声，读帧快照）；场景根另有 `Game Controller`（`GameController`）。UI 结构详见 `docs/modules/Rendering.md`。
 - `Assets/Scenes/LevelSelect.unity`：**关卡选择场景**（build 下标 1）。根对象 `Canvas`（五颗关卡按钮 `Day0`..`Day3` + `Sandbox`，外加悬停描述用的 `ProbeText`，初始隐藏）与 `Level Select Controller`（`LevelSelectController`，逐条接好 `_levels` → 上述按钮 / `phase_01..05`，`_probeText` → `Canvas/ProbeText`，`_phases` → 五个阶段 JSON）。选关流程见 `docs/GameFlow.md` §9。
 
 **破坏这两个场景中任何一个都会破坏 build。**

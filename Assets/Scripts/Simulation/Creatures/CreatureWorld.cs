@@ -50,7 +50,8 @@ namespace TapTap2026.Simulation
         private int _nextId = 1;
 
         /// <summary>物种槽位数（= <see cref="CreatureSpecies"/> 的取值个数，含 <see cref="CreatureSpecies.None"/>）。
-        /// 事件记账数组按它开长度：新增物种只追加枚举值，槽位自动跟上。</summary>
+        /// 事件记账数组按它开长度：**新增物种时必须同步改这里**（取新枚举的最后一个值 + 1），
+        /// 否则越界槽位会被守卫跳过（不崩，但该物种的出生 / 死亡声会丢）。</summary>
         public const int SpeciesSlotCount = (int)CreatureSpecies.Bird + 1;
 
         /// <summary>自上次发布以来各物种的出生计数（下标 = <see cref="CreatureSpecies"/>）。
@@ -107,10 +108,11 @@ namespace TapTap2026.Simulation
             get { return _creatures; }
         }
 
-        /// <summary>新实体生成并入世界后触发（参数为实体）。</summary>
+        /// <summary>新实体生成并入世界后触发（参数为实体）。同线程监听者用；
+        /// 跨线程消费者（渲染之外的音频等）读帧里的物种计数，不订阅本事件（<see cref="Step"/> 可能不在主线程）。</summary>
         public event Action<Creature> CreatureSpawned;
 
-        /// <summary>实体死亡被清扫出世界后触发（参数为实体与死因）。</summary>
+        /// <summary>实体死亡被清扫出世界后触发（参数为实体与死因）。跨线程消费口径同 <see cref="CreatureSpawned"/>。</summary>
         public event Action<Creature, CreatureDeathCause> CreatureDied;
 
         /// <summary>
@@ -175,7 +177,14 @@ namespace TapTap2026.Simulation
 
             _creatures.Add(creature);
             creature.OnSpawn(this, world);
-            _spawnEvents[(int)creature.Species]++;
+
+            // 槽位守卫：枚举新增而 SpeciesSlotCount 忘了改时只丢事件记账，不让模拟线程抛异常。
+            int speciesSlot = (int)creature.Species;
+            if ((uint)speciesSlot < (uint)SpeciesSlotCount)
+            {
+                _spawnEvents[speciesSlot]++;
+            }
+
             CreatureSpawned?.Invoke(creature);
             return creature;
         }
@@ -261,7 +270,13 @@ namespace TapTap2026.Simulation
                 CreatureDeathMaterializer.Materialize(world, c);
 
                 c.OnDeath(this, world, c.PendingDeathCause);
-                _deathEvents[(int)c.Species]++;
+
+                int speciesSlot = (int)c.Species;
+                if ((uint)speciesSlot < (uint)SpeciesSlotCount)
+                {
+                    _deathEvents[speciesSlot]++;
+                }
+
                 CreatureDied?.Invoke(c, c.PendingDeathCause);
                 _creatures.RemoveAt(i);
             }
@@ -340,14 +355,25 @@ namespace TapTap2026.Simulation
         /// **只给帧采集用**：声音驱动等消费者只能读 <c>AudioFrame</c> 里的同一份数字，
         /// 谁先读谁后读都一样，也不再直接接触活世界（世界可能跑在 worker 线程上）。
         /// </summary>
-        /// <param name="spawns">出生计数目标缓冲，长度 ≥ <see cref="SpeciesSlotCount"/>（逐槽覆盖写）。</param>
-        /// <param name="deaths">死亡计数目标缓冲，长度 ≥ <see cref="SpeciesSlotCount"/>（逐槽覆盖写）。</param>
+        /// <param name="spawns">出生计数目标缓冲（逐槽覆盖写；短于 <see cref="SpeciesSlotCount"/> 的槽不写，但源计数照清）。</param>
+        /// <param name="deaths">死亡计数目标缓冲（口径同上）。</param>
         internal void ConsumeEvents(int[] spawns, int[] deaths)
         {
+            int spawnCount = spawns.Length < SpeciesSlotCount ? spawns.Length : SpeciesSlotCount;
+            int deathCount = deaths.Length < SpeciesSlotCount ? deaths.Length : SpeciesSlotCount;
+
             for (int i = 0; i < SpeciesSlotCount; i++)
             {
-                spawns[i] = _spawnEvents[i];
-                deaths[i] = _deathEvents[i];
+                if (i < spawnCount)
+                {
+                    spawns[i] = _spawnEvents[i];
+                }
+
+                if (i < deathCount)
+                {
+                    deaths[i] = _deathEvents[i];
+                }
+
                 _spawnEvents[i] = 0;
                 _deathEvents[i] = 0;
             }

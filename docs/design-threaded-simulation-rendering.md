@@ -101,7 +101,7 @@ worker 只写 `Writing` 槽；写完用 release publication 标记为 `Ready`。
    `SoundController`（`HighSpeedSilenced` 读帧）全部改走命令 / 帧。运行时代码里已无 `ParticleSimulationDriver.World` / `.Creatures` 的读法。
 4. ✅ `MotionMonitor.Reset` / `ParticleCountMonitor.ConsumeCreated` 由采集侧（发布前）抽干一次并写进 `AudioFrame`；
    消费方只读快照、不再清账 ⇒ 多个消费者读同一帧各拿各的（回归见 `SimulationFrameTests`）。
-5. ✅ 命令 / 帧行为的聚焦测试在 `Assets/Tests/EditMode/SimulationFrameTests.cs`（11 个用例）：命令有序应用（同格先涂后擦 vs 先擦后涂）、
+5. ✅ 命令 / 帧行为的聚焦测试在 `Assets/Tests/EditMode/SimulationFrameTests.cs`（12 个用例）：命令有序应用（同格先涂后擦 vs 先擦后涂）、
    入队不发布 / 边界才发布、笔刷半径是命令载荷、Resize 换世代、生成实体的 DTO、已发布帧在后续模拟突变后保持稳定
    （3 槽松弛度 = 两次发布）、像素与已知世界映射逐位一致、音频观察对多个消费者无副作用（含两个真实落沙声驱动读同一帧）、
    以及**相同 seed + 相同命令日志 ⇒ 同一 tick 边界上像素 / tick / 探针逐位一致**（确定性回归；`FramePump` 在 `TestParticleFixtures.cs` 里按生产路径采帧）。

@@ -16,7 +16,8 @@ namespace TapTap2026.Game
     /// 且**每次重摇** ⇒ 间歇而非节拍器。</para>
     /// <para><b>为什么不按只数</b>：口径是「场上存在该类动物就间歇放一声」，不是「每只各叫一声」。
     /// 十只兔子按只数铺声会糊成噪音，也与「一次事件最多一声」的降噪取舍一致（见下）。因此每物种只取
-    /// **存在性**（<c>is</c> 判定）、不数只数、不逐只发声——每帧只读一遍实体表，零分配、零 LINQ。</para>
+    /// **存在性**（读帧里 DTO 的 <see cref="CreatureRenderData.Species"/>）、不数只数、不逐只发声——
+    /// 每帧只读一遍已发布帧，零分配、零 LINQ，也不接触活世界（它在 worker 线程上）。</para>
     /// <para><b>为什么自带随机流</b>：本驱动是**纯观察者**，绝不能消耗粒子世界或动物世界各自那条 xorshift32——
     /// 否则「有没有挂这个声音驱动」会扰动模拟的每一次摇骰，确定性铁律失效。于是自带一条同算法的流，
     /// 只用来摇闲聊间隔（与事件声的音量抖动），同 seed 的出声时刻可复现、可测。</para>
@@ -29,7 +30,7 @@ namespace TapTap2026.Game
     /// **不会**回落到 <c>idleClip</c>；反过来闲聊声留空也不影响事件声。因此三种动物素材默认只走闲聊声，
     /// 出生 / 死亡事件路径保留、默认静音，将来填个文件名再启用。</para>
     /// <para><b>高速模式</b>：<see cref="SoundController.HighSpeedSilenced"/> 期间整段跳过——不倒计时、不摇骰、
-    /// 不结算事件（标志照旧保留，退出后按当时的标志补一声）。<see cref="SoundController"/> 本身也会丢弃，
+    /// 不结算事件（本帧计数照旧积压，退出后补一声）。<see cref="SoundController"/> 本身也会丢弃，
     /// 这里连骰子都不摇是为了不给随机流留下高速模式下的消耗痕迹。</para>
     /// <para><b>哑音容错</b>：素材未就位时不知道音频名——<see cref="SoundController.PlayOneShot"/> 自己只
     /// <c>LogWarning</c> 一次、不抛、不动其它声床；本驱动不缓存索引、不抛异常。</para>
@@ -56,7 +57,7 @@ namespace TapTap2026.Game
         /// <summary>seed == 0 时的替换值（黄金比例常数，避免全零种子退化成恒零序列；与 <see cref="CreatureWorld"/> 同一兜底）。</summary>
         private const uint FallbackSeed = 0x9E3779B9u;
 
-        [Tooltip("留空则回退到同物体 / 场景里的 ParticleSimulationDriver（只为拿动物世界）。")]
+        [Tooltip("留空则回退到同物体 / 场景里的 ParticleSimulationDriver（只为拿已发布帧：实体存在性 + 事件计数）。")]
         [SerializeField] private ParticleSimulationDriver _driver;
 
         [Tooltip("留空则回退到同物体 / 场景里的 SoundController。")]
