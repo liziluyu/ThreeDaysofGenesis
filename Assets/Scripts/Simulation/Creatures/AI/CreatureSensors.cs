@@ -132,12 +132,17 @@ namespace TapTap2026.Simulation
         /// 返回正下方第一个「**可栖面**（<see cref="CreatureTerrain.IsPerchable"/>：固体 ∪ 树叶 / 树干）或水」的行号；
         /// 扫到世界底或超出上限则视为**到底**（<paramref name="surfaceRow"/> = <see cref="int.MinValue"/>、返回 false）。
         /// 命中时顺带判定它是不是**合格栖息面**：命中格可栖且其正上方一格不是地形固体（上方敞开、不是实心体内部）。
+        /// 同时给出**降落口径** <paramref name="foliage"/>：命中格是树叶 / 树干且上方一格非固体（只有树才能落）。
         /// </summary>
         /// <remarks>
         /// <para><b>为什么扫描停条件含树叶 / 树干（而不仅是固体 + 水）</b>：本探针同时服务两个调用方——
-        /// 飞行高度带（探「正下方第一个落脚 / 落水面」）与降落（探「正下方可栖面」）；只认固体 + 水的话，
+        /// 飞行高度带（探「正下方第一个落脚 / 落水面」）与降落（探「正下方可落点」）；只认固体 + 水的话，
         /// 鸟永远看不到树冠、无法降落在叶顶（设计 §5 明确要求「下方有树冠 ⇒ 停在叶顶」）。
         /// 因此停条件取「可栖面 ∪ 水」，<paramref name="perchable"/> 再把它细分为「能站的顶面」与「水面 / 实心体内部」。</para>
+        /// <para><b><paramref name="perchable"/> 与 <paramref name="foliage"/> 的分工（<c>docs/plan-bird-ai.md</c> §17）</b>：
+        /// <paramref name="perchable"/> 仍是**高度带基准**（含地面与水——带宽要在地面上也有处安放，绝不在此收窄）；
+        /// <paramref name="foliage"/> 才是**降落口径**（只认树：树叶 / 树干，树干顶也算）。地面可站但不算树，
+        /// 所以鸟「能基准到地面」不等于「能落到地面」。</para>
         /// <para>越界（列出界 / 行落到 0 以下）一律视为到底。本函数对世界只读、零分配、不消耗随机流。</para>
         /// </remarks>
         /// <param name="world">被查询的世界（只读）。</param>
@@ -146,12 +151,15 @@ namespace TapTap2026.Simulation
         /// <param name="maxCells">最多向下扫描的格数（&le; 0 直接返回 false）。</param>
         /// <param name="surfaceRow">命中的落脚 / 落水面行（未命中时 <see cref="int.MinValue"/>）。</param>
         /// <param name="perchable">命中格是否是合格栖息面（可栖且上方一格非固体；未命中时 false）。</param>
+        /// <param name="foliage">命中格是否是**可降落的树**（树叶 / 树干且上方一格非固体；未命中时 false）。</param>
         /// <returns>是否在扫描范围内命中可栖面或水。</returns>
         public static bool ProbeSurfaceBelow(
-            ParticleWorld world, int x, int startRow, int maxCells, out int surfaceRow, out bool perchable)
+            ParticleWorld world, int x, int startRow, int maxCells, out int surfaceRow, out bool perchable,
+            out bool foliage)
         {
             surfaceRow = int.MinValue;
             perchable = false;
+            foliage = false;
             if (world == null || maxCells <= 0 || !world.IsInBounds(x, startRow))
             {
                 return false;
@@ -172,8 +180,9 @@ namespace TapTap2026.Simulation
                 }
 
                 surfaceRow = y;
-                perchable = CreatureTerrain.IsPerchable(world, x, y)
-                    && !CreatureTerrain.IsSolid(world, x, y + 1);
+                bool openAbove = !CreatureTerrain.IsSolid(world, x, y + 1);
+                perchable = CreatureTerrain.IsPerchable(world, x, y) && openAbove;
+                foliage = CreatureTerrain.IsFoliage(world, x, y) && openAbove;
                 return true;
             }
 

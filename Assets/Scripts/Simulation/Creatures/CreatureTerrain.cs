@@ -65,6 +65,30 @@ namespace TapTap2026.Simulation
             return id == ParticleIds.TreeLeaf || id == ParticleIds.TreeTrunk;
         }
 
+        /// <summary>
+        /// 本格是否是**树的一部分**（树叶 ∪ 树干，树干顶也算「树」）。
+        /// </summary>
+        /// <remarks>
+        /// <b>只服务鸟的降落判定</b>（<c>docs/plan-bird-ai.md</c> §17）：地面虽然可站，但不属于「树」，
+        /// 鸟只应停在冠顶 / 树干顶。与 <see cref="IsPerchable"/> 的分工是——<c>perchable</c> 的
+        /// 口径（固体 ∪ 树）仍是**高度带基准**（带宽要在地面上也有处安放），而降落额外要求本函数为真，
+        /// 即在 `<see cref="IsPerchable"/>` 之上再收窄成「只认树」。纯查询：不写世界、不分配、不消耗随机流。
+        /// </remarks>
+        /// <param name="world">被查询的世界。</param>
+        /// <param name="x">格坐标 x。</param>
+        /// <param name="y">格坐标 y。</param>
+        /// <returns>越界或既非树叶也非树干返回 false。</returns>
+        public static bool IsFoliage(ParticleWorld world, int x, int y)
+        {
+            if (world == null || !world.IsInBounds(x, y))
+            {
+                return false;
+            }
+
+            ushort id = world.GetCell(x, y).typeId;
+            return id == ParticleIds.TreeLeaf || id == ParticleIds.TreeTrunk;
+        }
+
         /// <summary>本格是否是水（淹没 / 浮力判据）。</summary>
         /// <param name="world">被查询的世界。</param>
         /// <param name="x">格坐标 x。</param>

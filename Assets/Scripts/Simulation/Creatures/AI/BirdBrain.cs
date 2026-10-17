@@ -19,12 +19,15 @@ namespace TapTap2026.Simulation
     /// 全是非固体才保持方向、**不摇骰**；受阻才 1/3 摇骰换向）。竖直走**随机目标高度的上下巡航**（v3，见
     /// <c>docs/plan-bird-ai.md</c> §12）：以 <see cref="CreatureSensors.ProbeSurfaceBelow"/> 探到的正下方
     /// 第一个可栖面 / 水为基准，目标高度 <see cref="Creature.TargetAltitudeCells"/> ∈
-    /// [<see cref="MinAltitudeCells"/>, <see cref="MaxAltitudeCells"/>]，到达即用
+    /// [<see cref="MinAltitudeCells"/>, <see cref="MaxAltitudeCells"/>]（**名义**带顶 50；实际每张地图按
+    /// <c>Min(MaxAltitudeCells, 世界高 − CeilingMarginCells − 1 − surfaceRow)</c> 的**可达净空**逐帧钳制，见
+    /// <c>docs/plan-bird-ai.md</c> §18），到达即用
     /// <see cref="CreatureWorld.NextInt"/> 重掷；<c>Y &gt; 世界高 − <see cref="CeilingMarginCells"/></c> 是**天花板硬边界**
-    ///（优先于高度带，无条件下压并把目标收敛到下限）；探不到基准（整列扫到世界底）则悬停。巡航计时归零且
-    /// 正下方 <see cref="LandProbeCells"/> 格内有**合格栖息面**
-    /// ⇒ 下压 <c>IntentVy</c> 直到 <see cref="Creature.IsGrounded"/>（转 Perched）；下方无可栖面则重置一个
-    /// <see cref="LandRetryTicks"/> 短计时继续找落点。</para>
+    ///（优先于高度带，无条件下压并把目标收敛到下限）；探不到基准（整列扫到世界底）则悬停。捕食视野与降落探针
+    /// **仍为 24 格、不随带顶放大**（§18.2：鸟只有漂到低空才可能发现猎物 / 落树）。巡航计时归零且
+    /// 正下方 <see cref="LandProbeCells"/> 格内有**可降落的树**（树叶 / 树干，见 <see cref="CreatureTerrain.IsFoliage"/>）
+    /// ⇒ 下压 <c>IntentVy</c> 直到 <see cref="Creature.IsGrounded"/>（转 Perched）。**地面不落**（<c>docs/plan-bird-ai.md</c> §17）：
+    /// 地面虽可站但不算树，无树的图上鸟因此永不落地，下方没有树则重置一个 <see cref="LandRetryTicks"/> 短计时继续巡航找落点。</para>
     /// <para><b>Perched（栖息）：</b><c>IntentVx = IntentVy = 0</c>；计时（<see cref="PerchTicksMin"/> +
     /// [0, <see cref="PerchTicksRange"/>]）归零即起飞（随机水平方向 + <c>IntentVy = FlyVSpeed</c>）。</para>
     /// <para><b>v1 非目标：</b>不进食、不繁殖、不筑巢、不做全局寻路。</para>
@@ -76,15 +79,17 @@ namespace TapTap2026.Simulation
         /// <summary>巡航时维持的最小离面高度（格）：正下方可栖面 / 水面距此以内即上抬，避免贴面飞行。</summary>
         public const int MinAltitudeCells = 6;
 
-        /// <summary>巡航高度上限（格）：相对正下方第一个可栖面 / 水的最大高度。与 <see cref="MinAltitudeCells"/> 一起
-        /// 构成 [6, 24] 的随机上下巡航带——到达目标即重摇，见 <c>docs/plan-bird-ai.md</c> §12。</summary>
-        public const int MaxAltitudeCells = 24;
+        /// <summary>巡航高度上限（格）：相对正下方第一个可栖面 / 水的**名义**最大高度。**带顶名义 50，实际每个地图
+        /// 由可达净空钳制**——运行时的 <c>maxAltitude = Min(本值, 世界高 − <see cref="CeilingMarginCells"/> − 1 − surfaceRow)</c>
+        /// （不小于 <see cref="MinAltitudeCells"/>）；摇骰与「目标越界重摇」都用它，否则摇到顶到天花板的不可达目标
+        /// 会在天花板分支与带底之间反复抖，见 <c>docs/plan-bird-ai.md</c> §18。</summary>
+        public const int MaxAltitudeCells = 50;
 
         /// <summary>天花板余量（格）：<c>Y &gt; 世界高 − 本值</c> 即下压，避免顶到世界上界。</summary>
         public const int CeilingMarginCells = 12;
 
-        /// <summary>降落探测距离（格）：正下方这么多格内出现合格栖息面才下压降落。与带顶
-        /// <see cref="MaxAltitudeCells"/> 同量级，否则带的上半段永远探不到落点、无法起降。</summary>
+        /// <summary>降落探测距离（格）：正下方这么多格内出现**可降落的树**（树叶 / 树干，见 <see cref="CreatureTerrain.IsFoliage"/>）才下压降落。
+        /// **§18 起刻意不随带顶 50 放大、保持 24**（用户口径）：高于 24 时探不到落点，鸟只有漂低时才降落。</summary>
         public const int LandProbeCells = 24;
 
         /// <summary>墙感知换向的前探格数：当前方向前方这么多格的体高行内全是非固体才认为畅通、保持原方向。</summary>
@@ -113,8 +118,8 @@ namespace TapTap2026.Simulation
         /// <summary>降落未找到落点时的短巡航计时（逻辑帧 ≈ 2 秒）。</summary>
         public const int LandRetryTicks = 40;
 
-        /// <summary>捕食视野（格）：Fly 态思考帧上，盒中心欧氏距离 ≤ 本值才把猎物纳入候选并摇骰。与带顶
-        /// <see cref="MaxAltitudeCells"/> 同量级，否则带的上半段看不见任何地面猎物。</summary>
+        /// <summary>捕食视野（格）：Fly 态思考帧上，盒中心欧氏距离 ≤ 本值才把猎物纳入候选并摇骰。
+        /// **§18 起刻意不随带顶 50 放大、保持 24**（用户口径）：高度 &gt; 24 时看不见地面猎物，鸟只有漂低才捕食。</summary>
         public const int HuntDetectCells = 24;
 
         /// <summary>捕食触发的骰子分母：视野内有猎物时 <c>1 / 本值</c> 概率发起（视野内期望约 20 秒一次）。</summary>
@@ -234,7 +239,8 @@ namespace TapTap2026.Simulation
             }
         }
 
-        /// <summary>空中巡航：墙感知换向（水平）+ 随机目标高度的上下巡航 / 降落（竖直，见 <c>docs/plan-bird-ai.md</c> §12）。</summary>
+        /// <summary>空中巡航：墙感知换向（水平）+ 随机目标高度的上下巡航 / **计时降落树叶 / 树干**（地面不落；竖直，见
+        /// <c>docs/plan-bird-ai.md</c> §12 / §17）。</summary>
         private static void ThinkFly(Creature creature, CreatureWorld creatures, ParticleWorld world, int cx)
         {
             // 已落地（主动降落完成）→ 转栖息并摇下一次起飞计时。
@@ -271,19 +277,20 @@ namespace TapTap2026.Simulation
                 creature.IntentVx = newDir * FlySpeed;
             }
 
-            // 降落：巡航计时归零且正下方 LandProbeCells 格内有合格栖息面 ⇒ 停止水平、下压直到落地。
+            // 降落：巡航计时归零且正下方 LandProbeCells 格内有**可降落的树**（树叶 / 树干）⇒ 停止水平、下压直到落地。
+            // 地面虽然可栖（perchable = true）但不算树 ⇒ 不落（v7，见 docs/plan-bird-ai.md §17）。
             if (creature.StateTicksLeft <= 0)
             {
                 if (CreatureSensors.ProbeSurfaceBelow(
-                        world, cx, footRow - 1, LandProbeCells, out _, out bool perchable)
-                    && perchable)
+                        world, cx, footRow - 1, LandProbeCells, out _, out bool perchable, out bool foliage)
+                    && perchable && foliage)
                 {
                     creature.IntentVx = 0f;
                     creature.IntentVy = -FlyVSpeed;
                     return;
                 }
 
-                // 下方没有合格落点：重置短计时继续巡航找落点（不消耗额外随机数）。
+                // 下方没有树：重置短计时继续巡航找落点（不消耗额外随机数）——无树的图上鸟因此永不落地。
                 creature.StateTicksLeft = LandRetryTicks;
             }
 
@@ -295,23 +302,29 @@ namespace TapTap2026.Simulation
                 return;
             }
 
-            // 高度带（v3，见 docs/plan-bird-ai.md §12）：正下方第一个可栖面 / 水 = 高度基准；
+            // 高度带（v3，见 docs/plan-bird-ai.md §12）：正下方第一个可栖面 / 水 = 高度基准
+            //（基准**含地面与水**，不随 §17 的降落口径收窄，否则带宽在地面上无处安放）；
             // 扫到世界底仍无基准 ⇒ 悬停（与 v2 一致，不摇骰）。
             if (!CreatureSensors.ProbeSurfaceBelow(
-                    world, cx, footRow - 1, world.Height, out int surfaceRow, out _))
+                    world, cx, footRow - 1, world.Height, out int surfaceRow, out _, out _))
             {
                 creature.IntentVy = 0f;
                 return;
             }
 
-            // 目标无效（含新实体默认 0）或已达成 ⇒ 重摇 ∈ [Min, Max]。
             int altitude = (footRow - 1) - surfaceRow;
+            // 上限自适应天花板（§18）：目标必须能在 Y <= 世界高 − CeilingMarginCells 的净空内达到，
+            // 否则摇到不可达目标就会「爬顶 -> 天花板分支把目标重置为下限 -> 砸回带底」地反复抖。
+            int maxAltitude = Max(
+                MinAltitudeCells,
+                Min(MaxAltitudeCells, world.Height - CeilingMarginCells - 1 - surfaceRow));
+            // 目标无效（含新实体默认 0 / 超出当前净空）或已达成 ⇒ 重摇 ∈ [Min, maxAltitude]。
             int targetAltitude = creature.TargetAltitudeCells;
             if (targetAltitude < MinAltitudeCells
-                || targetAltitude > MaxAltitudeCells
+                || targetAltitude > maxAltitude
                 || altitude == targetAltitude)
             {
-                targetAltitude = MinAltitudeCells + creatures.NextInt(MaxAltitudeCells - MinAltitudeCells + 1);
+                targetAltitude = MinAltitudeCells + creatures.NextInt(maxAltitude - MinAltitudeCells + 1);
                 creature.TargetAltitudeCells = targetAltitude;
             }
 
@@ -504,6 +517,18 @@ namespace TapTap2026.Simulation
         {
             int truncated = (int)value;
             return value < truncated ? truncated - 1 : truncated;
+        }
+
+        /// <summary>两整数取小（与 <c>FishBrain.Min</c> 同做法：手写以保持决策路径零 UnityEngine / 零 System 依赖）。</summary>
+        private static int Min(int a, int b)
+        {
+            return a < b ? a : b;
+        }
+
+        /// <summary>两整数取大（同 <see cref="Min"/>：手写以守住决策路径的零依赖）。</summary>
+        private static int Max(int a, int b)
+        {
+            return a > b ? a : b;
         }
     }
 }
