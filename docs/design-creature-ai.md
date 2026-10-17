@@ -96,6 +96,7 @@ Y += 1; rowMin++; rowMax++; 重测同一列（每帧至多抬一格）
 7. **掩埋致死**（`Crushed`，2026-10-12 新增）：用与物理同一套覆盖口径算身体矩形（`colMin/colMax`/`rowMin/rowMax` 都带 `Epsilon`），**每一格**都是**静止**的固体（`CreatureTerrain.IsSolid` 且 `!world.HasMomentum`）⇒ `BuriedTicks++`，否则清零；`> BuriedTicksLimit`（10 帧 = 0.5 秒）→ `Kill(Crushed)`。门控 `DiesWhenBuried` **默认 true**（埋压是对任何实体都成立的物理挤压，与该组其余 opt-in 虚属性不同）。两个防误杀细节：**覆盖物必须静止**（正在下落的沙柱穿过身体不算被埋）+ **0.5 秒宽限**（落沙擦过不瞬间判死）。
 8. **溺死**（兔子）：`IsSubmerged` → `SubmergedTicks++`，否则清零；`> DrownTicksLimit`（虚属性，默认 160 帧 = 8 秒）→ `Kill(Drowned)`。
 9. **搁浅**（鱼）：非 `IsSubmerged` → `BeachedTicks++`，否则清零；`> 200`（10 秒）→ `Kill(Beached)`。
+10. **老死**（`OldAge`，2026-10-17 新增）：`MaxAgeTicks > 0 && AgeTicks >= MaxAgeTicks` → `Kill(OldAge)`。门控 `MaxAgeTicks` **默认 0 = 永不老死**（opt-in；测试探针零行为差异），三个物种各自覆盖为 `LifespanTicks`（兔 5200 / 鱼 6400 / 鸟 12000 帧，见 §25）。**确定性、零随机数**：不摇骰、不做个体抖动；排在 ⑥–⑩ 之后 ⇒ 同帧多因时优先报告更具体的近因（烧 / 压 / 溺 / 搁浅 / 饿）。
 
 物种常量（虚属性加到 `Creature`，或 Brain 私有常量——**选定：放各 Brain 里**，基类只留槽位与通用机制）：
 
@@ -521,12 +522,13 @@ ParticleWorld.StepLogic()
 - **与兔食草共用黑板**：`FoodTargetX/Y` / `FoodTargetFailTicks` / `HungerTicks` / `FeedingCooldownTicks` 由两个物种按自己的食物类型解释；鸟仍 `StarvesWithoutFood = false`，不新增饿死。
 - **确定性**：觅食只在思考帧；`world.Clear` 生物质不带 Organic、空气写不抽 shade ⇒ 鸟进食不消耗世界随机流。
 
-## 25. 衰老死亡（待实现，2026-10-17）
+## 25. 衰老死亡（已实现，2026-10-17）
 
-权威方案见 **`docs/plan-creature-aging.md`**；本节只记与 AI / 死亡链的接口约定。
+权威方案与**实测标定数据**见 **`docs/plan-creature-aging.md`**；本节只记与 AI / 死亡链的接口约定。
 
-- **门与数值**：基类新增虚属性 `Creature.MaxAgeTicks`（**默认 0 = 永不老死**，与 `DrownsInWater` / `StarvesWithoutFood` 同一 opt-in 风格）；三个物种类各自 `LifespanTicks` = 兔 **3600** / 鱼 **4800** / 鸟 **12000** 逻辑帧（180 / 240 / 600 秒），并覆盖 `MaxAgeTicks`。寿命只新增「上限」，繁殖仍只有成年下限（不引入更年期）。
-- **判死位置**：`Creature.ApplyLocomotion` 末尾新增 **⑪ 老死**，排在 ⑩ 饿死之后 ⇒ 同帧多因时优先报告更具体的近因；判据 `MaxAgeTicks > 0 && AgeTicks >= MaxAgeTicks` → `Kill(CreatureDeathCause.OldAge)`，**零随机数、零分配、不读世界**。
+- **门与数值**：基类新增虚属性 `Creature.MaxAgeTicks`（**默认 0 = 永不老死**，与 `DrownsInWater` / `StarvesWithoutFood` 同一 opt-in 风格）；三个物种类各自 `LifespanTicks` = 兔 **5200** / 鱼 **6400** / 鸟 **12000** 逻辑帧（260 / 320 / 600 秒），并覆盖 `MaxAgeTicks`。寿命只新增「上限」，繁殖仍只有成年下限（不引入更年期）。
+- **数值来自实测**（食物充足、无天敌）：成对出生间隔兔 405 / 鱼 600 / 鸟 3025 帧（≈ 各物种繁殖冷却）；兔的种群平衡扫描显示寿命 ≤3600 会随机灭绝、4800~12000 稳定在软上限附近 ⇒ 兔取平台中段 5200（成年后约 12 次繁殖尝试）、鱼 6400（约 10 次，因多一道「相邻 + 深水」门槛）、鸟 12000（约 3.6 次，顶级捕食者最慢）。
+- **判死位置**：`Creature.ApplyLocomotion` 末尾 **⑪ 老死**，排在 ⑩ 饿死之后 ⇒ 同帧多因时优先报告更具体的近因；判据 `MaxAgeTicks > 0 && AgeTicks >= MaxAgeTicks` → `Kill(CreatureDeathCause.OldAge)`，**零随机数、零分配、不读世界**。
 - **帧语义**：`Step` ② 的 `ApplyLocomotion` 在 `AgeTicks++` 之前 ⇒ 个体存活满 `MaxAgeTicks` 帧、在下一帧的反射段老死（`AgeTicks = Lifespan − 1` 时再步一帧仍活，随后一帧死）。
 - **零新增**：`AgeTicks` 字段与 `CreatureDeathCause.OldAge` 枚举都已在代码里，本次**不加字段 / 枚举项 / 事件 / 声音 / 渲染字段**；死亡走既有链（清扫 → 生物质 → `OnDeath` / `CreatureDied` → 帧里的物种死亡计数）。渲染 DTO 不含 `AgeTicks`，因此画面零改动（年龄表现属独立需求）。
-- **已知取舍**：不做个体寿命抖动 ⇒ 同批投放的动物会成批老死（确定性优先）；设置资产 `_highSpeedLogicFrames` 若调到 6000（脚本字段默认值）则沙盒高速会话里兔 / 鱼会自然老死一批、鸟不会——这是目前观察衰老的唯一窗口。`Assets/Data/Phases/*.json` 的 `simulationTicks` 现值最长 2000，胜负判定不受影响；守卫测试钉住「阶段时长 < 对应物种寿命」。
+- **已知取舍**：不做个体寿命抖动 ⇒ 同批投放的动物会成批老死（确定性优先）；同批同龄个体还可能在软上限卡住「无空位不生」、随后一起老死（实测 8 只同龄起跑即如此），有年龄结构（分批投放 / 逐步繁殖）时不会。`Assets/Data/Phases/*.json` 的 `simulationTicks` 现值最长 2000，胜负判定不受影响；守卫测试 `Aging_StageHighSpeedRunsFitInsideLifespans` 钉住「阶段时长 < 对应物种寿命」。

@@ -6,7 +6,8 @@ namespace TapTap2026.Simulation
     /// </summary>
     /// <remarks>
     /// 枚举值一经确定**只能追加、不得重排**（与 <see cref="ParticleIds"/> 的注册顺序同理）。
-    /// 本阶段只有物理，实际只会产生 <see cref="Unknown"/>；其余取值是给后续 AI / 环境交互预留的。
+    /// 每种取值现在都由生产代码产生（烧 / 压 / 溺 / 饿 / 老 / 搁浅 / 捕猎）；
+    /// <see cref="Unknown"/> 只是未标注死因时的默认值。
     /// </remarks>
     public enum CreatureDeathCause
     {

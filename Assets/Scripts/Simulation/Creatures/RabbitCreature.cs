@@ -12,13 +12,23 @@ namespace TapTap2026.Simulation
     /// 水中速率经 <see cref="Buoyancy"/> 重算后与初版逐位一致。改重力时这两个常数要一起动——
     /// 只提重力会让终端速度成为真正的上限、看不出效果。</para>
     /// <para><b>行为：</b>决策全在静态 <see cref="RabbitBrain"/>（Idle / Wander / Flee），本类只负责
-    /// 用 <see cref="ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 起跳 / 致死门控）接到虚门上；
+    /// 用 <see cref="ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 起跳 / 致死门控 / 寿命）接到虚门上；
     /// 逐帧的意图逼近、悬崖守卫、撞墙翻越、环境致死由基类 <see cref="Creature.ApplyLocomotion"/> 统一执行。</para>
     /// </remarks>
     public sealed class RabbitCreature : Creature
     {
         /// <summary>被鸟咬中后的死亡骰分母（1/本值 概率死亡）：2 ⇒ 50%，开阔地被扑中有一半机会挣脱。</summary>
         public const int HuntDeathRoll = 2;
+
+        /// <summary>寿命（逻辑帧）：5200 帧 = 260 秒 @20 逻辑帧/秒。
+        /// <para><b>实测依据（2026-10-17 标定，食物无限、无天敌）</b>：相邻成年异性一对的出生间隔
+        /// 恒为繁殖冷却 400 帧（实测均值 405，边吃草边繁殖时 458）；48 格宽草地上的种群平衡扫描
+        /// 显示寿命 2400 / 3000 会灭绝、3600 在部分种子上仍灭绝、**4800 与 6000 三种种子都稳定在
+        /// 软上限附近（尾段均值 10.7~11.3，上限 12）**，5200 取在这段平台中间 ⇒ 一只兔成年后
+        /// 约可完成 12 次繁殖尝试（<c>(5200 − 成年 300) / 405 ≈ 12</c>）。</para>
+        /// <para>同时必须显著长于既有阶段时长（最长 2000 帧）与测试夹具的年龄预算（1000 + 600 帧），
+        /// 否则兔子会在关卡中途成批老死、把可胜阶段变成不可胜。</para></summary>
+        public const int LifespanTicks = 5200;
 
         /// <summary>构造一只 1.5 × 1 格的兔子（位置由 <see cref="CreatureWorld.Spawn"/> 放置）。</summary>
         public RabbitCreature()
@@ -81,6 +91,13 @@ namespace TapTap2026.Simulation
         protected override bool StarvesWithoutFood
         {
             get { return true; }
+        }
+
+        /// <summary>兔子有固定寿命：<see cref="Creature.AgeTicks"/> 达到 <see cref="LifespanTicks"/> 即老死
+        /// （确定性、无个体抖动；复用既有死亡链）。</summary>
+        public override int MaxAgeTicks
+        {
+            get { return LifespanTicks; }
         }
 
         /// <summary>逃命优先：Flee 态跳过悬崖守卫，宁可冲下坑也不回头撞火。</summary>

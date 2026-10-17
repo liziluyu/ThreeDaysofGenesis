@@ -14,13 +14,21 @@ namespace TapTap2026.Simulation
     /// 入水后缓慢下沉。两者都不是特判，是同一条物理公式配不同常数。</para>
     /// <para><b>行为：</b>决策全在静态 <see cref="FishBrain"/>（Swim / Stranded；**饥饿觅食是 Swim 的子行为**——饥饿过阈值时
     /// 追附近水草并咬掉整株最顶一格，饥饿饱和则饿死），本类只负责用
-    /// <see cref="ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 游动 / 起跳 / 致死门控）接到虚门上；
+    /// <see cref="ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 游动 / 起跳 / 致死门控 / 寿命）接到虚门上；
     /// 逐帧的意图逼近、接触火 / 搁浅致死由基类 <see cref="Creature.ApplyLocomotion"/> 统一执行。</para>
     /// </remarks>
     public sealed class FishCreature : Creature
     {
         /// <summary>被鸟咬中后的死亡骰分母（1/本值 概率死亡）：3 ⇒ ≈33%，鱼在水里更难抓。</summary>
         public const int HuntDeathRoll = 3;
+
+        /// <summary>寿命（逻辑帧）：6400 帧 = 320 秒 @20 逻辑帧/秒。
+        /// <para><b>实测依据（2026-10-17 标定）</b>：相邻成年异性一对的出生间隔恒为繁殖冷却 600 帧
+        /// （实测 600 整）⇒ <c>(6400 − 成年 400) / 600 = 10</c>，即一只鱼成年后约 10 次繁殖尝试。
+        /// 鱼还多一道「双方必须完全没入 ≥7 格深的水且相邻」的门槛，实测自由游动时个体难得靠近、
+        /// 种群几乎不扩张 ⇒ 寿命刻意取得比兔更长。同时必须显著长于既有阶段时长（最长 2000 帧）
+        /// 与测试夹具的年龄预算（1000 + 600 帧），否则鱼会在关卡中途成批老死、把可胜阶段变成不可胜。</para></summary>
+        public const int LifespanTicks = 6400;
 
         /// <summary>构造一条 1 × 0.5 格的鱼（位置由 <see cref="CreatureWorld.Spawn"/> 放置）。</summary>
         public FishCreature()
@@ -79,6 +87,13 @@ namespace TapTap2026.Simulation
         protected override bool StarvesWithoutFood
         {
             get { return true; }
+        }
+
+        /// <summary>鱼有固定寿命：<see cref="Creature.AgeTicks"/> 达到 <see cref="LifespanTicks"/> 即老死
+        /// （确定性、无个体抖动；复用既有死亡链）。</summary>
+        public override int MaxAgeTicks
+        {
+            get { return LifespanTicks; }
         }
 
         /// <summary>重力 0.24 格 / 逻辑帧²（与兔子同值：离水时的下坠感一致；比初版 0.08 快 3 倍）。</summary>

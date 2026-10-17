@@ -7,7 +7,7 @@ namespace TapTap2026.Tests
 {
     /// <summary>
     /// 死亡物质化（<see cref="CreatureDeathMaterializer"/> / <see cref="BiomassProfile"/>）与
-    /// <see cref="CreatureWorld"/> 清扫阶段的接入契约：轮廓映射、物种选择、跳过规则、四种死因的事件顺序，
+    /// <see cref="CreatureWorld"/> 清扫阶段的接入契约：轮廓映射、物种选择、跳过规则、五种死因的事件顺序，
     /// 以及物质化后的生物质腐败闭环。
     /// </summary>
     /// <remarks>
@@ -592,7 +592,7 @@ namespace TapTap2026.Tests
         }
 
         /// <summary>
-        /// 四种死因（Burned / Drowned / Beached / Starved）各跑一次：<see cref="CreatureWorld.CreatureDied"/>
+        /// 五种死因（Burned / Drowned / Beached / Starved / OldAge）各跑一次：<see cref="CreatureWorld.CreatureDied"/>
         /// 恰好发一次、参数为原死因，且清扫后 <c>Creatures.Count == 0</c>；同时尸体已物质化。
         /// </summary>
         [Test]
@@ -604,6 +604,7 @@ namespace TapTap2026.Tests
                 CreatureDeathCause.Drowned,
                 CreatureDeathCause.Beached,
                 CreatureDeathCause.Starved,
+                CreatureDeathCause.OldAge,
             };
 
             for (int i = 0; i < causes.Length; i++)

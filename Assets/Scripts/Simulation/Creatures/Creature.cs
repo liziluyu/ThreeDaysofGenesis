@@ -99,7 +99,8 @@ namespace TapTap2026.Simulation
         /// <summary>是否存活。由 <see cref="Kill"/> 置 false，在世界清扫阶段真正移除。</summary>
         public bool Alive;
 
-        /// <summary>已存活的逻辑帧数（每推进一帧 +1，用于寿命 / 渲染节拍）。</summary>
+        /// <summary>已存活的逻辑帧数（每推进一帧 +1）。繁殖只用它的成年下限；<see cref="MaxAgeTicks"/>
+        /// 是它的判死读者（达到上限即老死）。</summary>
         public int AgeTicks;
 
         /// <summary>本帧脚下是否有支撑（<see cref="StepPhysics"/> 收尾时刷新）。</summary>
@@ -363,6 +364,15 @@ namespace TapTap2026.Simulation
             get { return false; }
         }
 
+        /// <summary>寿命上限（逻辑帧）：<see cref="AgeTicks"/> 达到它即 <see cref="Kill"/> 标注
+        /// <see cref="CreatureDeathCause.OldAge"/>。**0 = 永不老死（默认）**——与 <see cref="DrownsInWater"/> /
+        /// <see cref="StarvesWithoutFood"/> 同一 opt-in 风格：只有显式覆盖本属性的物种才有寿命，
+        /// 测试探针与未接线的物种因此零行为差异。</summary>
+        public virtual int MaxAgeTicks
+        {
+            get { return 0; }
+        }
+
         /// <summary>物种调试名（中文，日志 / 编辑器用）。</summary>
         public abstract string DebugName { get; }
 
@@ -421,8 +431,9 @@ namespace TapTap2026.Simulation
         /// <para>顺序即语义：**先消费「锁潜 + 贴地」的伏底门控**（⓪b）→ 再逼近意图 → 再按 <see cref="IntentVx"/> 定朝向 → 悬崖守卫可能在探到前方无支撑时
         /// 反转意图 → 若**上一步物理的横向积分确实被挡住**则按墙探针三态分流（一格高的坎 → 贴地跨上去；
         /// 不可翻越 → 反转意图；探针答「无墙」→ 不动），若被**世界边界**夹住则掉头（边界处探针必答「无墙」，
-        /// 不能与开阔地混同，否则永远顶着边界） → 消费起跳脉冲 → 最后统一做环境致死判定（⑥ 火 / ⑦ 掩埋属
-        /// 「即时环境致死」——判据只依赖当前帧环境；⑧ 溺死 / ⑨ 搁浅 / ⑩ 饿死属「计时类死因」，排在其后）。</para>
+        /// 不能与开阔地混同，否则永远顶着边界） → 消费起跳脉冲 → 最后统一做环境致死判定（⑥ 火 / ⑥b 捕猎 / ⑦ 掩埋属
+        /// 「即时环境致死」——判据只依赖当前帧环境；⑧ 溺死 / ⑨ 搁浅 / ⑩ 饿死属「计时类死因」，排在其后；
+        /// ⑪ 老死排在所有环境 / 计时死因之后，同帧多因时优先报告更具体的近因）。</para>
         /// </remarks>
         /// <param name="world">被查询的粒子世界（只读）。</param>
         internal void ApplyLocomotion(ParticleWorld world)
@@ -623,6 +634,16 @@ namespace TapTap2026.Simulation
             if (StarvesWithoutFood && HungerTicks >= MaxHungerTicks)
             {
                 Kill(CreatureDeathCause.Starved);
+            }
+
+            // ⑪ 老死（确定性、无随机数）：每帧一次整数比较，不分配、不读世界。
+            //    排在所有环境 / 计时死因之后 ⇒ 同帧多因时优先报告更具体的近因
+            //    （烧死 / 压死 / 溺死 / 搁浅 / 饿死），老死只是「没有别的死因」时的收尾。
+            //    MaxAgeTicks = 0（基类默认）⇒ 本分支永不成立：只有显式覆盖寿命的物种会老死。
+            int maxAge = MaxAgeTicks;
+            if (maxAge > 0 && AgeTicks >= maxAge)
+            {
+                Kill(CreatureDeathCause.OldAge);
             }
         }
 

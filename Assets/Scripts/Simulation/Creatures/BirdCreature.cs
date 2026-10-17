@@ -20,7 +20,7 @@ namespace TapTap2026.Simulation
     /// 鸟能停在树冠叶顶；但叶子不挡水平 / 上升（<see cref="CreatureTerrain.IsSolid"/> 不变），
     /// 因此鸟**水平飞穿树冠不受阻**。</para>
     /// <para><b>行为：</b>决策全在静态 <see cref="BirdBrain"/>（Perched / Fly / Flee / Hunt / SeekFood / Eat），本类只负责用
-    /// <see cref="Creature.ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 飞行 / 致死门控）接到虚门上。</para>
+    /// <see cref="Creature.ShouldThink"/> 把思考降到 2 Hz，并把物种常量（加速度 / 飞行 / 致死门控 / 寿命）接到虚门上。</para>
     /// <para><b>进食：</b>饥饿时（<see cref="BirdBrain.HungryThreshold"/>）优先寻找并食用生物质
     /// （<see cref="ParticleIds.Biomass"/>，经 <see cref="ParticleWorld.Clear"/> 清除一格）；世界没有生物质时
     /// 回退到既有捕猎（Hunt）。<see cref="StarvesWithoutFood"/> = false ⇒ **不因饥饿而死**。</para>
@@ -28,6 +28,14 @@ namespace TapTap2026.Simulation
     /// </remarks>
     public sealed class BirdCreature : Creature
     {
+        /// <summary>寿命（逻辑帧）：12000 帧 = 600 秒 @20 逻辑帧/秒。
+        /// <para><b>实测依据（2026-10-17 标定）</b>：相邻成年异性一对的出生间隔恒为繁殖冷却 3000 帧
+        /// （实测均值 3025）⇒ <c>(12000 − 成年 1200) / 3025 ≈ 3.6</c>，即一只鸟成年后约 3.6 次繁殖尝试——
+        /// 三个物种里最少，与「顶级捕食者繁殖最慢（上限只有 4）」的定位一致；
+        /// 同时必须显著长于「成年 + 一次繁殖冷却」（1200 + 3000 = 4200 帧）与既有阶段时长（最长 2000 帧），
+        /// 否则鸟可能在第一次繁殖之前老死、或在关卡中途成批消失。</para></summary>
+        public const int LifespanTicks = 12000;
+
         /// <summary>构造一只 1 × 1 格的鸟（位置由 <see cref="CreatureWorld.Spawn"/> 放置）。</summary>
         public BirdCreature()
             : base(1f, 1f)
@@ -100,6 +108,13 @@ namespace TapTap2026.Simulation
         protected override bool StarvesWithoutFood
         {
             get { return false; }
+        }
+
+        /// <summary>鸟有固定寿命：<see cref="Creature.AgeTicks"/> 达到 <see cref="LifespanTicks"/> 即老死
+        /// （确定性、无个体抖动；复用既有死亡链）。</summary>
+        public override int MaxAgeTicks
+        {
+            get { return LifespanTicks; }
         }
 
         /// <summary>重力 0.24 格 / 逻辑帧²（与兔 / 鱼同值；只在入水与主动坠落时起作用，空中被挂起）。</summary>
