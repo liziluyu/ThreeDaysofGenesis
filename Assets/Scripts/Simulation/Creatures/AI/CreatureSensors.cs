@@ -189,6 +189,30 @@ namespace TapTap2026.Simulation
             return false;
         }
 
+        /// <summary>自 <paramref name="firstRow"/> 向上扫到第一个非水格（越界算非水）⇒ 水面行
+        /// （体顶之上第一个非水行）。最多扫 <c>world.Height</c> 格：扫到世界顶就是越界、
+        /// <see cref="CreatureTerrain.IsWater"/> 必返回 false，因此必定终止（零分配，只有局部 int）。</summary>
+        /// <remarks>
+        /// 这是鱼（<see cref="FishBrain"/> 的深度带 / 触面判定）与繁殖（<see cref="CreatureReproduction"/>
+        /// 的“完全没入 + 水柱深度”判定）共用的**唯一**水面探针——两侧口径必须一致，
+        /// 否则“鱼觉得自己的深度”和“繁殖觉得鱼的水深”会各说各话。
+        /// </remarks>
+        /// <param name="world">被查询的世界（只读）。</param>
+        /// <param name="x">扫描列。</param>
+        /// <param name="firstRow">起算行（体顶之上第一格）。</param>
+        /// <returns>体顶之上第一个非水行（行号；越界 / 全水时停在 <c>firstRow + world.Height</c>）。</returns>
+        public static int ProbeSurfaceRowAbove(ParticleWorld world, int x, int firstRow)
+        {
+            int lastRow = firstRow + world.Height;
+            int y = firstRow;
+            while (y < lastRow && CreatureTerrain.IsWater(world, x, y))
+            {
+                y++;
+            }
+
+            return y;
+        }
+
         /// <summary>探前方一格的脚下 2 格内是否有固体支撑（悬崖守卫用）：返回 false 即前方是悬空 / 深坑。</summary>
         /// <remarks>
         /// <para><b>世界底 = 地板：</b>脚下那一行（<c>floor(y) − 1</c>）越出世界底（<c>row &lt; 0</c>）时返回 true——

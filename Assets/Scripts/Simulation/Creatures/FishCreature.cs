@@ -37,6 +37,8 @@ namespace TapTap2026.Simulation
             if (ShouldThink(creatures))
             {
                 FishBrain.Think(this, creatures, world);
+                // 繁殖是思考帧的第二个决策（雌性才会真正摇骰；见 CreatureReproduction）。
+                CreatureReproduction.TryBreed(this, creatures, world);
             }
         }
 

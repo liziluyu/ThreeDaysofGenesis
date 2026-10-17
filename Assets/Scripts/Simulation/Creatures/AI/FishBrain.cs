@@ -161,7 +161,7 @@ namespace TapTap2026.Simulation
             // 深度带随机上下游（v6，见 docs/plan-bird-ai.md §15）：参考量 depth = 体顶之上的连续水格数（水面到体顶的距离），
             // 目标带 = [MinDepthCells, min(MaxDepthCells, geoMax)]。geoMax = 鱼贴底时能有的 depth（深 d 的池里 = d − 4），
             // 由「体顶之上的水面行」与「脚底之下的池底行」两次有界探针现场量出（都只用局部 int 与 while ⇒ 零分配、必定终止）。
-            int surfaceRow = ProbeSurfaceRowAbove(world, cx, bodyTopRow + 1);
+            int surfaceRow = CreatureSensors.ProbeSurfaceRowAbove(world, cx, bodyTopRow + 1);
             int floorRow = ProbeFloorRowBelow(world, cx, footRow - 1);
             int maxDepth = Min(MaxDepthCells, surfaceRow - floorRow - 2 - BodyTopOffsetCells);
 
@@ -253,27 +253,8 @@ namespace TapTap2026.Simulation
             return true;
         }
 
-        /// <summary>自 <paramref name="firstRow"/> 向上扫到第一个非水格（越界算非水）⇒ 水面行（体顶之上的第一个非水行）。
-        /// 最多扫 <c>world.Height</c> 格：扫到世界顶就是越界、<see cref="CreatureTerrain.IsWater"/> 必返回 false，
-        /// 因此必定终止（零分配，只有局部 int）。</summary>
-        /// <param name="world">粒子世界（只读）。</param>
-        /// <param name="x">脚底中点所在格 x。</param>
-        /// <param name="firstRow">起算行（体顶之上第一格）。</param>
-        /// <returns>体顶之上第一个非水行。</returns>
-        private static int ProbeSurfaceRowAbove(ParticleWorld world, int x, int firstRow)
-        {
-            int lastRow = firstRow + world.Height;
-            int y = firstRow;
-            while (y < lastRow && CreatureTerrain.IsWater(world, x, y))
-            {
-                y++;
-            }
-
-            return y;
-        }
-
         /// <summary>自 <paramref name="startRow"/> 向下扫到第一个非水格（越界算非水）⇒ 池底行（脚底之下的第一个非水行）。
-        /// 与 <see cref="ProbeSurfaceRowAbove"/> 对称，同样必定终止。</summary>
+        /// 与 <see cref="CreatureSensors.ProbeSurfaceRowAbove"/> 对称，同样必定终止。</summary>
         /// <param name="world">粒子世界（只读）。</param>
         /// <param name="x">脚底中点所在格 x。</param>
         /// <param name="startRow">起算行（脚底之下第一格）。</param>

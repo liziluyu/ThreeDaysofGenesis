@@ -118,6 +118,19 @@ namespace TapTap2026.Simulation
         /// 使同批个体的思考帧彼此错开；死亡移除不改变他者相位（生成序号只增不减）。</summary>
         public byte SensePhase;
 
+        /// <summary>性别（0 = 雌，1 = 雄）：由 <see cref="CreatureWorld.Spawn"/> 按**生成序号奇偶**钉死，不消耗随机流。
+        /// 与 <see cref="SensePhase"/> 取的是**同一个**生成序号（先写本槽位、再写相位，之后计数器才自增），
+        /// 因此同批个体天然 50/50，且性别与思考相位严格对齐。</summary>
+        public byte Sex;
+
+        /// <summary>繁殖冷却（逻辑帧）：运动层每帧减到 0；出生成功后由 <see cref="CreatureReproduction"/> 给双方写入。
+        /// 基类只存不解释——物种阈值集中在 <see cref="CreatureReproduction"/>。</summary>
+        public int BreedCooldownTicks;
+
+        /// <summary>捕食成功计数（仅鸟用）：运动层 ⑥b 命中击杀时 +1（繁殖的“进食”门槛）。
+        /// 其余物种恒 0、零行为差异。</summary>
+        public int PreyEaten;
+
         /// <summary>目标水平速度（格 / 逻辑帧），运动层以 <see cref="MoveAccel"/> 逼近的意图量。</summary>
         public float IntentVx;
 
@@ -496,6 +509,7 @@ namespace TapTap2026.Simulation
                 if (HuntKillLatched)
                 {
                     huntTarget.Kill(CreatureDeathCause.Hunted);
+                    PreyEaten++; // 繁殖门槛：只有真正咬死的这一次才计数（扑空不算）。
                 }
 
                 HuntTarget = null; // 命中 / 扑空都算这一次攻击结束

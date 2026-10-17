@@ -28,6 +28,13 @@ namespace TapTap2026.Simulation
         /// <summary>实体表：下标即生成顺序，也是每帧的处理顺序。</summary>
         private readonly List<Creature> _creatures = new List<Creature>();
 
+        /// <summary>出生队列（母, 父）：Brain 在思考帧入队，<see cref="Step"/> 在死亡清扫**之后**统一应用。
+        /// 为什么不在 ② 遍历里直接 <see cref="Spawn{T}"/>：② 的上界是动态的 <c>_creatures.Count</c>，
+        /// 边遍历边追加会让新生儿**同帧**被推进（年龄 / 物理 / 甚至当天再繁殖）；入队延后到③之后，
+        /// 新生儿从下一帧才开始活动，且“这一帧的出生”与“这一帧的死亡”互不穿插。</summary>
+        private readonly List<(Creature mother, Creature father)> _pendingBirths =
+            new List<(Creature mother, Creature father)>();
+
         /// <summary>本世界的 xorshift32 状态。</summary>
         private uint _rng;
 
@@ -49,6 +56,27 @@ namespace TapTap2026.Simulation
         public int Count
         {
             get { return _creatures.Count; }
+        }
+
+        /// <summary>统计指定物种的实体数（<c>for</c> + <c>is T</c>，零分配）。
+        /// 繁殖的软上限 / 下限与概率因子都读它；死亡个体在清扫前仍留在表里，因此思考帧看到的
+        /// 是“本帧开始时的种群”，与出生应用阶段（清扫之后）各复核一次。</summary>
+        /// <remarks>名字不叫 <c>Count&lt;T&gt;</c>：C# 不允许属性与方法同名（<c>Count</c> 属性已存在），
+        /// 故用 <c>CountOf&lt;T&gt;</c>，语义不变。</remarks>
+        /// <typeparam name="T">具体物种类型。</typeparam>
+        /// <returns>表内属于 <typeparamref name="T"/> 的实体数。</returns>
+        public int CountOf<T>() where T : Creature
+        {
+            int count = 0;
+            for (int i = 0; i < _creatures.Count; i++)
+            {
+                if (_creatures[i] is T)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         /// <summary>已推进的逻辑帧数（渲染层用它检测「刚跨过一个逻辑帧」以重置插值计时）。</summary>
@@ -118,8 +146,13 @@ namespace TapTap2026.Simulation
             creature.PrevY = creature.Y;
             creature.Alive = true;
 
-            // 思考相位按生成序号钉死：同批个体因此错峰（最坏同相位 = 同批 30 只同帧思考，仍远低于一个世界 pass）。
-            creature.SensePhase = (byte)(_spawnCounter++ % Creature.ThinkEvery);
+            // 性别与思考相位共用**同一个**生成序号：先按奇偶写 Sex，再用同一值取相位，最后才自增。
+            // 顺序即契约——若先自增再取 Sex / 相位，两者会错开一位；而分开用两个计数器则无法保证
+            // “序号 0 既是最早生成者、也是第一批思考相位 0”。性别不摇骰 ⇒ 初始种群天然 50/50。
+            int spawnIndex = _spawnCounter;
+            creature.Sex = (byte)(spawnIndex & 1);
+            creature.SensePhase = (byte)(spawnIndex % Creature.ThinkEvery);
+            _spawnCounter = spawnIndex + 1;
 
             _creatures.Add(creature);
             creature.OnSpawn(this, world);
@@ -127,11 +160,23 @@ namespace TapTap2026.Simulation
             return creature;
         }
 
+        /// <summary>登记一次出生请求（母亲、父亲），**不做任何校验**——是否还能生（母亲已死 / 物种到上限）
+        /// 留到 <see cref="Step"/> 的应用阶段复核，避免在遍历中途改表，也让“同一帧里的多次请求”
+        /// 严格按入队顺序结算。仅应在 Brain 的思考帧调用（概率与冷却由 <see cref="CreatureReproduction"/> 负责）。</summary>
+        /// <param name="mother">母亲（新生儿位置取她的位置）。</param>
+        /// <param name="father">父亲（本阶段只用于语义记录）。</param>
+        public void RequestBirth(Creature mother, Creature father)
+        {
+            _pendingBirths.Add((mother, father));
+        }
+
         /// <summary>
-        /// 推进一个逻辑帧。三个阶段：① 全体快照 <c>Prev = Cur</c>；② 按生成顺序逐只
-        /// <see cref="Creature.OnLogic"/> → <see cref="Creature.ApplyLocomotion"/> → <see cref="Creature.StepPhysics"/> → <c>AgeTicks++</c>；
+        /// 推进一个逻辑帧。四个阶段：① 全体快照 <c>Prev = Cur</c>；② 按生成顺序逐只
+        /// <see cref="Creature.OnLogic"/> → <see cref="Creature.ApplyLocomotion"/> → <see cref="Creature.StepPhysics"/>
+        /// → <c>AgeTicks++</c> → 繁殖冷却递减；
         /// ③ 倒序清扫 <c>!Alive</c> 的实体，先由 <see cref="CreatureDeathMaterializer"/> 写入生物质，
-        /// 再调 <see cref="Creature.OnDeath"/>、发 <see cref="CreatureDied"/>，最后从列表移除。
+        /// 再调 <see cref="Creature.OnDeath"/>、发 <see cref="CreatureDied"/>，最后从列表移除；
+        /// ③b 按入队顺序应用出生请求（母亲存活 + 物种未到上限才生成）。
         /// </summary>
         /// <remarks>
         /// <para>驱动层在 <c>ParticleWorld.StepLogic()</c> **之后**调用本方法，保证动物看到的是本帧
@@ -144,6 +189,8 @@ namespace TapTap2026.Simulation
         /// 便于监听者读到最后的位置 / 状态。</para>
         /// <para>③ 的死亡物质化只走显式 shade 的 <see cref="ParticleWorld.SetWithShade"/>（不抽样颜色），
         /// 因此**不消耗世界的随机流**；除这一处外，本方法对 <paramref name="world"/> 只读。</para>
+        /// <para>③b 放在死亡清扫之后：出生请求在②的思考帧入队，若当场生成会让新生儿**同帧**被②推进；
+        /// 延后到这一步，新生儿年龄从 0 开始、下一帧才动，且死亡先结算 ⇒ 上限看的是本帧末的真实种群。</para>
         /// </remarks>
         /// <param name="world">粒子世界（推进阶段只读；死亡清扫阶段写入生物质）。</param>
         public void Step(ParticleWorld world)
@@ -174,6 +221,10 @@ namespace TapTap2026.Simulation
                 c.ApplyLocomotion(world);
                 c.StepPhysics(world);
                 c.AgeTicks++;
+                if (c.BreedCooldownTicks > 0)
+                {
+                    c.BreedCooldownTicks--;
+                }
             }
 
             // ③ 倒序清扫死亡。
@@ -194,7 +245,67 @@ namespace TapTap2026.Simulation
                 _creatures.RemoveAt(i);
             }
 
+            // ③b 应用出生队列（死亡清扫之后）：新生儿因此**本帧不被推进**（年龄 / 物理 / 繁殖都从下一帧开始），
+            // 且“同帧死亡”已经先扣掉——上限判定看的是本帧结束时的真实种群。
+            ApplyPendingBirths(world);
+
             _logicTicks++;
+        }
+
+        /// <summary>按入队顺序结算出生请求：母亲已死或该物种已到上限 ⇒ 跳过（应用时复核）；
+        /// 否则在母亲位置生成同物种新生儿，并重置年龄 / 繁殖冷却 / 捕食计数。
+        /// 物种分派用 <c>is</c> 手写三类——只有三个物种，反射或泛型工厂只会让调用点更难读。
+        /// 上限常量集中在 <see cref="CreatureReproduction"/>（数值单一来源）。</summary>
+        /// <param name="world">粒子世界（只为 <see cref="Spawn{T}"/> 取边界）。</param>
+        private void ApplyPendingBirths(ParticleWorld world)
+        {
+            for (int i = 0; i < _pendingBirths.Count; i++)
+            {
+                Creature mother = _pendingBirths[i].mother;
+                if (!mother.Alive)
+                {
+                    continue;
+                }
+
+                if (mother is RabbitCreature)
+                {
+                    if (CountOf<RabbitCreature>() >= CreatureReproduction.RabbitMaxPopulation)
+                    {
+                        continue;
+                    }
+
+                    RabbitCreature baby = Spawn(new RabbitCreature(), world, mother.X, mother.Y);
+                    baby.AgeTicks = 0;
+                    baby.BreedCooldownTicks = CreatureReproduction.RabbitInitialCooldownTicks;
+                    baby.PreyEaten = 0;
+                }
+                else if (mother is FishCreature)
+                {
+                    if (CountOf<FishCreature>() >= CreatureReproduction.FishMaxPopulation)
+                    {
+                        continue;
+                    }
+
+                    FishCreature baby = Spawn(new FishCreature(), world, mother.X, mother.Y);
+                    baby.AgeTicks = 0;
+                    baby.BreedCooldownTicks = CreatureReproduction.FishInitialCooldownTicks;
+                    baby.PreyEaten = 0;
+                }
+                else if (mother is BirdCreature)
+                {
+                    if (CountOf<BirdCreature>() >= CreatureReproduction.BirdMaxPopulation)
+                    {
+                        continue;
+                    }
+
+                    BirdCreature baby = Spawn(new BirdCreature(), world, mother.X, mother.Y);
+                    baby.AgeTicks = 0;
+                    baby.BreedCooldownTicks = CreatureReproduction.BirdInitialCooldownTicks;
+                    baby.PreyEaten = 0;
+                }
+            }
+
+            _pendingBirths.Clear();
         }
 
         /// <summary>清空全部实体（世界重建用）。**不发死亡事件**，也不重置随机流与逻辑帧计数。</summary>
