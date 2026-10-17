@@ -1,5 +1,6 @@
 {
-  "description": "沙盒：没有胜负条件，随意试验各种材料。",
-  "sandboxWidth": 320,
-  "sandboxHeight": 180
+  "description": "沙盒：不限材料与动物，随意试验。",
+  "sandboxWidth": 400,
+  "sandboxHeight": 100,
+  "simulationTicks": 500
 }

@@ -142,6 +142,12 @@ namespace TapTap2026.Game
             _commands.Enqueue(command);
         }
 
+        /// <summary>设置后续高速模式的时长（逻辑帧）；≤ 0 = 回到设置资产默认值。只影响下一次进入高速模式时创建的会话。</summary>
+        public void SetHighSpeedLogicFrames(int logicFrames)
+        {
+            Submit(SimulationCommand.SetHighSpeedLogicFrames(logicFrames));
+        }
+
         /// <summary>本帧生效的网格宽度：覆盖值 &gt; 0 时用它，否则用 <see cref="ParticleSimulationSettings.Width"/>。</summary>
         private int RequestedWidth
         {

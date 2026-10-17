@@ -1,27 +1,16 @@
 {
-  "description": "第三日：让成熟的草地稳定留存，别再大片枯死。",
+  "description": "第三日：解锁兔、鱼、鸟，让三种动物都活到最后。",
   "nextPhaseId": "phase_05",
-  "sandboxWidth": 200,
+  "sandboxWidth": 400,
   "sandboxHeight": 100,
-  "availableParticles": [
-    "SandParticle",
-    "WaterParticle",
-    "SoilParticle",
-    "GrassSeedParticle",
-    "FireParticle"
-  ],
+  "simulationTicks": 2000,
+  "availableParticles": ["SoilParticle", "StoneParticle", "SandParticle", "WaterParticle", "FireParticle", "GrassSeedParticle", "TreeSeedParticle"],
+  "availableCreatures": ["RabbitCreature", "FishCreature", "BirdCreature"],
   "victory": {
-    "minSurfaceTemperature": 10.0,
-    "maxSurfaceTemperature": 35.0,
-    "minAverageHumidity": 0.35,
-    "maxAverageHumidity": 0.8,
-    "particles": [
-      {
-        "type": "GrassParticle",
-        "minBirths": 80,
-        "maxDeaths": 400,
-        "minCount": 30
-      }
+    "creatures": [
+      { "species": "RabbitCreature", "minCount": 1 },
+      { "species": "FishCreature", "minCount": 1 },
+      { "species": "BirdCreature", "minCount": 1 }
     ]
   }
 }

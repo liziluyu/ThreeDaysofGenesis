@@ -1,18 +1,18 @@
 {
-  "description": "入职日：认识沙盒与投放操作，让沙地上长出第一片草地。",
+  "description": "入职日：解锁土、石头、沙子。",
   "dialogueId": "phase_01_intro",
   "repeatDialogueId": "phase_01_retry",
   "nextPhaseId": "phase_02",
-  "sandboxWidth": 160,
-  "sandboxHeight": 90,
+  "sandboxWidth": 200,
+  "sandboxHeight": 100,
+  "simulationTicks": 100,
+  "availableParticles": ["SoilParticle", "StoneParticle", "SandParticle"],
+  "availableCreatures": [],
   "victory": {
-    "minSurfaceTemperature": 5.0,
-    "maxSurfaceTemperature": 40.0,
     "particles": [
-      {
-        "type": "GrassParticle",
-        "minBirths": 10
-      }
+      { "type": "SoilParticle", "minCount": 1 },
+      { "type": "StoneParticle", "minCount": 1 },
+      { "type": "SandParticle", "minCount": 1 }
     ]
   }
 }

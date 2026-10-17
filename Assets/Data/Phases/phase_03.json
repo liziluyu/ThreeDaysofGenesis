@@ -1,29 +1,15 @@
 {
-  "description": "第二日：草地继续扩张，湿度既不干也不涝。",
+  "description": "第二日：解锁植物，让草与树叶同时存活。",
   "nextPhaseId": "phase_04",
-  "sandboxWidth": 200,
+  "sandboxWidth": 400,
   "sandboxHeight": 100,
-  "availableParticles": [
-    "SandParticle",
-    "WaterParticle",
-    "SoilParticle",
-    "GrassSeedParticle",
-    "FireParticle"
-  ],
+  "simulationTicks": 2000,
+  "availableParticles": ["SoilParticle", "StoneParticle", "SandParticle", "WaterParticle", "FireParticle", "GrassSeedParticle", "TreeSeedParticle"],
+  "availableCreatures": [],
   "victory": {
-    "minSurfaceTemperature": 5.0,
-    "maxSurfaceTemperature": 40.0,
-    "minAverageHumidity": 0.3,
-    "maxAverageHumidity": 0.85,
     "particles": [
-      {
-        "type": "GrassParticle",
-        "minBirths": 60
-      },
-      {
-        "type": "WaterParticle",
-        "minBirths": 8
-      }
+      { "type": "TreeLeafParticle", "minCount": 1 },
+      { "type": "GrassParticle", "minCount": 1 }
     ]
   }
 }

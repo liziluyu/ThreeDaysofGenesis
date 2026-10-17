@@ -1,30 +1,14 @@
 {
-  "description": "第一日：引来水源，让草与水一同产生，并把温湿度维持在舒适区间。",
+  "description": "第一日：解锁水与火，让水既有产生也有消失。",
   "nextPhaseId": "phase_03",
-  "sandboxWidth": 240,
-  "sandboxHeight": 135,
-  "availableParticles": [
-    "SandParticle",
-    "WaterParticle",
-    "SoilParticle",
-    "GrassSeedParticle",
-    "FireParticle"
-  ],
+  "sandboxWidth": 200,
+  "sandboxHeight": 100,
+  "simulationTicks": 500,
+  "availableParticles": ["SoilParticle", "StoneParticle", "SandParticle", "WaterParticle", "FireParticle"],
+  "availableCreatures": [],
   "victory": {
-    "minSurfaceTemperature": 10.0,
-    "maxSurfaceTemperature": 30.0,
-    "minAverageHumidity": 0.35,
-    "maxAverageHumidity": 0.75,
     "particles": [
-      {
-        "type": "GrassParticle",
-        "minBirths": 40,
-        "maxDeaths": 200
-      },
-      {
-        "type": "WaterParticle",
-        "minBirths": 5
-      }
+      { "type": "WaterParticle", "minBirths": 101, "minDeaths": 101 }
     ]
   }
 }

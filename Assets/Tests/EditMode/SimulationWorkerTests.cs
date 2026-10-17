@@ -121,6 +121,50 @@ namespace TapTap2026.Tests
             }
         }
 
+        /// <summary>
+        /// 每阶段高速时长（<c>SetHighSpeedLogicFrames</c>）：只影响**下一次** <c>EnterHighSpeed</c> 创建的会话；
+        /// 已退出的旧会话被丢弃重建，因此换阶段改了时长一定生效；≤ 0 回到 set-up 的默认值。
+        /// </summary>
+        [Test]
+        public void SetHighSpeedLogicFrames_AppliesToNextSessionOnly()
+        {
+            var worker = new SimulationWorker(Setup());
+            try
+            {
+                var enter = new SimulationCommandQueue();
+                enter.Enqueue(SimulationCommand.SetHighSpeedLogicFrames(2000));
+                enter.Enqueue(SimulationCommand.EnterHighSpeed());
+                RunBatch(worker, enter, 1, threaded: false);
+
+                SimulationFrame first = worker.CurrentFrame;
+                Assert.IsTrue(first.HighSpeed.Active, "已进入高速模式");
+                Assert.AreEqual(2000, first.HighSpeed.DurationLogicTicks, "会话按阶段时长建立");
+
+                var exit = new SimulationCommandQueue();
+                exit.Enqueue(SimulationCommand.ExitHighSpeed());
+                RunBatch(worker, exit, 1, threaded: false);
+                Assert.IsFalse(worker.CurrentFrame.HighSpeed.Active, "退出后会话不再活动");
+
+                // 不重建世界，直接改时长再进入：旧会话必须被丢弃，否则会带着旧时长复活。
+                var reenter = new SimulationCommandQueue();
+                reenter.Enqueue(SimulationCommand.SetHighSpeedLogicFrames(300));
+                reenter.Enqueue(SimulationCommand.EnterHighSpeed());
+                RunBatch(worker, reenter, 1, threaded: false);
+                Assert.AreEqual(300, worker.CurrentFrame.HighSpeed.DurationLogicTicks, "新时长生效");
+
+                var reset = new SimulationCommandQueue();
+                reset.Enqueue(SimulationCommand.ExitHighSpeed());
+                reset.Enqueue(SimulationCommand.SetHighSpeedLogicFrames(0));
+                reset.Enqueue(SimulationCommand.EnterHighSpeed());
+                RunBatch(worker, reset, 1, threaded: false);
+                Assert.AreEqual(60, worker.CurrentFrame.HighSpeed.DurationLogicTicks, "≤ 0 回到 setup 默认时长");
+            }
+            finally
+            {
+                worker.Dispose();
+            }
+        }
+
         [Test]
         public void Commands_AreAppliedInSubmissionOrderWithinOneBatch()
         {

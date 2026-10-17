@@ -54,7 +54,8 @@ namespace TapTap2026.Game
     /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、光照面板热键、相机平移与只读读数——锁的是编辑，看视角不锁。
     /// 进入 / 退出分别提交 <see cref="SimulationCommandKind.EnterHighSpeed"/> / <see cref="SimulationCommandKind.ExitHighSpeed"/> 命令。</para>
     /// <para>阶段限制：<see cref="SetPlacementFilter"/> 由 <see cref="GameController"/> 在阶段启动时按 JSON 调用，
-    /// 与 Inspector 白名单取交集（只缩小、不放开）；清空（null / 空数组）即恢复默认白名单。</para>
+    /// 粒子名单与 Inspector 白名单取交集（只缩小、不放开），动物名单则限制可投放的物种（null = 不限制、空数组 = 全部隐藏）；
+    /// 粒子名单清空（null / 空数组）即恢复默认白名单。</para>
     /// <para>光照面板（场景里的 <see cref="SandboxHud"/>）写的是 <see cref="ParticleLightDriver"/> 的字段：该组件是这三个值的唯一配置面，
     /// 变化时才把整份配置作为命令提交给驱动。同一份字段也是 Inspector 的显示值——面板与 Inspector 是同一个配置面。</para>
     /// <para>按钮入口（给场景里的 uGUI 按钮 <c>onClick</c> 接线）：<see cref="TogglePauseMenu"/>（开关暂停界面 +
@@ -142,7 +143,8 @@ namespace TapTap2026.Game
         /// 物种表在 <see cref="CreatureSpawns"/>（与命令应用共用一份真源）；显示名 / 占位色 / 类名取自原型实例
         /// （<see cref="Creature.DebugName"/> / <see cref="Creature.PlaceholderColor"/>），物种元数据的唯一真源
         /// 留在 <see cref="Creature"/> 派生类里，这里不再抄一份。
-        /// 动物投放不看粒子白名单与阶段投放名单（<see cref="SetPlacementFilter"/> 只管粒子）。
+        /// 动物投放受阶段名单（<see cref="SetPlacementFilter"/> 的第二参数）限制：null = 不限制，空数组 = 全部隐藏；
+        /// 不在名单里的物种不会出现在 <see cref="Selections"/> 里。
         /// </remarks>
         private Creature[] _creaturePrototypes;
 
@@ -153,6 +155,9 @@ namespace TapTap2026.Game
         /// <summary>阶段投放限制（<see cref="SetPlacementFilter"/>）：非 null 时只允许集合里的 typeId 投放。null = 无限制。
         /// 在 <see cref="IsPlaceable"/> 里与既有白名单取交集。</summary>
         private HashSet<ushort> _placementFilter;
+
+        /// <summary>阶段动物限制（SetPlacementFilter 的第二参数）：非 null 时只允许集合里的物种下标投放；null = 不限制（空集合 = 全部隐藏）。</summary>
+        private HashSet<int> _creatureFilter;
 
         /// <summary>当前可投放的粒子 typeId（注册顺序；<see cref="Selections"/> 的粒子段就是按它建的）。
         /// 阶段投放名单（<see cref="SetPlacementFilter"/>）会整体重算它。</summary>
@@ -1173,56 +1178,96 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 按名字列表限制可投放的粒子类型（按 <see cref="ParticleTypeInfo.DebugName"/> 或类名匹配，规则同
-        /// <see cref="ResolveTypeNames"/>）：生效的是「名单 ∩ 既有白名单」——名单只会**缩小**可投范围，
-        /// 不会把草 / 湿土等原本不可投放的类型放进来。重算后自动选中第一个可投类型。
+        /// 按名字列表限制可投放的粒子类型；动物物种不受限制（等价于
+        /// <see cref="SetPlacementFilter(string[], string[])"/> 的第二参数为 null）。
         /// </summary>
-        /// <param name="allowedNames">允许投放的类型名；null 或空数组 = 清除限制、恢复默认白名单行为。
-        /// 查不到的名字记警告并跳过（同 <see cref="ResolveTypeNames"/>）。</param>
+        /// <param name="allowedNames">允许投放的类型名；null 或空数组 = 清除限制、恢复默认白名单行为。</param>
+        public void SetPlacementFilter(string[] allowedNames)
+        {
+            SetPlacementFilter(allowedNames, null);
+        }
+
+        /// <summary>按名字列表限制可投放的粒子类型与动物物种。</summary>
+        /// <param name="allowedNames">粒子白名单；null 或空数组 = 清除粒子限制（与旧行为一致）。</param>
+        /// <param name="allowedCreatureNames">动物物种白名单（按 DebugName 或 Creature 子类类名匹配）；
+        /// null = 不限制动物；空数组 = 本阶段没有任何动物可投。</param>
         /// <remarks>
-        /// 名单与既有白名单的交集为空时记错误并**忽略这次调用**（<see cref="_placementFilter"/> 与可投放列表保持原样）——
-        /// 既不能让编辑器落进「一个类型都选不了」的死状态，也不能因为一次配置错误就悄悄把限制丢掉。
+        /// 粒子名单生效的是「名单 ∩ 既有白名单」——名单只会**缩小**可投范围，不会把草 / 湿土等原本不可投放的类型放进来；
+        /// 查不到的类型名记警告并跳过（同 <see cref="ResolveTypeNames"/>）。动物名单同样按名字匹配，未知物种名记警告并跳过。
+        /// 重算后自动选中第一个可投项。
+        /// <para>粒子名单与既有白名单的交集为空时记错误并**忽略这次调用**（<see cref="_placementFilter"/>、可投放列表
+        /// 与 <see cref="_creatureFilter"/> 全部保持原样）——既不能让编辑器落进「一个类型都选不了」的死状态，
+        /// 也不能因为一次配置错误就悄悄把限制丢掉。</para>
         /// <para>成功时 <see cref="Selections"/> **整体重建**（旧条目作废、<see cref="SelectionChanged"/> 按新选中项触发），
-        /// 动物物种段不受名单影响、照旧接在粒子段之后。</para>
+        /// 动物物种段只保留白名单里的物种、照旧接在粒子段之后；空动物白名单即整段隐藏。</para>
         /// <para><b>调用时机</b>：必须在 <c>Awake</c> 之后（注册表已由 <c>BeforeSceneLoad</c> 钩子填好、
         /// 本组件也已完成初始白名单解析）。<see cref="GameController"/> 在阶段启动时调用，晚于所有 <c>Awake</c>，安全。</para>
         /// </remarks>
-        public void SetPlacementFilter(string[] allowedNames)
+        public void SetPlacementFilter(string[] allowedNames, string[] allowedCreatureNames)
         {
-            if (allowedNames == null || allowedNames.Length == 0)
+            HashSet<ushort> previousFilter = _placementFilter;
+            bool hasNameFilter = allowedNames != null && allowedNames.Length > 0;
+
+            HashSet<ushort> nextFilter = null;
+            if (hasNameFilter)
             {
-                _placementFilter = null;
-                _placeable = CollectPlaceableTypes();
-            }
-            else
-            {
-                HashSet<ushort> previousFilter = _placementFilter;
-                ushort[] previousPlaceable = _placeable;
-
-                var filter = new HashSet<ushort>();
-                ResolveTypeNames(allowedNames, filter);
-
-                _placementFilter = filter;
-                _placeable = CollectPlaceableTypes();
-
-                if (_placeable.Length == 0)
-                {
-                    Debug.LogError(
-                        "[ParticleEditor] SetPlacementFilter：名单与既有白名单的交集为空，本次调用被忽略，保持当前可投放类型不变。");
-                    _placementFilter = previousFilter;
-                    _placeable = previousPlaceable;
-                    return;
-                }
+                nextFilter = new HashSet<ushort>();
+                ResolveTypeNames(allowedNames, nextFilter);
             }
 
-            if (_placeable.Length == 0)
+            // CollectPlaceableTypes 读的是 _placementFilter：先临时落字段算出新列表，成功后再正式提交。
+            _placementFilter = nextFilter;
+            ushort[] nextPlaceable = CollectPlaceableTypes();
+
+            if (hasNameFilter && nextPlaceable.Length == 0)
+            {
+                Debug.LogError(
+                    "[ParticleEditor] SetPlacementFilter：名单与既有白名单的交集为空，本次调用被忽略，保持当前可投放类型不变。");
+                _placementFilter = previousFilter;
+                return;
+            }
+
+            if (nextPlaceable.Length == 0)
             {
                 Debug.LogError(
                     "[ParticleEditor] SetPlacementFilter：没有任何可投放的粒子类型。请确认 ParticleRegistration.RegisterAll() 已执行。");
                 return;
             }
 
-            // 可投项跟着新名单整体重建（旧条目全部作废），再选中新的第一项。
+            HashSet<int> nextCreatureFilter;
+            if (allowedCreatureNames == null)
+            {
+                nextCreatureFilter = null;
+            }
+            else
+            {
+                nextCreatureFilter = new HashSet<int>();
+                for (int n = 0; n < allowedCreatureNames.Length; n++)
+                {
+                    string name = allowedCreatureNames[n];
+                    bool found = false;
+                    for (int i = 0; i < _creaturePrototypes.Length; i++)
+                    {
+                        Creature prototype = _creaturePrototypes[i];
+                        if (prototype.DebugName == name || prototype.GetType().Name == name)
+                        {
+                            nextCreatureFilter.Add(i);
+                            found = true;
+                        }
+                    }
+
+                    if (!found)
+                    {
+                        Debug.LogWarning(
+                            $"[ParticleEditor] 动物白名单里的物种名 \"{name}\" 未在物种表中找到，已忽略。");
+                    }
+                }
+            }
+
+            // 粒子状态与动物限制一起提交，再整体重建可投项（旧条目全部作废）并选中新的第一项。
+            _placementFilter = nextFilter;
+            _placeable = nextPlaceable;
+            _creatureFilter = nextCreatureFilter;
             _selections = BuildSelections();
             Select(0);
         }
@@ -1399,10 +1444,16 @@ namespace TapTap2026.Game
             }
         }
 
+        /// <summary>该物种下标是否在阶段动物白名单内（<see cref="_creatureFilter"/> 为 null = 不限制）。</summary>
+        private bool IsCreatureAllowed(int creatureIndex)
+        {
+            return _creatureFilter == null || _creatureFilter.Contains(creatureIndex);
+        }
+
         /// <summary>
         /// 按当前 <see cref="_placeable"/> 与 <see cref="_creaturePrototypes"/> 重建 <see cref="_selections"/>：
         /// **先粒子类型**（顺序即 <see cref="_placeable"/> 的注册顺序，显示名 / 色块 / 是否单颗投放都取自类型注册表），
-        /// **再动物物种**（顺序即 <see cref="CreatureSpawns.Species"/>，显示名 / 色块取自原型实例）。
+        /// **再白名单内的动物物种**（顺序即 <see cref="CreatureSpawns.Species"/>，显示名 / 色块取自原型实例）。
         /// </summary>
         /// <remarks>
         /// 只在 <see cref="Awake"/> 与 <see cref="SetPlacementFilter"/> 的成功路径上调用；每次调用都造一批新实例
@@ -1410,7 +1461,16 @@ namespace TapTap2026.Game
         /// </remarks>
         private ParticleSelectionEntry[] BuildSelections()
         {
-            var selections = new ParticleSelectionEntry[_placeable.Length + _creaturePrototypes.Length];
+            int creatureCount = 0;
+            for (int i = 0; i < _creaturePrototypes.Length; i++)
+            {
+                if (IsCreatureAllowed(i))
+                {
+                    creatureCount++;
+                }
+            }
+
+            var selections = new ParticleSelectionEntry[_placeable.Length + creatureCount];
 
             for (int i = 0; i < _placeable.Length; i++)
             {
@@ -1425,15 +1485,22 @@ namespace TapTap2026.Game
                     _singlePlacement.Contains(typeId));
             }
 
+            int index = _placeable.Length;
             for (int i = 0; i < _creaturePrototypes.Length; i++)
             {
+                if (!IsCreatureAllowed(i))
+                {
+                    continue;
+                }
+
                 Creature prototype = _creaturePrototypes[i];
-                selections[_placeable.Length + i] = ParticleSelectionEntry.ForCreature(
-                    _placeable.Length + i,
+                selections[index] = ParticleSelectionEntry.ForCreature(
+                    index,
                     i,
                     prototype.DebugName,
                     prototype.GetType().Name,
                     prototype.PlaceholderColor);
+                index++;
             }
 
             return selections;

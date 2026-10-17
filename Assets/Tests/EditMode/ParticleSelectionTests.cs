@@ -282,6 +282,46 @@ namespace TapTap2026.Tests
             Assert.AreSame(current, _editor.CurrentSelection, "当前选择不变");
         }
 
+        /// <summary>阶段动物名单只保留名单内的物种（按类名或中文名匹配），空名单整段隐藏；单参数重载恢复全部物种。</summary>
+        [Test]
+        public void SetPlacementFilter_RestrictsCreatureSegment()
+        {
+            _editor.SetPlacementFilter(new[] { "SandParticle" }, new[] { "RabbitCreature" });
+
+            Assert.AreEqual(2, _editor.Selections.Count, "1 个粒子项 + 1 个动物项");
+            Assert.AreEqual(ParticleIds.Sand, _editor.Selections[0].TypeId);
+            Assert.IsTrue(_editor.Selections[1].IsCreature);
+            Assert.AreEqual("兔子", _editor.Selections[1].DisplayName);
+
+            _editor.SetPlacementFilter(new[] { "SandParticle" }, new[] { "鱼" });
+
+            Assert.AreEqual(2, _editor.Selections.Count);
+            Assert.AreEqual("鱼", _editor.Selections[1].DisplayName, "中文 DebugName 同样匹配");
+
+            _editor.SetPlacementFilter(new[] { "SandParticle" }, new string[0]);
+
+            Assert.AreEqual(1, _editor.Selections.Count, "空动物名单 = 本阶段没有任何动物");
+            Assert.AreEqual(ParticleIds.Sand, _editor.CurrentSelection.TypeId);
+
+            _editor.SetPlacementFilter(new[] { "SandParticle" });
+
+            Assert.AreEqual(4, _editor.Selections.Count, "单参数重载 = 动物不限制（3 个物种全回来）");
+        }
+
+        /// <summary>粒子交集为空的那次调用整体回滚：动物名单也保持原样（不能把动物悄悄锁死或放开）。</summary>
+        [Test]
+        public void SetPlacementFilter_EmptyIntersectionKeepsCreatureFilter()
+        {
+            _editor.SetPlacementFilter(new[] { "SandParticle" }, new[] { "RabbitCreature" });
+            ParticleSelectionEntry creature = _editor.Selections[1];
+
+            LogAssert.Expect(LogType.Error, new Regex("交集为空"));
+            _editor.SetPlacementFilter(new[] { "GrassParticle" }, new[] { "BirdCreature" });
+
+            Assert.AreEqual(2, _editor.Selections.Count, "被忽略的调用不重建列表");
+            Assert.AreSame(creature, _editor.Selections[1], "动物段保持原实例（仍是兔子）");
+        }
+
         /// <summary>清除模式的开关：翻转 / 显式设置，等值不动；与投放选择互不干涉（换项不改它）。</summary>
         [Test]
         public void EraseMode_Toggles()

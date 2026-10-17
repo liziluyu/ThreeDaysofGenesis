@@ -49,6 +49,10 @@ namespace TapTap2026.Simulation
 
         /// <summary>立即发布一帧（暂停中改了世界后手动上屏用）。</summary>
         PresentNow = 12,
+
+        /// <summary>设置后续高速模式的时长（逻辑帧）；<see cref="SimulationCommand.Index"/> 为时长，≤ 0 = 回到设置资产默认值；
+        /// 只影响下一次 <see cref="SimulationCommandKind.EnterHighSpeed"/> 创建的会话。</summary>
+        SetHighSpeedLogicFrames = 13,
     }
 
     /// <summary>
@@ -223,6 +227,16 @@ namespace TapTap2026.Simulation
         public static SimulationCommand PresentNow()
         {
             return new SimulationCommand { Kind = SimulationCommandKind.PresentNow };
+        }
+
+        /// <summary>设置后续高速模式的时长（逻辑帧）；≤ 0 = 回到设置资产默认值。</summary>
+        public static SimulationCommand SetHighSpeedLogicFrames(int logicFrames)
+        {
+            return new SimulationCommand
+            {
+                Kind = SimulationCommandKind.SetHighSpeedLogicFrames,
+                Index = logicFrames,
+            };
         }
     }
 

@@ -85,4 +85,4 @@
 
 ## 投放白名单（编辑器）
 
-草/花/湿土/腐殖质/腐殖土/水生植物/树干/树叶不可选；草种子/树木种子单颗投放 + 500ms 冷却；火经 Gas 白名单 `_placeableGasTypes` 例外可手刷（受 `CanPlaceAt` 约束）；雷电不可手刷。详见 `docs/modules/DriverAndEditor.md`。
+草/花/湿土/腐殖质/腐殖土/水生植物/树干/树叶不可选；草种子/树木种子单颗投放 + 500ms 冷却；火经 Gas 白名单 `_placeableGasTypes` 例外可手刷（受 `CanPlaceAt` 约束）；雷电不可手刷。**阶段投放名单**（`SetPlacementFilter`，见 `docs/GameFlow.md` §5）在此基础上只收窄：粒子按 `availableParticles`、动物按 `availableCreatures`（省略 = 不限制，空数组 = 全隐藏）。详见 `docs/modules/DriverAndEditor.md`。

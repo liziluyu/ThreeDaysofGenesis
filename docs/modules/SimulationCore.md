@@ -57,7 +57,7 @@
 
 - **为什么单线程**：`StepMotion` / `StepLogic` 的扫描顺序、世界 RNG 消耗与 `OnLogic` / `OnMotion` 调用次序都是确定性契约，因此**绝不**把同一个 world 的一个 tick 拆给多条线程——结果与在主线程同步推进逐位一致（回归见 `SimulationWorkerTests.ThreadedAndInlineBatches_ProduceIdenticalFrames`：两条路径同一命令日志 ⇒ 像素帧逐位相同）。
 - **两个单向无锁通道**：请求环（主线程 → worker，2 槽）与回执环（worker → 主线程，2 槽），各自「待处理 / 空闲」两个 `SemaphoreSlim` 做所有权移交，下标分属各自线程。主线程用 `TryAcquireRequestSlot` **非阻塞**取槽（满载即放弃本次请求，绝不为模拟排队），`RequestBatch` 把待发命令整批搬进该槽并带上有界的运动 tick 数（`MaxBatchTicks = 255`）；worker 每处理完一批写一条 `SimulationBatchResult`（实测耗时 / 是否发布 / 帧序号 / 世代 / 应用命令数 / 是否暂停）。
-- **命令边界**：命令在**该批第一个运动 tick 之前**按序全部应用（`DrainCommands` → `Apply`），应用过命令的批次一定发布一帧；`Resize` / `PresentNow` 因此即使在暂停中也有效。
+- **命令边界**：命令在**该批第一个运动 tick 之前**按序全部应用（`DrainCommands` → `Apply`），应用过命令的批次一定发布一帧；`Resize` / `PresentNow` 因此即使在暂停中也有效。`SetHighSpeedLogicFrames` 把每阶段模拟时长（逻辑帧；≤ 0 回到 `SimulationWorkerSetup.HighSpeedLogicFrames`）记在 worker 私有字段上，**只在下次 `EnterHighSpeed` 建会话时生效**，不打断正在跑的会话。
 - **至多一帧 / 批**：批次末累计够 `StepsPerPresent` 或应用过命令时发布一帧（五段一次性写完才对外可见）；发布走 `SimulationFramePublisher` 的 release / acquire 语义，主线程要么看到上一帧、要么看到完整新帧。世界重建换新发布器（`Generation + 1`）并立即发布。
 - **故障通道**：任一批抛出的异常被捕获 → `Fault`（首个胜出）+ `FaultCount++` + 就地停摆（暂停推进、丢弃其后命令、仍照常回执）；worker **不碰任何 Unity API**，主线程读回执后 `Debug.LogError` 一次。世界的诊断消息（未注册类型 / shade 越界）经 `ParticleWorld.MessageSink` 进队列，同样由主线程记录。
 - **生命周期**：构造时在**调用线程**建好世界并发布第一帧（消费方不必等第一次 `Update`）；`Start()` 起线程，`Stop()` 置停止标志 + 唤醒 + `Join` 并复位两环（可再次 `Start()` 沿用同一个世界）。**必须在 Unity 对象销毁前 Join**（驱动在 `OnDisable` / `OnDestroy` 做）。

@@ -209,6 +209,10 @@ namespace TapTap2026.Simulation
         private ParticleWorld _world;
         private CreatureWorld _creatures;
         private HighSpeedSession _highSpeed;
+
+        /// <summary>下一次建高速会话时用的时长（逻辑帧）：阶段覆盖值，未覆盖 / 重置过则为设置资产的默认值。
+        /// 只在下一次 <see cref="ApplyEnterHighSpeed"/> 创建会话时消费，已存在的会话不受影响。</summary>
+        private int _highSpeedLogicFrames;
         private LightSettings _lightSettings;
         private SimulationTickSettings _tickSettings;
         private CellProbe _probe;
@@ -228,6 +232,7 @@ namespace TapTap2026.Simulation
         public SimulationWorker(in SimulationWorkerSetup setup)
         {
             _setup = setup;
+            _highSpeedLogicFrames = setup.HighSpeedLogicFrames < 1 ? 1 : setup.HighSpeedLogicFrames;
             _tickSettings = setup.TickSettings;
             _lightSettings = setup.Light;
             CreateWorld(setup.Width, setup.Height);
@@ -796,6 +801,20 @@ namespace TapTap2026.Simulation
                 case SimulationCommandKind.PresentNow:
                     // 上屏由批次末的发布决策统一处理（本批应用过命令 ⇒ 一定发布），这里无事可做。
                     return;
+
+                case SimulationCommandKind.SetHighSpeedLogicFrames:
+                    _highSpeedLogicFrames = command.Index > 0
+                        ? command.Index
+                        : (_setup.HighSpeedLogicFrames < 1 ? 1 : _setup.HighSpeedLogicFrames);
+
+                    // 旧会话是按旧时长建的：已退出的话直接丢弃，保证「只影响下一次创建的会话」这条契约成立
+                    // （进行中的会话不打断——退出后由上面这次丢弃交给下一次进入重建）。
+                    if (_highSpeed != null && !_highSpeed.Active)
+                    {
+                        _highSpeed = null;
+                    }
+
+                    return;
             }
         }
 
@@ -953,7 +972,7 @@ namespace TapTap2026.Simulation
 
             if (_highSpeed == null)
             {
-                _highSpeed = new HighSpeedSession(_world, _setup.HighSpeedLogicFrames);
+                _highSpeed = new HighSpeedSession(_world, _highSpeedLogicFrames);
             }
 
             _highSpeed.Enter();

@@ -1,6 +1,8 @@
 using NUnit.Framework;
 using TapTap2026.Game;
 using TapTap2026.Simulation;
+using UnityEditor;
+using UnityEngine;
 
 namespace TapTap2026.Tests
 {
@@ -138,6 +140,104 @@ namespace TapTap2026.Tests
                 error);
             Assert.IsNotNull(empty.availableParticles);
             Assert.AreEqual(0, empty.availableParticles.Length);
+        }
+
+        /// <summary><c>simulationTicks</c> 写出即原样解析；省略 → 0（= 用设置资产的默认高速时长）。</summary>
+        [Test]
+        public void TryParse_SimulationTicks_RoundTripsAndDefaultsToZero()
+        {
+            string error;
+
+            GamePhaseData specified;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse(
+                    "{\"simulationTicks\":2000,\"sandboxWidth\":10,\"sandboxHeight\":10}", out specified, out error),
+                error);
+            Assert.AreEqual(2000, specified.simulationTicks);
+
+            GamePhaseData omitted;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse("{\"sandboxWidth\":10,\"sandboxHeight\":10}", out omitted, out error),
+                error);
+            Assert.AreEqual(0, omitted.simulationTicks);
+        }
+
+        /// <summary>负的模拟时长是配置错误（会倒退 tick 计数），解析失败并给出错误描述。</summary>
+        [Test]
+        public void TryParse_NegativeSimulationTicks_Fails()
+        {
+            GamePhaseData phase;
+            string error;
+            Assert.IsFalse(
+                GamePhaseParser.TryParse(
+                    "{\"simulationTicks\":-1,\"sandboxWidth\":10,\"sandboxHeight\":10}", out phase, out error),
+                "负的 simulationTicks 必须解析失败");
+            Assert.IsNull(phase);
+            StringAssert.Contains("simulationTicks", error);
+        }
+
+        /// <summary>动物白名单的可空语义：省略 → null（不限制）；显式空数组 → 长度为 0（本阶段没有动物）。</summary>
+        [Test]
+        public void TryParse_AvailableCreatures_OmittedMeansUnrestricted()
+        {
+            string error;
+
+            GamePhaseData omitted;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse("{\"sandboxWidth\":10,\"sandboxHeight\":10}", out omitted, out error),
+                error);
+            Assert.IsNull(omitted.availableCreatures, "省略 = 不限制动物");
+
+            GamePhaseData empty;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse(
+                    "{\"availableCreatures\":[],\"sandboxWidth\":10,\"sandboxHeight\":10}", out empty, out error),
+                error);
+            Assert.IsNotNull(empty.availableCreatures, "显式空数组不能归一成 null");
+            Assert.AreEqual(0, empty.availableCreatures.Length);
+
+            GamePhaseData listed;
+            Assert.IsTrue(
+                GamePhaseParser.TryParse(
+                    "{\"availableCreatures\":[\"RabbitCreature\"],\"sandboxWidth\":10,\"sandboxHeight\":10}",
+                    out listed,
+                    out error),
+                error);
+            Assert.AreEqual("RabbitCreature", listed.availableCreatures[0]);
+        }
+
+        /// <summary>只有动物约束的胜利条件不能被归一成 null（只有全哨兵才是「没有胜利条件」）。</summary>
+        [Test]
+        public void TryParse_CreatureOnlyVictory_IsKept()
+        {
+            const string json =
+                "{\"sandboxWidth\":10,\"sandboxHeight\":10," +
+                "\"victory\":{\"creatures\":[{\"species\":\"RabbitCreature\",\"minCount\":1}]}}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsTrue(GamePhaseParser.TryParse(json, out phase, out error), error);
+
+            Assert.IsNotNull(phase.victory, "只有动物约束的 victory 必须保留");
+            Assert.AreEqual(1, phase.victory.creatures.Length);
+            Assert.AreEqual("RabbitCreature", phase.victory.creatures[0].species);
+            Assert.AreEqual(1, phase.victory.creatures[0].minCount);
+            Assert.AreEqual(-1, phase.victory.creatures[0].maxCount, "未写的上限保持 -1 = 不约束");
+        }
+
+        /// <summary>动物约束缺 <c>species</c> 是配置错误，解析失败。</summary>
+        [Test]
+        public void TryParse_CreatureWithoutSpecies_Fails()
+        {
+            const string json =
+                "{\"sandboxWidth\":10,\"sandboxHeight\":10," +
+                "\"victory\":{\"creatures\":[{\"minCount\":1}]}}";
+
+            GamePhaseData phase;
+            string error;
+            Assert.IsFalse(GamePhaseParser.TryParse(json, out phase, out error), "缺 species 的动物约束必须解析失败");
+            Assert.IsNull(phase);
+            StringAssert.Contains("creatures", error);
         }
 
         /// <summary>可空语义钉死：<c>repeatDialogueId</c> 显式写出 → 解析出该值；省略 → null
@@ -742,8 +842,225 @@ namespace TapTap2026.Tests
             Assert.IsTrue(VictoryEvaluator.Evaluate(condition, snapshot, out reason), reason);
         }
 
-        // ============================== 工具 ==============================
+        /// <summary>
+        /// 动物存活数约束：每个物种都要达到 minCount 才过关；不足即失败且理由点名该物种与实测存活数。
+        /// 存活数由调用方（结算帧的实体表）统计——判定本身只读快照。
+        /// </summary>
+        [Test]
+        public void Evaluate_CreatureAliveBelowMin_Fails()
+        {
+            var condition = new VictoryCondition
+            {
+                creatures = new[]
+                {
+                    new CreatureCountCondition { species = "RabbitCreature", minCount = 1 },
+                    new CreatureCountCondition { species = "FishCreature", minCount = 1 },
+                    new CreatureCountCondition { species = "BirdCreature", minCount = 1 },
+                },
+            };
 
+            HighSpeedSnapshot snapshot = SnapshotWithCreatures(
+                Alive(CreatureSpecies.Rabbit, 2),
+                Alive(CreatureSpecies.Fish, 1),
+                Alive(CreatureSpecies.Bird, 0));
+
+            string reason;
+            Assert.IsFalse(VictoryEvaluator.Evaluate(condition, snapshot, out reason), "鸟的存活数为 0，必须判负");
+            StringAssert.Contains("BirdCreature", reason);
+            StringAssert.Contains("存活", reason);
+            StringAssert.Contains("低于要求", reason);
+        }
+
+        /// <summary>每个物种都达到下限即过关；快照里没有的物种按 0 存活算（不是「跳过」）。</summary>
+        [Test]
+        public void Evaluate_CreatureAliveMeetsMin_Passes()
+        {
+            var condition = new VictoryCondition
+            {
+                creatures = new[]
+                {
+                    new CreatureCountCondition { species = "RabbitCreature", minCount = 1 },
+                    new CreatureCountCondition { species = "FishCreature", minCount = 1 },
+                },
+            };
+
+            HighSpeedSnapshot snapshot = SnapshotWithCreatures(
+                Alive(CreatureSpecies.Rabbit, 1),
+                Alive(CreatureSpecies.Fish, 1));
+
+            string reason;
+            Assert.IsTrue(VictoryEvaluator.Evaluate(condition, snapshot, out reason), reason);
+
+            HighSpeedSnapshot missingFish = SnapshotWithCreatures(Alive(CreatureSpecies.Rabbit, 1));
+            Assert.IsFalse(
+                VictoryEvaluator.Evaluate(condition, missingFish, out reason),
+                "快照缺该物种 = 0 存活，必须判负");
+        }
+
+        /// <summary>物种名也接受 DebugName（中文名），与粒子白名单的「类名或显示名」规则一致。</summary>
+        [Test]
+        public void Evaluate_CreatureSpeciesMatchesDebugName()
+        {
+            var condition = new VictoryCondition
+            {
+                creatures = new[] { new CreatureCountCondition { species = "兔子", minCount = 1 } },
+            };
+
+            string reason;
+            Assert.IsTrue(
+                VictoryEvaluator.Evaluate(condition, SnapshotWithCreatures(Alive(CreatureSpecies.Rabbit, 1)), out reason),
+                reason);
+        }
+
+        /// <summary>物种名查不到 = 配置错误（不是玩家没达成），理由明确指出。</summary>
+        [Test]
+        public void Evaluate_UnknownCreatureSpecies_FailsAsConfigError()
+        {
+            var condition = new VictoryCondition
+            {
+                creatures = new[] { new CreatureCountCondition { species = "DragonCreature", minCount = 1 } },
+            };
+
+            string reason;
+            Assert.IsFalse(
+                VictoryEvaluator.Evaluate(condition, SnapshotWithCreatures(Alive(CreatureSpecies.Rabbit, 5)), out reason));
+            StringAssert.Contains("配置错误", reason);
+            StringAssert.Contains("DragonCreature", reason);
+        }
+
+        // ============================== 阶段配置（真资产） ==============================
+
+        /// <summary>
+        /// 五份实际发货的阶段 JSON 必须能解析、每个投放 / 胜利约束里的名字都要在注册表里查得到，
+        /// 且解锁是**递进的**（后一关的投放名单包含前一关的全部）——名字拼错会让某类粒子永远无法投放 / 判负，
+        /// 递进被打断则是关卡设计的静默退化。
+        /// </summary>
+        [Test]
+        public void ShippedPhases_ParseAndResolveEveryName()
+        {
+            string[] ids = { "phase_01", "phase_02", "phase_03", "phase_04", "phase_05" };
+            var parsed = new GamePhaseData[ids.Length];
+
+            for (int i = 0; i < ids.Length; i++)
+            {
+                TextAsset asset = AssetDatabase.LoadAssetAtPath<TextAsset>("Assets/Data/Phases/" + ids[i] + ".json");
+                Assert.IsNotNull(asset, "阶段资产缺失：" + ids[i]);
+
+                Assert.IsTrue(GamePhaseParser.TryParse(asset.text, out parsed[i], out string error),
+                    "阶段 " + ids[i] + " 解析失败：" + error);
+                Assert.Greater(parsed[i].simulationTicks, 0, "阶段 " + ids[i] + " 必须明确写出模拟时长");
+
+                string[] particles = parsed[i].availableParticles;
+                if (particles != null)
+                {
+                    for (int p = 0; p < particles.Length; p++)
+                    {
+                        Assert.IsTrue(ResolvesParticle(particles[p]),
+                            "阶段 " + ids[i] + " 的 availableParticles 里有未知类型：" + particles[p]);
+                    }
+                }
+
+                string[] creatures = parsed[i].availableCreatures;
+                if (creatures != null)
+                {
+                    for (int c = 0; c < creatures.Length; c++)
+                    {
+                        Assert.IsTrue(ResolvesCreature(creatures[c]),
+                            "阶段 " + ids[i] + " 的 availableCreatures 里有未知物种：" + creatures[c]);
+                    }
+                }
+
+                VictoryCondition victory = parsed[i].victory;
+                if (victory == null)
+                {
+                    continue;
+                }
+
+                if (victory.particles != null)
+                {
+                    for (int p = 0; p < victory.particles.Length; p++)
+                    {
+                        Assert.IsTrue(ResolvesParticle(victory.particles[p].type),
+                            "阶段 " + ids[i] + " 的 victory.particles 里有未知类型：" + victory.particles[p].type);
+                    }
+                }
+
+                if (victory.creatures != null)
+                {
+                    for (int c = 0; c < victory.creatures.Length; c++)
+                    {
+                        Assert.IsTrue(ResolvesCreature(victory.creatures[c].species),
+                            "阶段 " + ids[i] + " 的 victory.creatures 里有未知物种：" + victory.creatures[c].species);
+                    }
+                }
+            }
+
+            // 递进解锁：后一关的粒子名单包含前一关的全部（前三关按设计逐关加料）。
+            for (int i = 1; i <= 3; i++)
+            {
+                Assert.IsNotNull(parsed[i - 1].availableParticles, "阶段 " + ids[i - 1] + " 应当明确写出粒子名单");
+                Assert.IsNotNull(parsed[i].availableParticles, "阶段 " + ids[i] + " 应当明确写出粒子名单");
+
+                for (int p = 0; p < parsed[i - 1].availableParticles.Length; p++)
+                {
+                    CollectionAssert.Contains(parsed[i].availableParticles, parsed[i - 1].availableParticles[p],
+                        "阶段 " + ids[i] + " 必须保留上一关已解锁的类型 " + parsed[i - 1].availableParticles[p]);
+                }
+            }
+
+            // 阶段链线性连通：每个 nextPhaseId 都指向下一份已登记的阶段。
+            for (int i = 0; i < ids.Length - 1; i++)
+            {
+                Assert.AreEqual(ids[i + 1], parsed[i].nextPhaseId, "阶段 " + ids[i] + " 的 nextPhaseId 应当指向下一关");
+            }
+
+            Assert.IsNull(parsed[ids.Length - 1].victory, "最后一关（沙盒）没有胜利条件");
+            Assert.IsNull(parsed[ids.Length - 1].nextPhaseId, "最后一关是终点");
+            Assert.IsNull(parsed[ids.Length - 1].availableParticles, "沙盒不限制粒子");
+            Assert.IsNull(parsed[ids.Length - 1].availableCreatures, "沙盒不限制动物");
+        }
+
+        private static bool ResolvesParticle(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            ParticleType[] types = ParticleRegistry.Types;
+            for (int i = 1; i < types.Length; i++)
+            {
+                ParticleType type = types[i];
+                if (type != null && (type.Info.DebugName == name || type.ClassName == name))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ResolvesCreature(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            CreatureSpecies[] species = CreatureSpawns.Species;
+            for (int i = 0; i < species.Length; i++)
+            {
+                Creature prototype = CreatureSpawns.Create(species[i]);
+                if (prototype != null && (prototype.DebugName == name || prototype.GetType().Name == name))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // ============================== 工具 ==============================
         private static HighSpeedSnapshot Snapshot(float temperature, float humidity, params ParticleTypeCount[] counts)
         {
             return new HighSpeedSnapshot
@@ -751,6 +1068,26 @@ namespace TapTap2026.Tests
                 surfaceTemperature = temperature,
                 averageHumidity = humidity,
                 counts = counts,
+            };
+        }
+
+        private static HighSpeedSnapshot SnapshotWithCreatures(params CreatureAliveCount[] creatures)
+        {
+            return new HighSpeedSnapshot
+            {
+                surfaceTemperature = 25f,
+                averageHumidity = 0.3f,
+                counts = new ParticleTypeCount[0],
+                creatures = creatures,
+            };
+        }
+
+        private static CreatureAliveCount Alive(CreatureSpecies species, int alive)
+        {
+            return new CreatureAliveCount
+            {
+                species = species,
+                alive = alive,
             };
         }
 

@@ -45,6 +45,9 @@ namespace TapTap2026.Game
         /// <summary>沙箱高度（格）；必须 ≥ 1。</summary>
         public int sandboxHeight;
 
+        /// <summary>本阶段高速模式的模拟时长（逻辑帧）；0 = 使用 <c>ParticleSimulationSettings.HighSpeedLogicFrames</c>，负数非法。</summary>
+        public int simulationTicks;
+
         /// <summary>
         /// 本阶段可投放的粒子白名单（按 <c>DebugName</c> 或类名匹配）。
         /// null / 空 = 不限制，沿用编辑器默认白名单。
@@ -52,8 +55,14 @@ namespace TapTap2026.Game
         public string[] availableParticles;
 
         /// <summary>
+        /// 本阶段可投放的动物物种白名单（按 Creature 子类类名如 "RabbitCreature" 或 DebugName 如 "兔子" 匹配）。
+        /// null（JSON 省略）= 不限制；空数组 = 本阶段没有任何动物可投放。
+        /// </summary>
+        public string[] availableCreatures;
+
+        /// <summary>
         /// 胜利条件；null = 本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程，见 <c>GameController</c>）。
-        /// 由 <c>GamePhaseParser</c> 归一：省略的 / 全哨兵的 / <c>particles</c> 为空的 <c>victory</c> 一律为 null。
+        /// 由 <c>GamePhaseParser</c> 归一：省略的 / 全哨兵的 / <c>particles</c> 与 <c>creatures</c> 都为空的 <c>victory</c> 一律为 null。
         /// </summary>
         public VictoryCondition victory;
 
@@ -101,6 +110,9 @@ namespace TapTap2026.Game
 
         /// <summary>逐类型的产生 / 死亡计数约束；null / 空 = 无计数约束。</summary>
         public ParticleCountCondition[] particles;
+
+        /// <summary>逐动物物种的存活数约束；null / 空 = 无约束。</summary>
+        public CreatureCountCondition[] creatures;
     }
 
     /// <summary>
@@ -133,6 +145,23 @@ namespace TapTap2026.Game
     }
 
     /// <summary>
+    /// 单个动物物种的存活数约束。每个界限 <c>&lt; 0</c> 表示该项不约束；
+    /// 存活数对高速结束那一刻已发布帧里的动物表盘点判（见 <c>VictoryEvaluator</c>）。
+    /// </summary>
+    [Serializable]
+    public sealed class CreatureCountCondition
+    {
+        /// <summary>动物物种名（Creature 子类类名或 DebugName）。</summary>
+        public string species;
+
+        /// <summary>结束时存活数下限；<c>&lt; 0</c> = 不约束。</summary>
+        public int minCount = -1;
+
+        /// <summary>结束时存活数上限；<c>&lt; 0</c> = 不约束。</summary>
+        public int maxCount = -1;
+    }
+
+    /// <summary>
     /// 阶段 JSON 的解析入口（<c>UnityEngine.JsonUtility</c>）。
     /// 失败不抛异常、不打日志，由调用方（<c>GameController</c>）决定如何报错——便于 EditMode 测试。
     /// </summary>
@@ -143,8 +172,10 @@ namespace TapTap2026.Game
         /// 可空字段（<c>dialogueId</c> / <c>repeatDialogueId</c> / <c>nextPhaseId</c> / <c>description</c>）一律不校验：
         /// 省略 → 保持 C# 字段初始值 null，显式空串 → <c>""</c>；两者由调用方一视同仁地当作「无该内容」
         /// （<c>description</c> 即本阶段没有可显示的描述）。
-        /// 缺字段保留 C# 字段初始值；额外校验沙箱宽高 ≥ 1、<c>victory.particles</c> 条目 type 非空。
-        /// 省略的 / 全哨兵（界限全 <see cref="float.NaN"/> 且无 particles）的 / <c>particles</c> 为空的 <c>victory</c>
+        /// 缺字段保留 C# 字段初始值；额外校验沙箱宽高 ≥ 1、<c>simulationTicks</c> 非负、
+        /// <c>victory.particles</c> 条目 type 非空、<c>victory.creatures</c> 条目 species 非空。
+        /// 省略的 / 全哨兵（界限全 <see cref="float.NaN"/> 且无 particles / creatures）的 /
+        /// <c>particles</c> 与 <c>creatures</c> 都为空的 <c>victory</c>
         /// 一律归一为 null，表示本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程）。
         /// </summary>
         public static bool TryParse(string json, out GamePhaseData phase, out string error)
@@ -186,6 +217,16 @@ namespace TapTap2026.Game
                 return false;
             }
 
+            if (parsed.simulationTicks < 0)
+            {
+                error = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "阶段 {0} 的 simulationTicks 非法：{1}（必须 ≥ 0，0 = 使用设置默认值）。",
+                    parsed.id ?? "<null>",
+                    parsed.simulationTicks);
+                return false;
+            }
+
             if (parsed.victory != null && parsed.victory.particles != null)
             {
                 for (int i = 0; i < parsed.victory.particles.Length; i++)
@@ -196,6 +237,23 @@ namespace TapTap2026.Game
                         error = string.Format(
                             CultureInfo.InvariantCulture,
                             "阶段 {0} 的 victory.particles[{1}] 缺少 type。",
+                            parsed.id ?? "<null>",
+                            i);
+                        return false;
+                    }
+                }
+            }
+
+            if (parsed.victory != null && parsed.victory.creatures != null)
+            {
+                for (int i = 0; i < parsed.victory.creatures.Length; i++)
+                {
+                    CreatureCountCondition condition = parsed.victory.creatures[i];
+                    if (condition == null || string.IsNullOrEmpty(condition.species))
+                    {
+                        error = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "阶段 {0} 的 victory.creatures[{1}] 缺少 species。",
                             parsed.id ?? "<null>",
                             i);
                         return false;
@@ -217,7 +275,8 @@ namespace TapTap2026.Game
         /// <summary>
         /// 判定一个胜利条件是否「什么都没约束」（全哨兵 = 无约束）：四个温度 / 湿度界限
         /// （<see cref="VictoryCondition.minSurfaceTemperature"/> 等）全为 <see cref="float.NaN"/>，
-        /// 且 <see cref="VictoryCondition.particles"/> 为 null 或长度为 0。
+        /// 且 <see cref="VictoryCondition.particles"/> 与 <see cref="VictoryCondition.creatures"/>
+        /// 都为 null 或长度为 0。
         /// <c>JsonUtility</c> 对**省略**的嵌套可序列化类会构造出这种全哨兵实例（本工程实测，2022.3.62f1），
         /// <see cref="TryParse"/> 靠本判定把它归一为 null = 本阶段没有胜利条件（沙盒阶段）。
         /// </summary>
@@ -228,7 +287,8 @@ namespace TapTap2026.Game
                 && float.IsNaN(victory.maxSurfaceTemperature)
                 && float.IsNaN(victory.minAverageHumidity)
                 && float.IsNaN(victory.maxAverageHumidity)
-                && (victory.particles == null || victory.particles.Length == 0);
+                && (victory.particles == null || victory.particles.Length == 0)
+                && (victory.creatures == null || victory.creatures.Length == 0);
         }
     }
 }

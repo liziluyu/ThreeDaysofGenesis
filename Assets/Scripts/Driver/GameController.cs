@@ -246,7 +246,7 @@ namespace TapTap2026.Game
                     _sessionHadVerdict = true;
                     _lastResult = VictoryEvaluator.Evaluate(
                         _currentPhase.victory,
-                        BuildSnapshot(session),
+                        BuildSnapshot(session, frame.Creatures),
                         out string reason);
                     _lastReason = reason;
                 }
@@ -286,8 +286,9 @@ namespace TapTap2026.Game
         /// ② 按 <c>isRepeat</c>（阶段是否已在解锁集合中）经 <see cref="GamePhaseData.ResolveOpeningDialogueId"/>
         ///    选开场对话——首次进入用 <c>dialogueId</c>、重复进入用 <c>repeatDialogueId</c>，非空才交给
         ///    <see cref="DialogueController"/> 播（启动失败只警告，流程继续）；
-        /// ③ 提交 <see cref="SimulationCommandKind.Resize"/> 重建沙箱（宽高相同也重建——重来要的是空世界）；
-        /// ④ <see cref="ParticleEditor.SetPlacementFilter"/> 套用本阶段可投放粒子；
+        /// ③ 套用本阶段高速模式时长（<see cref="GamePhaseData.simulationTicks"/>，0 = 设置默认值），
+        ///    再提交 <see cref="SimulationCommandKind.Resize"/> 重建沙箱（宽高相同也重建——重来要的是空世界）；
+        /// ④ <see cref="ParticleEditor.SetPlacementFilter"/> 套用本阶段可投放粒子与动物；
         /// ⑤ 把本阶段加入解锁集合、写存档，最后更新 <see cref="CurrentPhaseId"/> 与当前阶段缓存。
         /// </summary>
         /// <remarks>未接线 <see cref="_driver"/> 记错误并直接返回；<see cref="_dialogue"/> / <see cref="_editor"/> 缺失只降级警告、跳过对应步骤。</remarks>
@@ -329,6 +330,9 @@ namespace TapTap2026.Game
                 }
             }
 
+            // 本阶段高速模式的时长（逻辑帧）；0 = 用设置资产默认值。
+            _driver.SetHighSpeedLogicFrames(phase.simulationTicks);
+
             // 命令在下一个 tick 边界生效（尺寸相同也重建——重来要的是空世界）。
             _driver.Submit(SimulationCommand.Resize(phase.sandboxWidth, phase.sandboxHeight));
 
@@ -338,7 +342,7 @@ namespace TapTap2026.Game
             }
             else
             {
-                _editor.SetPlacementFilter(phase.availableParticles);
+                _editor.SetPlacementFilter(phase.availableParticles, phase.availableCreatures);
             }
 
             _unlockedPhases.Add(id);
@@ -472,15 +476,18 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 从当前高速模式帧构建判定快照：温度 / 湿度取最新采样（可能为 <see cref="float.NaN"/> = 未采样），
+        /// 从当前已发布帧构建判定快照：温度 / 湿度取高速会话的最新采样（可能为 <see cref="float.NaN"/> = 未采样），
         /// 计数取**全部已注册类型**（id 从 1 起、跳过注册表尾部的 null 槽、不含空气），含计数为 0 的类型；
         /// 存量取帧里的终态盘点（<see cref="HighSpeedFrame.GetFinalCount"/>，会话跑满那一刻的一次全网格扫描）。
+        /// 动物存活数取同一份已发布帧的动物表（<see cref="SimulationFrame.Creatures"/>）逐物种计数。
         /// </summary>
         /// <remarks>
+        /// 两个来源：粒子统计来自高速会话帧、动物存活数来自**同一份已发布帧**的动物表——
+        /// 因此存活数就是结算那一刻（会话跑满时长）的实体数，与会话是否已退出无关。
         /// 调用时机固定在帧里 <see cref="HighSpeedFrame.Completed"/> 为真的那一刻（会话仍 Active、尚未退出），
         /// 因此终态存量拿得到真实值——退出之后驱动不再采它，帧里也归零。
         /// </remarks>
-        private static HighSpeedSnapshot BuildSnapshot(HighSpeedFrame session)
+        private static HighSpeedSnapshot BuildSnapshot(HighSpeedFrame session, CreatureFrame creatures)
         {
             ParticleType[] types = ParticleRegistry.Types;
             var counts = new List<ParticleTypeCount>();
@@ -501,11 +508,37 @@ namespace TapTap2026.Game
                 });
             }
 
+            CreatureSpecies[] speciesList = CreatureSpawns.Species;
+            var creatureCounts = new CreatureAliveCount[speciesList.Length];
+            for (int i = 0; i < speciesList.Length; i++)
+            {
+                CreatureSpecies species = speciesList[i];
+                int alive = 0;
+
+                if (creatures != null)
+                {
+                    for (int j = 0; j < creatures.Count; j++)
+                    {
+                        if (creatures.Creature(j).Species == species)
+                        {
+                            alive++;
+                        }
+                    }
+                }
+
+                creatureCounts[i] = new CreatureAliveCount
+                {
+                    species = species,
+                    alive = alive,
+                };
+            }
+
             return new HighSpeedSnapshot
             {
                 surfaceTemperature = session.LatestSurfaceTemperature,
                 averageHumidity = session.LatestAverageHumidity,
                 counts = counts.ToArray(),
+                creatures = creatureCounts,
             };
         }
 

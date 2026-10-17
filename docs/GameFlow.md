@@ -10,11 +10,11 @@
 
 | 文件 | 角色 |
 |---|---|
-| `GamePhaseData.cs` | **纯 C#**：阶段 JSON 数据类（`GamePhaseData` / `VictoryCondition` / `ParticleCountCondition`）+ `GamePhaseParser.TryParse`（`JsonUtility`，免第三方依赖）+ 两个纯解析方法 `ResolveOpeningDialogueId(isRepeat)` / `ResolveResultDialogueId(passed)` |
-| `VictoryEvaluator.cs` | **纯 C# 判定**：`HighSpeedSnapshot` + `VictoryEvaluator.Evaluate`，只用快照与配置算胜负（无 Input / UI / 协程，可 EditMode 测试） |
-| `GameController.cs` | **流程薄壳**（MonoBehaviour）：阶段映射、`StartPhase` 五步、高速模式轮询、胜负结论缓存（暴露给结算面板读取）、**结算对话（过关 / 未过关各一段，见 §4.4）**、自动存档；同时是**存档格式的唯一权威**（`SaveData` DTO + 静态 `SavePathFor` / `LoadSave` / `CollectUnlockedPhaseIds` / `WriteSave`） |
+| `GamePhaseData.cs` | **纯 C#**：阶段 JSON 数据类（`GamePhaseData` / `VictoryCondition` / `ParticleCountCondition` / `CreatureCountCondition`）+ `GamePhaseParser.TryParse`（`JsonUtility`，免第三方依赖）+ 两个纯解析方法 `ResolveOpeningDialogueId(isRepeat)` / `ResolveResultDialogueId(passed)` |
+| `VictoryEvaluator.cs` | **纯 C# 判定**：`HighSpeedSnapshot`（粒子产生 / 死亡 / 存量 + 逐物种存活数）+ `VictoryEvaluator.Evaluate`，只用快照与配置算胜负（无 Input / UI / 协程，可 EditMode 测试） |
+| `GameController.cs` | **流程薄壳**（MonoBehaviour）：阶段映射、`StartPhase` 五步（含**每阶段高速时长**与**粒子 / 动物投放白名单**）、高速模式轮询、胜负结论缓存（暴露给结算面板读取）、**结算对话（过关 / 未过关各一段，见 §4.4）**、自动存档；同时是**存档格式的唯一权威**（`SaveData` DTO + 静态 `SavePathFor` / `LoadSave` / `CollectUnlockedPhaseIds` / `WriteSave`） |
 | `LevelSelectController.cs` | **关卡选择界面控制器**（MonoBehaviour）：按存档解锁集合控制按钮显隐、点选后写档并加载游戏场景（见 §10） |
-| `Assets/Data/Phases/phase_01.json` … `phase_05.json` | 阶段数据（`TextAsset`，`TextScriptImporter`）：`phase_01` 入职日 → `phase_02` 第一日 → `phase_03` 第二日 → `phase_04` 第三日 → `phase_05` 沙盒（无 `victory`、无 `nextPhaseId`） |
+| `Assets/Data/Phases/phase_01.json` … `phase_05.json` | 阶段数据（`TextAsset`，`TextScriptImporter`）：`phase_01` 入职日（土 / 石头 / 沙）→ `phase_02` 第一日（+ 水 / 火）→ `phase_03` 第二日（+ 植物种子）→ `phase_04` 第三日（+ 兔 / 鱼 / 鸟）→ `phase_05` 沙盒（无白名单、无 `victory`、无 `nextPhaseId`） |
 | `Assets/Tests/EditMode/GameFlowTests.cs` | 解析与胜利判定的 EditMode 测试 |
 | `Assets/Tests/EditMode/GameSaveProgressTests.cs` | 静态存档 API 的 EditMode 测试 |
 | `Assets/Tests/EditMode/LevelSelectControllerTests.cs` | 关卡选择控制器逻辑的 EditMode 测试 |
@@ -30,24 +30,27 @@
 
 ```json
 {
-  "description": "入职日：认识沙盒与投放操作，让沙地上长出第一片草地。",
+  "description": "入职日：解锁土、石头、沙子。",
   "dialogueId": "phase_01_intro",
   "repeatDialogueId": "phase_01_retry",
   "successDialogueId": "phase_01_clear",
   "failureDialogueId": "phase_01_fail",
   "nextPhaseId": "phase_02",
-  "sandboxWidth": 160,
-  "sandboxHeight": 90,
+  "sandboxWidth": 200,
+  "sandboxHeight": 100,
+  "simulationTicks": 100,
+  "availableParticles": ["SoilParticle", "StoneParticle", "SandParticle"],
+  "availableCreatures": [],
   "victory": {
-    "minSurfaceTemperature": 5.0,
-    "maxSurfaceTemperature": 40.0,
     "particles": [
-      { "type": "GrassParticle", "minBirths": 10 }
+      { "type": "SoilParticle", "minCount": 1 },
+      { "type": "StoneParticle", "minCount": 1 },
+      { "type": "SandParticle", "minCount": 1 }
     ]
   }
 }
 ```
-（示例是 `phase_01.json` 的开发期形态再加上四个对话字段：它**省略 `availableParticles`**——不限制，全粒子可投；实际文件目前**只配了 `dialogueId` / `repeatDialogueId`**，两个结算对话要等有对话文本后再补（见 §4.4 与 §7.5）。）
+（示例是 `phase_01.json` 加上两个结算对话字段：实际文件目前只配了 `dialogueId` / `repeatDialogueId`，结算对话要等有对话文本后再补（见 §4.4 与 §7.5）。`availableCreatures: []` 是**显式空名单** = 本阶段没有动物可投——不是「不限制」，见下表。）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -60,10 +63,12 @@
 | `nextPhaseId` | string | 过关后进入的下一阶段 id；**省略 / 空 = 最终阶段**（过关后停在「全部阶段完成」） |
 | `sandboxWidth` | int | 沙箱宽（格）。**必须 ≥ 1**，否则解析失败 |
 | `sandboxHeight` | int | 沙箱高（格）。**必须 ≥ 1**，否则解析失败 |
-| `availableParticles` | string[] | 本阶段可手动投放的粒子名单（`DebugName` 或类名，匹配规则同 `ParticleEditor.ResolveTypeNames`）；**省略 / 空 = 不限制**（用编辑器的默认白名单） |
+| `simulationTicks` | int | 本阶段**高速模式的模拟时长**（逻辑帧）。`GameController` 在 `StartPhase` 里把它提交给驱动（`SetHighSpeedLogicFrames`），下一次进入高速模式的会话按它跑满并结算。**省略 / 0 = 用 `ParticleSimulationSettings.HighSpeedLogicFrames` 的设置资产默认值**；**负数解析失败** |
+| `availableParticles` | string[] | 本阶段可手动投放的粒子名单（`DebugName` 或类名，匹配规则同 `ParticleEditor.ResolveTypeNames`）；**省略 / 空 = 不限制**（用编辑器的默认白名单）。名单只能**收窄**：与编辑器默认白名单取交集，草 / 树叶等默认不可手刷的类型不会被放开 |
+| `availableCreatures` | string[] | 本阶段可手动投放的动物物种名单（`Creature` 子类类名如 `RabbitCreature`，或 `DebugName` 如 `兔子`）。**省略 = 不限制**（兔 / 鱼 / 鸟全部可投）；**空数组 = 本阶段没有任何动物**。三关（`phase_01`–`phase_03`）因此写显式 `[]`，`phase_04` 写三物种，沙盒省略 |
 | `victory` | object | 胜利条件，见 §3；**省略 / 全哨兵 / null = 本阶段没有胜利条件**（沙盒阶段：高速模式跑完后不判定、不推进流程，见 §4.3） |
 
-> **`victory` 归一化（2026-10-16 修复）**：`JsonUtility.FromJson` 在本版本（2022.3.62f1）对**省略的嵌套可序列化类**会默认构造一个实例而不是留 null——`victory` 省略时得到的是「全哨兵（什么也不约束）」的 `VictoryCondition`。`GamePhaseParser.TryParse` 因此在 `particles[].type` 校验之后把它**归一为 null**：省略的 / 全哨兵的（四个界限全 `float.NaN` 且 `particles` 为 null 或空）`victory` 一律读出 `null` = 本阶段没有胜利条件。字符串 / 数组字段不受影响（省略仍为 null）。
+> **`victory` 归一化（2026-10-16 修复）**：`JsonUtility.FromJson` 在本版本（2022.3.62f1）对**省略的嵌套可序列化类**会默认构造一个实例而不是留 null——`victory` 省略时得到的是「全哨兵（什么也不约束）」的 `VictoryCondition`。`GamePhaseParser.TryParse` 因此在 `particles[].type` 校验之后把它**归一为 null**：省略的 / 全哨兵的（四个界限全 `float.NaN`、`particles` 为 null 或空、`creatures` 为 null 或空）`victory` 一律读出 `null` = 本阶段没有胜利条件。字符串 / 数组字段不受影响（省略仍为 null；`"availableCreatures": []` 解析为空数组而不是 null，因此「显式无动物」与「不限制」可以区分）。
 
 **解析语义**（`GamePhaseParser.TryParse`，与 `DialogueData.TryParse` 一致）：
 
@@ -71,7 +76,9 @@
 - **缺省字段保留 C# 字段初始值**（`JsonUtility` 不清空未出现的字段）——因此「省略 = 不约束」是靠哨兵初始值实现的，见 §3.2。
 - 额外校验（不通过则 `false` + `error`）：
   - `sandboxWidth < 1` 或 `sandboxHeight < 1`；
-  - `victory.particles[]` 里有条目的 `type` 为空 / 空白。
+  - `simulationTicks < 0`；
+  - `victory.particles[]` 里有条目的 `type` 为空 / 空白；
+  - `victory.creatures[]` 里有条目的 `species` 为空 / 空白。
 - **额外归一**：全哨兵的 `victory` → `null`（见上）。
 
 ---
@@ -88,6 +95,7 @@
     public float minAverageHumidity;      // 初始值 float.NaN
     public float maxAverageHumidity;      // 初始值 float.NaN
     public ParticleCountCondition[] particles;  // 初始值 null
+    public CreatureCountCondition[] creatures;  // 初始值 null
 }
 
 [Serializable] public sealed class ParticleCountCondition
@@ -100,6 +108,13 @@
     public int minCount;   // 初始值 -1；对高速结束时的存量判定
     public int maxCount;   // 初始值 -1；对高速结束时的存量判定
 }
+
+[Serializable] public sealed class CreatureCountCondition
+{
+    public string species;  // Creature 子类类名（如 RabbitCreature）或 DebugName（如 兔子）
+    public int minCount;    // 初始值 -1；对高速结束那一刻的存活数判定
+    public int maxCount;    // 初始值 -1；对高速结束那一刻的存活数判定
+}
 ```
 
 ```json
@@ -108,7 +123,8 @@
     "minSurfaceTemperature": 10.0,
     "maxSurfaceTemperature": 30.0,
     "minAverageHumidity": 0.35,
-    "particles": [ { "type": "GrassParticle", "minBirths": 40 } ]
+    "particles": [ { "type": "GrassParticle", "minBirths": 40 } ],
+    "creatures": [ { "species": "RabbitCreature", "minCount": 1 } ]
   }
 }
 ```
@@ -119,8 +135,9 @@
 |---|---|
 | `float.NaN`（温度 / 湿度约束的默认值） | 该约束**不启用**；JSON 里**不要写** `NaN` |
 | `-1`（计数 / 存量约束 `min*` / `max*` 的默认值） | 该方向**不约束**；`min = 0` 是「至少 0（恒真）」，与「不约束」不同但结果相同 |
-| `particles` 为 `null` / 空数组 | 无计数 / 存量约束 |
-| `victory` 为 `null`（JSON 里省略 / 全哨兵 / `particles` 为空会被归一为 null） | 本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程） |
+| `particles` 为 `null` / 空数组 | 无粒子计数 / 存量约束 |
+| `creatures` 为 `null` / 空数组 | 无动物存活数约束 |
+| `victory` 为 `null`（JSON 里省略 / 全哨兵 / `particles` 与 `creatures` 都为空会被归一为 null） | 本阶段没有胜利条件（沙盒阶段：高速模式跑完后不判定、不推进流程） |
 
 > ⚠️ `JsonUtility` **不支持 `long`**，所以计数字段一律用 `int`（模拟内部计数是 `long`，快照结构里保留 `long`，判定时直接比较，不去截断）。
 
@@ -133,6 +150,7 @@
 | `surfaceTemperature` | `HighSpeedSession.LatestSurfaceTemperature`（**可能为 `NaN` = 本轮未采样**） |
 | `averageHumidity` | `HighSpeedSession.LatestAverageHumidity` |
 | `counts[]` | 遍历 `ParticleRegistry.Types`，对**每个已注册类型**（含计数为 0 的）取 `GetBirths` / `GetDeaths` / `GetFinalCount` |
+| `creatures[]` | 遍历 `CreatureSpawns.Species`，在**同一帧**发布的 `CreatureFrame` 里数该物种的实体数（`CreatureFrame.Count` + `Creature(i).Species`）；结算帧即跑满那一刻 |
 
 判定规则，按**固定顺序**逐条检查：
 
@@ -144,11 +162,15 @@
 4. 计数：对 `particles[]` 里每一条，把 `type` 解析成 typeId（`DebugName` 或类名，同 `ParticleEditor.ResolveTypeNames` 规则），在快照 `counts` 里找该类型；按固定顺序 `minBirths` → `maxBirths` → `minDeaths` → `maxDeaths` → `minCount` → `maxCount` 逐项检查，各自 `-1` 表示不约束，否则 `>= min` / `<= max`（**边界含等号**）。任一不满足即整条失败。
    - `minCount` / `maxCount` 判的是**高速结束那一刻的存量格数**（`HighSpeedSession.GetFinalCount`，会话跑满时的一次全网格盘点），不是产生 / 死亡等流量。
    - 名字查不到 → `false` + `reason` 指出这是**配置错误**（不是玩家没达成）。
-5. 全部约束通过 → `true`，`reason` 为通过摘要。
-6. **任一不满足 → 立即返回 `false`**，`reason` 是**第一条未满足项**的描述，形如：
+5. 动物：对 `creatures[]` 里每一条，把 `species` 解析成 `CreatureSpecies`（物种原型实例的类名如 `RabbitCreature` 或 `DebugName` 如 `兔子`），在快照 `creatures` 里取该物种存活数（缺省 0）；`minCount` / `maxCount` 各自 `-1` 表示不约束，否则 `>= min` / `<= max`（**边界含等号**）。
+   - 存活数是**跑满那一刻的存活实体数**（死亡后已物质化并移出实体表），不是累计生成数。
+   - 物种名查不到 → `false` + `reason` 指出这是**配置错误**。
+6. 全部约束通过 → `true`，`reason` 为通过摘要。
+7. **任一不满足 → 立即返回 `false`**，`reason` 是**第一条未满足项**的描述，形如：
    - `地表温度 12.3° 低于要求 20°`
    - `GrassParticle 产生 3 低于要求 10`
    - `GrassParticle 存量 3 低于要求 10` / `GrassParticle 存量 25 高于要求 10`
+   - `RabbitCreature 存活 0 低于要求 1`
 
 **测试友好**：`Evaluate` 是纯函数，输入快照、输出布尔 + 理由，不读 `Time.*` / `Input` / 场景对象。
 
@@ -186,8 +208,8 @@ flowchart TD
     E -- 是 --> G["StartPhase(id)"]
     G --> H["① TryParse"]
     H --> I["② 选开场对话（首次 dialogueId / 重进 repeatDialogueId）→ StartDialogue"]
-    I --> J["③ driver.Resize(w, h)"]
-    J --> K["④ editor.SetPlacementFilter(availableParticles)"]
+    I --> J["③ driver.SetHighSpeedLogicFrames(simulationTicks) + driver.Resize(w, h)"]
+    J --> K["④ editor.SetPlacementFilter(availableParticles, availableCreatures)"]
     K --> L["⑤ 解锁本阶段 + 自动存档 + 置 CurrentPhaseId"]
     L --> M["Update：等高速会话 Active 且 Completed"]
     M --> N{"本阶段有 victory?"}
@@ -211,8 +233,8 @@ flowchart TD
 
 1. `GamePhaseParser.TryParse` —— 失败 `LogError` 并 `return`（不改动当前阶段状态）；成功后把文件名回填 `GamePhaseData.id`。
 2. **选开场对话**：`bool isRepeat = _unlockedPhases.Contains(id)`（必须在加入集合**之前**取），再 `string openingDialogueId = phase.ResolveOpeningDialogueId(isRepeat)`——首次进入给 `dialogueId`、重复进入给 `repeatDialogueId`；**非空才调** `_dialogue.StartDialogue(openingDialogueId)`，返回 `false`（注册表查不到 / JSON 坏）只 `LogWarning`，**不中断**流程。
-3. `_driver.Resize(data.sandboxWidth, data.sandboxHeight)` —— **宽高与当前相同也照调**：「重来」需要重建一个空世界，靠这次 `Resize` 重置。
-4. `_editor.SetPlacementFilter(data.availableParticles)` —— 见 §5。
+3. `_driver.SetHighSpeedLogicFrames(data.simulationTicks)` + `_driver.Resize(data.sandboxWidth, data.sandboxHeight)` —— 时长先定（`0` = 回到设置资产默认值，负数已被解析拒绝），下一条 `Resize` 随同批命令应用；**宽高与当前相同也照调**：「重来」需要重建一个空世界，靠这次 `Resize` 重置。命令同批入队、按序应用，因此时长设置与重建世界在同一 tick 边界落地。
+4. `_editor.SetPlacementFilter(data.availableParticles, data.availableCreatures)` —— 见 §5。
 5. **解锁 + 自动存档**：`_unlockedPhases.Add(id)`，再调 `GameController.WriteSave(_saveFileName, id, new List<string>(_unlockedPhases))`（`{"currentPhaseId":"<id>","unlockedPhases":[...]}`，`JsonUtility.ToJson`，解锁集合复制成 `List` 后按序号排序）；IO 失败 `LogError`，**不中断**。随后置 `CurrentPhaseId = id`。
 
 **`Start()` 读档**：
@@ -229,7 +251,7 @@ flowchart TD
 
 - 观察 `_driver.HighSpeed` 会话。**从「`Active` 且 `Completed`」那一帧起评估一次**胜利条件，缓存布尔结果与 `reason`（此后不再重复评估）。
   - **阶段没有 `victory`（沙盒）**：不评估、不置 `HasVerdict`、不推进流程——结算面板也不显示胜负行（见下）。
-- 快照取自会话：`LatestSurfaceTemperature` / `LatestAverageHumidity` + 遍历 `ParticleRegistry.Types` 取 `GetBirths` / `GetDeaths` / `GetFinalCount`（存量取的是「跑满那一刻」的全网格盘点；评估时机固定在 `Completed` 帧、会话尚未 `Exit`，因此非 0——`Exit` 后 `GetFinalCount` 会清空返回 0）。
+- 快照取自会话：`LatestSurfaceTemperature` / `LatestAverageHumidity` + 遍历 `ParticleRegistry.Types` 取 `GetBirths` / `GetDeaths` / `GetFinalCount`（存量取的是「跑满那一刻」的全网格盘点；评估时机固定在 `Completed` 帧、会话尚未 `Exit`，因此非 0——`Exit` 后 `GetFinalCount` 会清空返回 0）+ 遍历 `CreatureSpawns.Species` 在**同一帧**的 `CreatureFrame` 里数存活实体。死掉的动物会在逻辑帧末尾物质化并移出实体表，因此存活数 = 跑满那一刻还活着的个体数。
 - 评估结论只**缓存**在本类（`HasVerdict` / `LastResult` / `LastReason`），**不在本类上屏**：由 `ParticleEditor` 在高速模式结算面板（屏幕中央，玩家按 `Enter` / `H` 确认退出的那个面板）末尾追加一行——过关 = 绿色「过关！」，失败 = 红色「未过关：<reason>」。本类只保留「全部阶段完成」的常驻横幅（场景里的 `HUD Canvas/CompletionBanner`，本类只开关它的激活态，不画 IMGUI）。
 - **之后**观察到会话**退出**（`Active` 变 `false`，即玩家在 `ParticleEditor` 按 `Enter` / `H` 确认退出）→ 按**缓存的**结果行动：
   - **先看结算对话**：`_currentPhase.ResolveResultDialogueId(_lastResult)` 非空且能起播（`DialogueController.StartDialogue` 返回 true）→ 只起播它并把阶段切换**挂起**（`_awaitingResultDialogue = true`），本帧到此为止；之后每帧在 `Update` 开头检查 `_dialogue.IsActive`，**对话播完（或被强制关闭）才执行切换**。见 §4.4。
@@ -258,17 +280,21 @@ flowchart TD
 ## 5. `ParticleEditor.SetPlacementFilter`
 
 ```csharp
-// 按名字列表限制可投放粒子（DebugName 或类名，匹配规则同 ResolveTypeNames）；
+// 按名字列表限制可投放的粒子（DebugName 或类名，匹配规则同 ResolveTypeNames）；
 // 交集 = 名单 ∩ 既有白名单结果（名单不会把草/湿土等原本不可投的类型放进来）。
 // null 或空数组 = 清除限制、恢复默认白名单行为。重算后自动选中第一个可投类型。
-// 名字查不到 → LogWarning 并跳过（同 ResolveTypeNames）；交集为空 → LogError 并保持当前状态不变。
+// 名字查不到 → LogWarning 并跳过（同 ResolveTypeNames）；交集为空 → LogError 并保持当前状态不变（含动物名单）。
+public void SetPlacementFilter(string[] allowedNames, string[] allowedCreatureNames);
+
+// 单参数重载 = 动物不限制（allowedCreatureNames = null），供不关心动物的调用方使用。
 public void SetPlacementFilter(string[] allowedNames);
 ```
 
-- 结果 = **名单 ∩ `CollectPlaceableTypes()` 的默认白名单**：阶段只能**收窄**、不能扩宽（例如阶段写上 `GrassParticle` 也不会让它变得可手刷）。
-- 投放面板（`ParticleSelectionPanel`）按重建后的可投列表**逐颗显隐**十颗投放按钮：名单外的粒子（本关未解锁）整颗隐藏，解锁后按场景里的原位置重新出现；动物物种不受名单影响，照常可见。
+- 粒子结果 = **名单 ∩ `CollectPlaceableTypes()` 的默认白名单**：阶段只能**收窄**、不能扩宽（例如阶段写上 `GrassParticle` 也不会让它变得可手刷）。
+- 动物结果：`allowedCreatureNames == null` → 不限制（兔 / 鱼 / 鸟全部可投）；否则按 `Creature.DebugName`（`兔子`）或 `Creature` 子类类名（`RabbitCreature`）匹配 `CreatureSpawns.Species` 的每个物种，**空数组 = 一个物种都不留**（合法，不是错误）。名字查不到 → `LogWarning` 跳过。
+- 投放面板（`ParticleSelectionPanel`）按重建后的可投列表**逐颗显隐**投放按钮：名单外的粒子 / 物种（本关未解锁）整颗隐藏，解锁后按场景里的原位置重新出现。
 - 重算后**自动选中第一个可投类型**（供 `RefreshHud` 显示）。
-- 名单里查不到的名字 → `LogWarning` 跳过；交集为空 → `LogError` 且**保持当前状态不变**（不把玩家丢进「没有任何可投类型」的编辑器）。
+- 名字查不到的名字 → `LogWarning` 跳过；粒子交集为空 → `LogError` 且**保持当前状态不变**（粒子与动物名单一起回滚，不把玩家丢进「没有任何可投类型」的编辑器）。
 
 ---
 
@@ -302,7 +328,7 @@ public void SetPlacementFilter(string[] allowedNames);
 
 1. 在场景里新建一个空物体（例如 `Game Controller`），挂 `GameController`。
 2. 拖引用：`_driver`（`Particle Sandbox` 上的 `ParticleSimulationDriver`）、`_editor`（同物体上的 `ParticleEditor`）、`_dialogue`（已有 `Dialogue Controller` 上的 `DialogueController`）。留空也会在 `Awake` 用 `FindObjectOfType` 兜底，但**显式接线更明确**。
-3. 把 `Assets/Data/Phases/phase_01.json`、`phase_02.json` 拖进 `_phases`（顺序无关，映射按文件名建）。
+3. 把 `Assets/Data/Phases/phase_01.json` … `phase_05.json` 全部拖进 `_phases`（顺序无关，映射按文件名建）。
 4. `_initialPhaseId` 填 `phase_01`；`_saveFileName` 保持默认 `game_save.json`（改它等于换一份存档）。
 5. **对话注册表**：每个阶段用的 `dialogueId` / `repeatDialogueId` / `successDialogueId` / `failureDialogueId` 都必须在 `DialogueController` 的 `_dialogues` 注册表里登记（`DialogueRef.id` → 文件）。示例阶段 `phase_01` 首次用 `phase_01_intro`、重进用 `phase_01_retry`（`Assets/Data/Dialogues/phase_01_intro.json` / `phase_01_retry.json` 的内部 id，开发期占位、各只有一句旁白）——**注册表 id 与对话文件内部 id 是两回事**，本层按注册表 id 调用，请确保二者对齐且都已在注册表里。新增一段结算对话要做三件事：写 `Assets/Data/Dialogues/<name>.json`（内部 `id` 建议同名）、在场景 `_dialogues` 里登记该 id、在阶段 JSON 里填 `successDialogueId` / `failureDialogueId`。**没登记就只是每次结算 `LogWarning` 一次然后按「没有结算对话」继续**，不会卡流程。
 
@@ -365,7 +391,7 @@ flowchart LR
 
 ## 10. 测试
 
-`GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / 尺寸非法 / `particles[].type` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`repeatDialogueId` 写出即解析出 / 省略为 null、**`successDialogueId` / `failureDialogueId` 往返与「省略 / 空串 = 不播结算对话」**、`availableParticles` 省略或空数组 = 不限制、**`description` 往返与「省略 / 空串 = 无描述」**）/ **`victory` 归一化**（省略 / `{}` / `particles` 为空 → `null`；有一条非 NaN 界限或非空 `particles` → 保留）；`GamePhaseData.ResolveOpeningDialogueId` 的首次 → `dialogueId`、重进 → `repeatDialogueId`、重进且未配 → null；**`GamePhaseData.ResolveResultDialogueId` 的过关 → `successDialogueId`、未过关 → `failureDialogueId`、只配一边时另一边为 null（= 那条路径不播结算对话）**；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、类型名解析失败、**按序报第一条失败**。
+`GameFlowTests`（EditMode，纯 C# 路径）：`GamePhaseParser.TryParse` 的合法 / 坏 JSON / 缺省字段保留哨兵 / 尺寸非法 / `simulationTicks` 负数非法 / `particles[].type` 为空 / `creatures[].species` 为空 / **可空语义**（`dialogueId` 省略或空串 = 无对话、`repeatDialogueId` 写出即解析出 / 省略为 null、**`successDialogueId` / `failureDialogueId` 往返与「省略 / 空串 = 不播结算对话」**、`availableParticles` 省略或空数组 = 不限制、**`availableCreatures` 省略 = 不限制 / 空数组 = 无动物**、`simulationTicks` 往返与「省略 = 0 = 设置默认」、**`description` 往返与「省略 / 空串 = 无描述」**）/ **`victory` 归一化**（省略 / `{}` / `particles` 与 `creatures` 都为空 → `null`；有一条非 NaN 界限、非空 `particles` 或非空 `creatures` → 保留）；`GamePhaseData.ResolveOpeningDialogueId` 的首次 → `dialogueId`、重进 → `repeatDialogueId`、重进且未配 → null；**`GamePhaseData.ResolveResultDialogueId` 的过关 → `successDialogueId`、未过关 → `failureDialogueId`、只配一边时另一边为 null（= 那条路径不播结算对话）**；`VictoryEvaluator.Evaluate` 的无条件判负、温度 / 湿度上下界含等号、`NaN` 快照判负、产生 / 死亡计数约束（`min`/`max`/不约束）、**存量约束（`minCount`/`maxCount`，含边界等号）**、**动物存活数约束（`minCount`/`maxCount`、未知物种判配置错误、缺失快照按 0 存活）**、类型…
 
 `GameSaveProgressTests`（EditMode，纯静态 API）：`SavePathFor` 空名回退、`LoadSave` 缺文件 / 坏 JSON → null、`WriteSave` → `LoadSave` 往返（含解锁集合排序）、`CollectUnlockedPhaseIds` 的 null / 旧档回填 / 去重剔空、`WriteSave` 传 null 解锁表。
 

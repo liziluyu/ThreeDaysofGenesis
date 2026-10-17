@@ -22,6 +22,13 @@ namespace TapTap2026.Game
         public long finalCount;
     }
 
+    /// <summary>单个动物物种在结算那一刻的存活数（<see cref="VictoryEvaluator"/> 的输入）。</summary>
+    public struct CreatureAliveCount
+    {
+        public CreatureSpecies species;
+        public int alive;
+    }
+
     /// <summary>
     /// 一次高速模式结算时的世界快照（<see cref="VictoryEvaluator"/> 的输入）。
     /// 温度 / 湿度尚未采样时为 <see cref="float.NaN"/>。
@@ -36,12 +43,16 @@ namespace TapTap2026.Game
 
         /// <summary>全部已注册类型的产生 / 死亡 / 存量（含全为 0 的条目）；null / 空表示无计数数据。</summary>
         public ParticleTypeCount[] counts;
+
+        /// <summary>结算那一刻各动物物种的存活数；null / 空表示无动物数据（按存活 0 判）。</summary>
+        public CreatureAliveCount[] creatures;
     }
 
     /// <summary>
     /// 胜利条件判定（纯 C#，不碰 Input / UI / 协程，可在 EditMode 测试）。
     /// 按固定顺序检查：地表温度 min → max → 湿度 min → max → 按数组顺序逐条粒子约束
-    /// （产生 min → max → 死亡 min → max → 存量 min → max），
+    /// （产生 min → max → 死亡 min → max → 存量 min → max）→ 按数组顺序逐条动物约束
+    /// （存活 min → max），
     /// 返回**第一条**未满足项的描述作为 <c>reason</c>。
     /// </summary>
     public static class VictoryEvaluator
@@ -319,6 +330,73 @@ namespace TapTap2026.Game
                 }
             }
 
+            if (condition.creatures != null)
+            {
+                for (int i = 0; i < condition.creatures.Length; i++)
+                {
+                    CreatureCountCondition creatureCondition = condition.creatures[i];
+                    if (creatureCondition == null)
+                    {
+                        continue;
+                    }
+
+                    CreatureSpecies species;
+                    if (!TryResolveCreatureSpecies(creatureCondition.species, out species))
+                    {
+                        reason = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "配置错误：动物物种 \"{0}\" 未在物种表中找到。",
+                            creatureCondition.species ?? "<null>");
+                        return false;
+                    }
+
+                    int alive = GetAliveCount(snapshot.creatures, species);
+                    string displayName = creatureCondition.species;
+
+                    if (creatureCondition.minCount >= 0 && alive < creatureCondition.minCount)
+                    {
+                        reason = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0} 存活 {1} 低于要求 {2}。",
+                            displayName,
+                            alive,
+                            creatureCondition.minCount);
+                        return false;
+                    }
+
+                    if (creatureCondition.maxCount >= 0 && alive > creatureCondition.maxCount)
+                    {
+                        reason = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0} 存活 {1} 高于要求 {2}。",
+                            displayName,
+                            alive,
+                            creatureCondition.maxCount);
+                        return false;
+                    }
+
+                    if (creatureCondition.minCount >= 0)
+                    {
+                        summary.Add(string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0} 存活 {1} ≥ {2}",
+                            displayName,
+                            alive,
+                            creatureCondition.minCount));
+                    }
+
+                    if (creatureCondition.maxCount >= 0)
+                    {
+                        summary.Add(string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0} 存活 {1} ≤ {2}",
+                            displayName,
+                            alive,
+                            creatureCondition.maxCount));
+                    }
+                }
+            }
+
             reason = summary.Count == 0
                 ? "全部条件满足（本阶段无约束）。"
                 : "全部条件满足：" + string.Join("；", summary);
@@ -354,6 +432,57 @@ namespace TapTap2026.Game
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// 按 Creature 子类类名（<c>GetType().Name</c>，如 "RabbitCreature"）
+        /// 或 <see cref="Creature.DebugName"/>（如 "兔子"）在物种表里查物种。查不到返回 false。
+        /// </summary>
+        private static bool TryResolveCreatureSpecies(string name, out CreatureSpecies species)
+        {
+            species = CreatureSpecies.None;
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            CreatureSpecies[] all = CreatureSpawns.Species;
+            for (int i = 0; i < all.Length; i++)
+            {
+                Creature prototype = CreatureSpawns.Create(all[i]);
+                if (prototype == null)
+                {
+                    continue;
+                }
+
+                if (prototype.GetType().Name == name || prototype.DebugName == name)
+                {
+                    species = all[i];
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>取快照中某物种的存活数；快照缺该物种时记 0。</summary>
+        private static int GetAliveCount(CreatureAliveCount[] creatures, CreatureSpecies species)
+        {
+            int alive = 0;
+            if (creatures == null)
+            {
+                return alive;
+            }
+
+            for (int i = 0; i < creatures.Length; i++)
+            {
+                if (creatures[i].species == species)
+                {
+                    alive += creatures[i].alive;
+                }
+            }
+
+            return alive;
         }
 
         /// <summary>取快照中某类型的产生 / 死亡 / 存量；快照缺该类型时都记 0。</summary>
