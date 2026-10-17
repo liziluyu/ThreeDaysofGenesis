@@ -26,7 +26,7 @@
 
 ## 跨类型规则
 
-只看标签不看 typeId：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。固体置换液体另有「地下水」闸门（`ParticleWorld.GroundwaterSealingEnabled` 默认开）：只有**运动中**的固体（上一运动扫描位移过，或运行中刚放置/相变）能排开液体——静止的岩石不会把水挤上去，石头/沙里封闭的水稳定不动（土例外：干土按土壤反应吸正上方的水）；下落的沙石照旧沉底。
+只看标签不看 typeId：`ParticleTags` 的 rank 次序 `Solid(3) > Liquid(2) > Gas(1) > 空气(0)` 决定谁置换谁（`ParticleRules`）。固体置换液体另有「地下水」闸门（`ParticleWorld.GroundwaterSealingEnabled` 默认开）：只有**运动中**的固体（上一运动扫描位移过，或运行中刚放置/相变）能排开液体——静止的岩石不会把水挤上去，石头/沙里封闭的水稳定不动（土例外：干土按土壤反应吸正上方的水）；下落的沙石照旧沉底。**自带浮力的类型不走 rank**：冰（密度 0.92）与生物质（0.8）在 `OnMotion` 里上浮并停在水面（上方液体 ⇒ `Swap` 上浮、下方液体 ⇒ 停住）；腐殖质（1.2）在 `OnMotion` 里**无视闸门**下沉（下方液体就 `Swap` 沉一格）。
 
 `ParticleTags` 另有属性标签 `Organic`（不参与 rank）：草、花、树干、树叶、树木种子带它；世界在它们死亡时按 20%（`OrganicDecayDenominator` = 5）就地生成腐殖质（写在 `Set`/`SetPhase` 之后——`OnKill` 在写新格之前、写自身格会被覆盖，故归世界）。**显式霉烂**（新类型本身就是腐殖质）不再叠加衰变骰——骰只在「有机旧类型被非有机新类型替换」时摇。草种子/水生植物故意不带 Organic。
 
@@ -92,4 +92,4 @@
 ## 世界常驻观察者（零 RNG / 零写入，读数不改模拟）
 
 - `MotionMonitor`（按标签掩码的通用运动量观察者，世界持两实例）：`world.LiquidMotion`（带 `Liquid`）导出 `MovingRatio` 供水流动声；`world.SolidMotion`（`Solid` 且非 `Organic`）供落沙声读**绝对** `MovingCount`。**两者的 `Reset()` 由帧采集侧每发布一次调一次**（不再由消费方清账），读数随 `AudioFrame` 发布给所有消费者。O(1) 增量维护 `TrackedCount`（Set/SetPhase 差分）与 `MovingCount`（Swap 按换位匹配端数），掩码构造时对 `world.Types` 摊表。
-- `ParticleCountMonitor`（`world.Counts`）：按类型 O(1) 维护存量 `Count(typeId)` 与新增格数 `ConsumeCreated(typeId)`（读后清零）。`Clear` 走 `Set`、`Swap` 不参与、空气与越界 id 恒 0 不抛。
+- `ParticleCountMonitor`（`world.Counts`）：按类型 O(1) 维护存量 `Count(typeId)` 与新增格数 `ConsumeCreated(typeId)`（读后清零）。`Clear` 走 `Set`、`Swap` 不参与、空气与越界 id 恒 0 不抛。`world.BiomassCount` 是它在生物质槽位上的只读投影，供鸟的饥饿觅食做世界级门控（见 `docs/plan-bird-ai.md` §19）。
