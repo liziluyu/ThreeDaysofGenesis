@@ -10,7 +10,7 @@ namespace TapTap2026.Game
     /// <summary>
     /// 沙箱里的粒子编辑器（调试工具，不属于模拟内核）：**输入与读数生成**归本类、**上屏**归场景里的
     /// <see cref="SandboxHud"/>——本类不画任何 IMGUI，每帧只把算好的字符串推给 HUD（见 <see cref="PushHud"/>）；
-    /// 因此所有屏幕元素（鼠标旁色块、左上角读数、左下角高速读数与结算面板、右上角光照面板）
+    /// 因此所有屏幕元素（鼠标旁色块、左上角读数、高速结算面板、右上角光照面板）
     /// 都是可在编辑器里摆放的场景对象。
     /// **按住左键**用当前选中项填满鼠标处半径 <see cref="BrushRadius"/> 的圆（选中动物物种时改为**在鼠标格放置一只实体**）；**滚轮**在 1..10 之间调整半径；**Shift+滚轮**循环切换树木物种（上下滚动，选中树木种子时 HUD 显示物种名，见 <see cref="TreeSpecies"/>）；
     /// **右键**在可投放项间循环切换（材料类固/液 + Gas 白名单——默认只有火；蒸汽、云、大气等 Gas 中间态由相变产生，不可手刷；
@@ -38,9 +38,7 @@ namespace TapTap2026.Game
     /// 高速模式期间与按钮一样被拒绝）；
     /// 屏幕左上角常驻**光标格读数**：格子坐标、该格的粒子中文名、温度、热量与湿度——ProbeText 显示的其实是
     /// **高速状态行 &gt; 悬停的投放项名 &gt; 光标格读数**三段按优先级取一（悬停名字由投放面板经
-    /// <see cref="SetHoveredSelection"/> 上报，判据见 <see cref="ComposeProbeLine"/>）；
-    /// 高速模式运行中屏幕左下角另有**进度读数**：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>——倍速只显示**实测**吞吐
-    /// （<c>SpeedController.EffectiveSpeed</c>，EMA 平滑），不显示目标档；未采样时温度显示 <c>--</c>）。
+    /// <see cref="SetHoveredSelection"/> 上报，判据见 <see cref="ComposeProbeLine"/>）。
     /// </summary>
     /// <remarks>
     /// <para>屏幕 → 格子：从相机发射射线打到网格所在的 z=0 平面，再换算到 <see cref="ParticleRenderer"/> 的局部坐标
@@ -49,7 +47,7 @@ namespace TapTap2026.Game
     /// <see cref="ParticleSimulationDriver.Submit"/>（值类型命令，在下一个 tick 边界按序应用）。
     /// 世界会把新格标记成「本 tick 未处理」，因此画出来的粒子必定会在下一个 tick 被模拟处理，不需要编辑器额外做什么。</para>
     /// <para><b>只读入口</b>：光标格读数取自 <see cref="ParticleSimulationDriver.CurrentFrame"/>（世界面向帧里的探针快照），
-    /// 高速读数 / 结算取自同一帧的 <see cref="SimulationFrame.HighSpeed"/>——本类因此拿不到、也不读活世界。</para>
+    /// 高速状态行 / 结算取自同一帧的 <see cref="SimulationFrame.HighSpeed"/>——本类因此拿不到、也不读活世界。</para>
     /// <para>高速模式的状态机与统计全在内核 <see cref="HighSpeedSession"/>（纯观察者，world 私有），本类只管输入与显示：
     /// 帧里的 <see cref="HighSpeedFrame.Active"/> 为真时在 <see cref="Update"/> 的**同一处**统一拦截
     /// 右键切换 / 滚轮调半径 / 左键投放，只留下空格暂停、光照面板热键、相机平移与只读读数——锁的是编辑，看视角不锁。
@@ -79,7 +77,7 @@ namespace TapTap2026.Game
                  "仍找不到就只不显示胜负行（不报错）。")]
         [SerializeField] private GameController _gameController;
 
-        [Tooltip("场景里的 HUD（左上角读数 / 鼠标跟随色块 / 高速读数与结算面板 / 光照面板的显示层）。留空则 Awake 里 " +
+        [Tooltip("场景里的 HUD（左上角读数 / 鼠标跟随色块 / 高速结算面板 / 光照面板的显示层）。留空则 Awake 里 " +
                  "GetComponent → FindObjectOfType 兜底；仍找不到就所有 HUD 推送整段跳过（不报错——输入照常工作）。")]
         [SerializeField] private SandboxHud _hud;
 
@@ -195,7 +193,6 @@ namespace TapTap2026.Game
         private int _probedCellY;
         private int _probedTick;
 
-        private string _highSpeedHudText;
         private string[] _highSpeedReportLines;
 
         /// <summary>ProbeText 上的高速状态行（<see cref="DescribeHighSpeedRunning"/> 的产物）；
@@ -539,11 +536,11 @@ namespace TapTap2026.Game
 
         /// <summary>
         /// 把这一帧算好的显示内容推给场景里的 <see cref="SandboxHud"/>（每帧无条件推一次，让它自己按状态去重）：
-        /// 可见性、暂停界面与光照面板的显隐、光标格读数、鼠标跟随组、高速读数与结算面板、光照面板的可用性。
+        /// 可见性、暂停界面与光照面板的显隐、光标格读数、鼠标跟随组、高速结算面板、光照面板的可用性。
         /// 未接线 HUD 时整段跳过——本类照常处理输入、只是没人显示。
         /// </summary>
         /// <remarks>
-        /// 高速读数与结算面板都以驱动的**实时**状态兜底（同旧 IMGUI）：任何结束会话的路径
+        /// 高速结算面板以驱动的**实时**状态兜底（同旧 IMGUI）：任何结束会话的路径
         /// （确认退出、世界重建丢掉会话）都会立刻把它们隐藏掉，不留一帧残影。
         /// </remarks>
         private void PushHud()
@@ -562,7 +559,6 @@ namespace TapTap2026.Game
             _hud.SetLightPanelVisible(_drawHud && _lightPanelVisible && !highSpeedActive);
             _hud.SetProbeText(_drawHud ? BuildProbeLine() : null);
             _hud.SetCursorHint(_hudText, _hudColor);
-            _hud.SetHighSpeedStatus(_drawHud && highSpeedActive ? _highSpeedHudText : null);
 
             if (_drawHud && highSpeedActive && _highSpeedReportLines != null && _highSpeedReportLines.Length > 0)
             {
@@ -931,37 +927,28 @@ namespace TapTap2026.Game
                 _driver.Submit(SimulationCommand.ExitHighSpeed());
             }
 
-            _highSpeedHudText = null;
             _highSpeedProbeText = null;
             _highSpeedReportLines = null;
             _highSpeedReportHasVerdict = false;
         }
 
         /// <summary>
-        /// 刷新高速模式 HUD：运行时每帧重建左下角那一行进度读数与 ProbeText 上的**高速状态行**；结算完成后
+        /// 刷新高速模式 HUD：运行时每帧重建 ProbeText 上的**高速状态行**；结算完成后
         /// **只建一次**结算行（帧里的 <see cref="HighSpeedFrame.Completed"/> 是终态，行内容不会再变）。
-        /// 不在模式中时清空三个缓存。
+        /// 不在模式中时清空这些缓存。
         /// </summary>
         private void RefreshHighSpeed(SimulationFrame frame)
         {
             HighSpeedFrame highSpeed = frame.HighSpeed;
             if (!highSpeed.Active)
             {
-                _highSpeedHudText = null;
                 _highSpeedProbeText = null;
                 _highSpeedReportLines = null;
                 _highSpeedReportHasVerdict = false;
                 return;
             }
 
-            _highSpeedHudText = DescribeHighSpeed(
-                highSpeed.ElapsedLogicTicks,
-                highSpeed.DurationLogicTicks,
-                highSpeed.EffectiveSpeed,
-                highSpeed.LatestSurfaceTemperature,
-                highSpeed.LatestAverageHumidity);
-
-            // ProbeText 上的状态行：同一份帧数据、另一种口径（见 DescribeHighSpeedRunning）——
+            // ProbeText 上的状态行：帧里的实测倍速 + 环境采样（见 DescribeHighSpeedRunning）——
             // 编辑被锁的会话期间它是 ProbeText 唯一显示的内容（见 ComposeProbeLine）。
             _highSpeedProbeText = DescribeHighSpeedRunning(
                 highSpeed.EffectiveSpeed,
@@ -975,27 +962,13 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 左下角进度行的文案：<c>高速 1234/6000 ×7.6 地表 12.3° 湿度 0.456</c>。
-        /// 倍速只显示**实测**吞吐（<see cref="HighSpeedFrame.EffectiveSpeed"/>，EMA 平滑的一位小数）——
-        /// 高速模式恒钉 16× 目标，目标没有显示价值；温度 / 湿度还没采到样本（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
-        /// </summary>
-        private static string DescribeHighSpeed(int elapsed, int duration, float effectiveSpeed, float temperature, float humidity)
-        {
-            return string.Format(
-                CultureInfo.InvariantCulture,
-                "高速 {0}/{1} ×{2} {3}",
-                elapsed, duration, effectiveSpeed.ToString("0.0", CultureInfo.InvariantCulture),
-                DescribeEnvironment(temperature, humidity));
-        }
-
-        /// <summary>
         /// ProbeText 上的**高速状态行**：<c>正在运转 ×7.6 地表 12.3° 湿度 0.456</c>。
         /// </summary>
         /// <remarks>
         /// **格式固定**：状态词 + 实测倍速 + 地表温度 + 湿度。倍速是 <see cref="HighSpeedFrame.EffectiveSpeed"/>
         /// （EMA 平滑的一位小数），**不显示目标档**（会话恒钉 16×，目标没有显示价值）；温度 / 湿度未采样
-        /// （<see cref="float.NaN"/>）时显示 <c>--</c>。**进度不进这行**（已跑 tick / 总时长留给了左下角的
-        /// <see cref="DescribeHighSpeed"/>）：会话期间编辑被锁，玩家只需要知道「还在跑、跑多快、环境怎么样」。
+        /// （<see cref="float.NaN"/>）时显示 <c>--</c>。**进度不进这行**：会话期间编辑被锁，
+        /// 玩家只需要知道「还在跑、跑多快、环境怎么样」。
         /// </remarks>
         public static string DescribeHighSpeedRunning(float effectiveSpeed, float temperature, float humidity)
         {
@@ -1007,7 +980,7 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 环境尾段（两条高速读数行共用）：<c>地表 12.3° 湿度 0.456</c>——温度一位小数带 <c>°</c>、
+        /// 环境尾段：<c>地表 12.3° 湿度 0.456</c>——温度一位小数带 <c>°</c>、
         /// 湿度三位小数；未采样（<see cref="float.NaN"/>）时显示 <c>--</c>，不猜数字。
         /// 数值固定用不变文化格式化，免得跟着系统区域设置漂出逗号小数点。
         /// </summary>
@@ -1254,7 +1227,7 @@ namespace TapTap2026.Game
         /// <summary>
         /// 刷新左上角读数：光标在网格内则显示该格的信息，否则显示「视口外」。
         /// 只有这一行格子读数——清除模式与当前倍速都不在这里显示（清除模式看光标旁的色块与面板高亮，
-        /// 实测吞吐看高速模式左下角读数行，见 <see cref="DescribeHighSpeed"/>）。
+        /// 实测吞吐看会话期间 ProbeText 上的高速状态行，见 <see cref="DescribeHighSpeedRunning"/>）。
         /// </summary>
         /// <remarks>
         /// 读数**不读活世界**：光标格变化时提交一条 <see cref="SimulationCommandKind.ProbeCell"/> 请求，

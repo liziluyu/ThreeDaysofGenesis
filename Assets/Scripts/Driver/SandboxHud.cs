@@ -8,7 +8,7 @@ namespace TapTap2026.Game
 {
     /// <summary>
     /// 沙盒编辑器的 **uGUI HUD 唯一写入点**：把 <see cref="ParticleEditor"/> 每帧算好的字符串
-    /// （光标格读数、鼠标旁的类型 / 半径、高速模式进度与结算、光照面板）写进场景里已经摆好的 uGUI 层级。
+    /// （光标格读数、鼠标旁的类型 / 半径、高速模式结算、光照面板）写进场景里已经摆好的 uGUI 层级。
     /// 字符串的生产留在编辑器、显示落在这里——两者靠本类的这套推送 API 解耦。
     /// </summary>
     /// <remarks>
@@ -54,9 +54,6 @@ namespace TapTap2026.Game
 
         [Tooltip("鼠标跟随组的文字（当前投放项 + 半径 / 物种）。")]
         [SerializeField] private TMP_Text _cursorLabel;
-
-        [Tooltip("左下角高速模式进度读数。")]
-        [SerializeField] private TMP_Text _highSpeedStatus;
 
         [Tooltip("高速模式结算面板（默认隐藏）。")]
         [SerializeField] private GameObject _reportPanel;
@@ -158,7 +155,7 @@ namespace TapTap2026.Game
         }
 
         /// <summary>
-        /// 统一开关 HUD：光标读数 / 鼠标跟随组 / 高速读数一起显隐，隐藏时暂停界面、光照面板与结算面板也一并收起
+        /// 统一开关 HUD：光标读数 / 鼠标跟随组一起显隐，隐藏时暂停界面、光照面板与结算面板也一并收起
         /// （对齐旧的「<c>_drawHud</c> 关了整块不画」）。暂停界面 / 光照面板的再次打开走各自的
         /// <see cref="SetPauseMenuVisible"/> / <see cref="SetLightPanelVisible"/>；光照面板只在接线了光源驱动器时才现身。
         /// </summary>
@@ -168,7 +165,6 @@ namespace TapTap2026.Game
 
             SetActive(_probeText != null ? _probeText.gameObject : null, visible);
             SetActive(_cursorHint != null ? _cursorHint.gameObject : null, visible);
-            SetActive(_highSpeedStatus != null ? _highSpeedStatus.gameObject : null, visible);
 
             if (!visible)
             {
@@ -205,12 +201,6 @@ namespace TapTap2026.Game
             {
                 _cursorSwatch.color = color;
             }
-        }
-
-        /// <summary>写入左下角高速模式进度读数；null / 空串 = 清空文本（不隐藏对象）。</summary>
-        public void SetHighSpeedStatus(string text)
-        {
-            SetText(_highSpeedStatus, text);
         }
 
         /// <summary>

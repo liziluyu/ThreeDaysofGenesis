@@ -437,7 +437,7 @@ namespace TapTap2026.EditorTools
         }
 
         /// <summary>
-        /// HUD 层级：光标读数 / 鼠标跟随组 / 高速读数 / 光照面板 / 高速结算面板 / 通关横幅 /
+        /// HUD 层级：光标读数 / 鼠标跟随组 / 光照面板 / 高速结算面板 / 通关横幅 /
         /// 暂停·光照·高速三颗按钮。
         /// 全部是场景里的可编辑对象，<see cref="SandboxHud"/> 只持引用。
         /// </summary>
@@ -475,15 +475,6 @@ namespace TapTap2026.EditorTools
                 Place(cursorLabel.rectTransform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
                     new Vector2(18f, 0f), new Vector2(222f, 20f));
                 StyleText(cursorLabel, 16f, TextAlignmentOptions.Left, Color.white);
-            }
-
-            // 左下角高速模式读数
-            TMP_Text highSpeed = EnsureText(root, "HighSpeedStatus", report, out bool createdHighSpeed);
-            if (createdHighSpeed)
-            {
-                Place(highSpeed.rectTransform, Vector2.zero, Vector2.zero, Vector2.zero,
-                    new Vector2(6f, 4f), new Vector2(560f, 20f));
-                StyleText(highSpeed, 16f, TextAlignmentOptions.Left, Color.white);
             }
 
             BuildLightPanel(root, report);
@@ -912,7 +903,6 @@ namespace TapTap2026.EditorTools
             SetRef(hudSo, "_cursorHint", ComponentAt<RectTransform>(root, "CursorHint"), report);
             SetRef(hudSo, "_cursorSwatch", ComponentAt<Image>(root, "CursorHint/Swatch"), report);
             SetRef(hudSo, "_cursorLabel", ComponentAt<TMP_Text>(root, "CursorHint/Label"), report);
-            SetRef(hudSo, "_highSpeedStatus", ComponentAt<TMP_Text>(root, "HighSpeedStatus"), report);
             SetRef(hudSo, "_reportPanel", ObjectAt(root, "ReportPanel"), report);
             SetRef(hudSo, "_reportBody", ComponentAt<TMP_Text>(root, "ReportPanel/Body"), report);
             SetRef(hudSo, "_reportVerdict", ComponentAt<TMP_Text>(root, "ReportPanel/Verdict"), report);

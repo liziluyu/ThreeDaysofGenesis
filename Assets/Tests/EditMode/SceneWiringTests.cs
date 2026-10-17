@@ -133,7 +133,7 @@ namespace TapTap2026.Tests
 
             string[] fields =
             {
-                "_lightDriver", "_probeText", "_cursorHint", "_cursorSwatch", "_cursorLabel", "_highSpeedStatus",
+                "_lightDriver", "_probeText", "_cursorHint", "_cursorSwatch", "_cursorLabel",
                 "_reportPanel", "_reportBody", "_reportVerdict", "_lightPanel", "_buttonPanel",
                 "_lightIntensity", "_lightIntensityValue", "_lightLitTicks", "_lightDarkTicks",
             };

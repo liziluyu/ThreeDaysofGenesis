@@ -23,7 +23,7 @@
 
 ## 高速模式（H）
 
-状态机与统计在内核 `HighSpeedSession`（纯 C# 纯观察者——零 RNG 消耗、零格子写入；O(1) 增量统计每种粒子生灭，每 10 逻辑帧采样地表平均温度与世界平均湿度，跑满时做一次全网格存量扫描 `GetFinalCount`）。**会话是 world 的私有一员，且与 world 同线程**（都归 worker）：状态、进度、采样与各类型产生 / 死亡 / 终态存量都在 `HighSpeedFrame` 上（`SimulationFrame.HighSpeed`）。进入 / 退出是命令（`EnterHighSpeed` / `ExitHighSpeed`），输入封锁与左下角进度 / 结算确认在 `ParticleEditor`、音效整层静音在 `SoundController`（`HighSpeedSilenced` = 帧里的 `HighSpeedFrame.Active`：全部声源硬停、两个播放入口丢弃）。worker 侧只做懒建会话、每逻辑帧 `OnLogicTick()`、`Completed` 时就地暂停（世界恰停在 `DurationLogicTicks` 这一刻）；**倍速钉档在主线程**——驱动按帧里的 `Active` 变化把 `SpeedController` 钉满档 16× / 退出回 1×（`SpeedController` 不跨线程）。会话期间 `ProbeText`（左上角）改显示**高速状态行** `正在运转 ×7.6 地表 12.3° 湿度 0.456`（`DescribeHighSpeedRunning`，格式固定：状态词 + 实测倍速 + 地表温度 + 湿度；未采样显示 `--`），左下角进度行照旧。跑满后结算面板**只显示一行**：过关「过关！」，未过关是阶段 JSON 该检查项配的 `failureText`（未配则回退到判定理由）；不列产生 / 死亡数，沙盒阶段不显示面板。
+状态机与统计在内核 `HighSpeedSession`（纯 C# 纯观察者——零 RNG 消耗、零格子写入；O(1) 增量统计每种粒子生灭，每 10 逻辑帧采样地表平均温度与世界平均湿度，跑满时做一次全网格存量扫描 `GetFinalCount`）。**会话是 world 的私有一员，且与 world 同线程**（都归 worker）：状态、进度、采样与各类型产生 / 死亡 / 终态存量都在 `HighSpeedFrame` 上（`SimulationFrame.HighSpeed`）。进入 / 退出是命令（`EnterHighSpeed` / `ExitHighSpeed`），输入封锁与结算确认在 `ParticleEditor`、音效整层静音在 `SoundController`（`HighSpeedSilenced` = 帧里的 `HighSpeedFrame.Active`：全部声源硬停、两个播放入口丢弃）。worker 侧只做懒建会话、每逻辑帧 `OnLogicTick()`、`Completed` 时就地暂停（世界恰停在 `DurationLogicTicks` 这一刻）；**倍速钉档在主线程**——驱动按帧里的 `Active` 变化把 `SpeedController` 钉满档 16× / 退出回 1×（`SpeedController` 不跨线程）。会话期间 `ProbeText`（左上角）改显示**高速状态行** `正在运转 ×7.6 地表 12.3° 湿度 0.456`（`DescribeHighSpeedRunning`，格式固定：状态词 + 实测倍速 + 地表温度 + 湿度；未采样显示 `--`）。跑满后结算面板**只显示一行**：过关「过关！」，未过关是阶段 JSON 该检查项配的 `failureText`（未配则回退到判定理由）；不列产生 / 死亡数，沙盒阶段不显示面板。
 
 ## ParticleEditor（输入与投放）
 
