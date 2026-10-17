@@ -72,6 +72,13 @@ namespace TapTap2026.Simulation
             get { return true; }
         }
 
+        /// <summary>图案顶行相对脚底行的偏移（格）：取生成美术数据（鱼图案 4 行、脚底之上伸 3 行）——
+        /// 物理上界据此把图案顶端夹在世界内，防止上浮 / 扑腾时图案伸出地图。</summary>
+        protected override int ArtTopOffsetCells
+        {
+            get { return FishBrain.BodyTopOffsetCells; }
+        }
+
         /// <summary>重力 0.24 格 / 逻辑帧²（与兔子同值：离水时的下坠感一致；比初版 0.08 快 3 倍）。</summary>
         protected override float Gravity
         {

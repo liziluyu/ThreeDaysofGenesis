@@ -103,7 +103,8 @@ namespace TapTap2026.Simulation
         /// </summary>
         /// <remarks>
         /// 夹取范围与物理阶段一致：<c>X ∈ [Width/2, world.Width − Width/2]</c>、
-        /// <c>Y ∈ [0, world.Height − Height]</c>；世界比实体还小时退化为居中 / 贴地。
+        /// <c>Y ∈ [0, <see cref="Creature.MaxY"/>]</c>（碰撞盒上界与图案顶端上界的较小者——§24 图案感知硬顶，
+        /// 与 <see cref="Creature.StepPhysics"/> 同一份算式）；世界比实体还小时退化为居中 / 贴地。
         /// 生成即入表，因此**同一逻辑帧内**后续的 <see cref="Step"/> 就会推进它。
         /// </remarks>
         /// <typeparam name="T">具体物种类型（原样返回，省去调用方转型）。</typeparam>
@@ -134,12 +135,7 @@ namespace TapTap2026.Simulation
                 maxX = minX;
             }
 
-            float maxY = world.Height - creature.Height;
-            if (maxY < 0f)
-            {
-                maxY = 0f;
-            }
-
+            float maxY = creature.MaxY(world);
             creature.X = Clamp(x, minX, maxX);
             creature.Y = Clamp(y, 0f, maxY);
             creature.PrevX = creature.X;

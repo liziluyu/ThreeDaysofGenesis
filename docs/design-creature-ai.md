@@ -507,3 +507,29 @@ ParticleWorld.StepLogic()
 - **数值**：成年/冷却/分母/上限/下限 = 兔 300/400/20/12/2、鱼 400/600/20/12/2、鸟 **1200/3000**/10/**4**/1（单位：逻辑帧 @20 Hz）。
 - **确定性**：摇骰只在雌性的思考帧；出生队列 FIFO；粒子世界随机流零消耗（有专测）。
 - **已知取舍**：出生**不消耗**世界物质（用户口径）⇒ 与死亡物质化叠加会长期增加总物质；灭绝不会自动回生（需玩家投放）。
+
+## 24. 图案顶端的世界边界夹取（2026-10-17）
+
+**问题（用户实测：鸟会"飞到地图外"）**：物理 ④ 只夹**碰撞盒**（`X ∈ [半宽, W−半宽]`、`Y ≤ H − Height`），
+而实体图案按 **1 源像素 = 1 格**（`_spriteScale = 16`）绘制——鸟图案约 **10×11 格**，在脚底之上还能伸 **10 行**。
+两个后果：① `Flee` 竖直上冲没有任何带上限/天花板判定 ⇒ 脚会贴到 `Y = H − Height`（100 行世界 = 99），
+图案顶行到 **109**，明显飞在地图上面；② 渲染层没有任何世界矩形裁剪（sprite 按世界坐标直接画）。
+
+**方案（图案感知的硬顶）**：
+- `Creature` 新增虚属性 `protected virtual int ArtTopOffsetCells => 0`（**图案顶行相对脚底行的偏移**，与
+  `BodyTopOffsetCells` 同一口径、来自生成美术数据；默认 0 ⇒ 其它物种行为一字不变）。
+- `StepPhysics` ④ 的上界改为 `maxY = Min(world.Height − Height, world.Height − 1 − ArtTopOffsetCells)`（再夹到 ≥ 0）。
+- 物种取值：**鸟 = `BirdBrain.BodyTopOffsetCells`（10）**、**鱼 = `FishBrain.BodyTopOffsetCells`（3）**；
+  兔保持 0（陆生、碰不到顶部；将来要覆盖只加一行）。
+- 效果：鸟的脚最高 **89**（H=100）⇒ 图案顶行 **99** ✓；`Flee` 不再把图案顶出地图。
+  巡航带天花板（`Y > H − 12`）本来就比它更严（88 < 89）⇒ **巡航/捕食/高度带行为不变**，只有逃命的上限被收住。
+
+**不处理**：横向"图案宽于碰撞盒"（兔 6 格宽 / 盒 1.5、鸟 10 / 1）——贴边时图案仍会压过边界墙；
+那是 §22 第 3 条记录的已知风格问题，正解是渲染级遮罩（另开任务）。渲染层仍无世界矩形裁剪。
+
+**验收（`BirdCreatureTests`）**
+1. `Flee_ToWorldTop_ArtStaysInsideWorld`：鸟下方点火 → 逃命上冲 600 帧，**逐帧**断言
+   `floor(Y) + BirdBrain.BodyTopOffsetCells ≤ world.Height − 1`，且 `Y ≤ world.Height − 1 − BirdBrain.BodyTopOffsetCells + ε`。
+2. `SpawnedAboveArtCap_IsClampedOnFirstStep`：在 `Y = H − 1` 生成（超过图案顶上限）⇒ 一步物理后
+   `Y ≤ H − 1 − ArtTopOffsetCells`。
+3. 回归：`SpawnedAboveCeiling_*`、高度带 8 条、`Flee_*` 全组、捕食/死亡骰组保持绿（天花板 12 > 图案 11 ⇒ 巡航不变）。

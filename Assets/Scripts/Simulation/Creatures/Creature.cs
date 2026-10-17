@@ -325,6 +325,13 @@ namespace TapTap2026.Simulation
             get { return true; }
         }
 
+        /// <summary>图案顶行相对**脚底行**的偏移（格）：与 <see cref="CreatureArtData"/> 的 `MaxOpaqueRow − PivotRowPixels`
+        /// 同一口径，由物种覆盖。物理世界上界据此把**图案顶端**也夹在世界内（默认 0 = 只夹碰撞盒，行为一字不变）。</summary>
+        protected virtual int ArtTopOffsetCells
+        {
+            get { return 0; }
+        }
+
         /// <summary>是否跳过悬崖守卫（逃命优先：兔子 Flee 态返回 true）。</summary>
         protected virtual bool IgnoresCliffGuard
         {
@@ -627,6 +634,33 @@ namespace TapTap2026.Simulation
         }
 
         /// <summary>
+        /// 竖直上界（格）：<see cref="CreatureWorld.Spawn{T}"/> 与 <see cref="StepPhysics"/> 共用同一份算式，避免出生夹取
+        /// 与逐帧物理各写一份而漂移。取**碰撞盒上界**与**图案顶端上界**的较小者，再夹到 ≥ 0。
+        /// </summary>
+        /// <remarks>
+        /// 碰撞盒上界 = <c>world.Height − Height</c>（世界高过动物时；矮于动物时退化为 0，保证 Y ≥ 0 恒成立）；
+        /// 图案感知硬顶（§24）= <c>world.Height − 1 − <see cref="ArtTopOffsetCells"/></c>——可见图案的顶行是
+        /// <c>floor(Y) + ArtTopOffsetCells</c>，必须仍落在世界内（否则 1 源像素 = 1 格的图案会伸出地图）。
+        /// </remarks>
+        /// <param name="world">粒子世界（只取高度）。</param>
+        internal float MaxY(ParticleWorld world)
+        {
+            float maxY = world.Height - Height;
+            float artMaxY = world.Height - 1 - ArtTopOffsetCells;
+            if (artMaxY < maxY)
+            {
+                maxY = artMaxY;
+            }
+
+            if (maxY < 0f)
+            {
+                maxY = 0f;
+            }
+
+            return maxY;
+        }
+
+        /// <summary>
         /// 一步物理：流体作用 → 竖直积分（逐行扫）→ 水平积分 → 世界边界夹取 → 刷新支撑 / 淹没状态；
         /// 同时算出**本帧横向受阻信号**（<see cref="_blockedXDir"/> / <see cref="_blockedXAtWorldEdge"/>，
         /// 供下一帧运动层第 ④ 段判定撞墙）。轴分离 AABB，对世界**只读**。
@@ -807,12 +841,7 @@ namespace TapTap2026.Simulation
                 _blockedXAtWorldEdge = true;
             }
 
-            // 世界高过动物时上界是 world.Height − Height，矮于动物时退化为 0（贴地），保证 Y ≥ 0 恒成立。
-            float maxY = world.Height - Height;
-            if (maxY < 0f)
-            {
-                maxY = 0f;
-            }
+            float maxY = MaxY(world);
 
             if (Y < 0f)
             {

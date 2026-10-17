@@ -99,6 +99,13 @@ namespace TapTap2026.Simulation
             get { return false; }
         }
 
+        /// <summary>图案顶行相对脚底行的偏移（格）：取生成美术数据（鸟图案 11 行、脚底之上伸 10 行）——
+        /// 物理上界据此把图案顶端夹在世界内，防止 Flee 上冲时飞地图外。</summary>
+        protected override int ArtTopOffsetCells
+        {
+            get { return BirdBrain.BodyTopOffsetCells; }
+        }
+
         /// <summary>重力 0.24 格 / 逻辑帧²（与兔 / 鱼同值；只在入水与主动坠落时起作用，空中被挂起）。</summary>
         protected override float Gravity
         {

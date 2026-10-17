@@ -1892,5 +1892,71 @@ namespace TapTap2026.Tests
 
             Assert.IsTrue(entered, "低空（altitude 20）应在捕食预算内发现并进入 Hunt");
         }
+
+        // ============================== §24 图案顶端世界夹取 ==============================
+
+        /// <summary>§24①：火钉在鸟正下方 ⇒ Flee 持续上冲 600 帧，**每帧**都要求可见图案的顶行仍在世界内
+        /// （<c>floor(Y) + BodyTopOffsetCells ≤ H − 1</c>），且脚底不超过图案硬顶。
+        /// 修复前物理只夹碰撞盒（<c>Y ≤ H − Height</c>），鸟会一路顶到 63、图案顶行伸到 73。</summary>
+        [Test]
+        public void Flee_ToWorldTop_ArtStaysInsideWorld()
+        {
+            ParticleWorld world = NewWorld();
+            FillRows(world, 0, 0, Stone);
+            const int artOffset = BirdBrain.BodyTopOffsetCells;
+            float artCapY = world.Height - 1 - artOffset;
+
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, 20f);
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000; // 不进入降落分支
+
+            int fireX = -1;
+            int fireY = -1;
+            for (int frame = 0; frame < 600; frame++)
+            {
+                // 逃命扫描只在思考帧：把火跟着鸟钉在**正下方一格**，保证整段 600 帧都在逃命（上冲）态。
+                if (creatures.LogicTicks % Creature.ThinkEvery == bird.SensePhase)
+                {
+                    if (fireX >= 0)
+                    {
+                        world.Clear(fireX, fireY);
+                    }
+
+                    fireX = Mathf.FloorToInt(bird.X);
+                    fireY = Mathf.FloorToInt(bird.Y) - 1;
+                    world.Set(fireX, fireY, Fire);
+                }
+
+                creatures.Step(world);
+
+                int artTopRow = Mathf.FloorToInt(bird.Y) + artOffset;
+                Assert.LessOrEqual(
+                    artTopRow, world.Height - 1, $"第 {frame} 帧图案顶行 {artTopRow} 伸出了世界（H = {world.Height}）");
+                Assert.LessOrEqual(bird.Y, artCapY + 1e-3f, $"第 {frame} 帧脚底 {bird.Y} 越过了图案硬顶 {artCapY}");
+            }
+
+            Assert.AreEqual(artCapY, bird.Y, 1e-3f, "持续逃命应最终顶到图案硬顶（否则本用例没覆盖到夹取）");
+            Assert.GreaterOrEqual(BirdBrain.BodyTopOffsetCells, 1, "鸟图案应当在脚底之上伸出行（否则本用例无意义）");
+        }
+
+        /// <summary>§24②：出生在 <c>Y = H − 1</c>（超过图案硬顶）的鸟被夹回世界内——出生夹取与逐帧物理共用
+        /// <see cref="Creature.MaxY"/>，因此一步之后脚底不超过 <c>H − 1 − BodyTopOffsetCells</c>。</summary>
+        [Test]
+        public void SpawnedAboveArtCap_IsClampedOnFirstStep()
+        {
+            ParticleWorld world = NewWorld();
+            CreatureWorld creatures = new CreatureWorld(SeedValue);
+            BirdCreature bird = creatures.Spawn(new BirdCreature(), world, 24f, world.Height - 1f);
+            bird.AiState = BirdBrain.StateFly;
+            bird.StateTicksLeft = 100000;
+
+            creatures.Step(world);
+
+            Assert.LessOrEqual(
+                bird.Y,
+                world.Height - 1 - BirdBrain.BodyTopOffsetCells + 1e-3f,
+                "超过图案硬顶的出生位置应在第一步物理后仍在世界内");
+        }
     }
 }
